@@ -1,0 +1,511 @@
+# Requirements Document — Study Tracker Desktop v1
+
+**Document status:** Confirmed for implementation  
+**Target product:** Personal study-tracking desktop application with XP and medals  
+**Primary technology:** Python + CustomTkinter  
+**Distribution target:** Standalone Windows executable  
+**Assumptions:** All previously listed assumptions are confirmed and binding.
+
+---
+
+## Table of Contents
+
+1. Introduction  
+2. Glossary  
+3. Confirmed Assumptions and Binding Decisions  
+4. Product Overview  
+5. Proposed User Interface Structure  
+6. Functional Requirements  
+   - 6.1 Study Sessions and XP  
+   - 6.2 Daily Medals  
+   - 6.3 Calendar View  
+   - 6.4 Statistics Menu  
+   - 6.5 Save, Load, Backup, and Versioning  
+   - 6.6 Assets and Packaging  
+7. Accessibility and Usability  
+8. Non-Functional Requirements  
+9. Error Handling and Edge Cases  
+10. Proposed Save File Data Schema  
+11. Proposed Project Structure and Module Breakdown  
+12. Suggested Libraries  
+13. Future / Optional Enhancements — Out of Scope for v1  
+
+---
+
+## 1. Introduction
+
+This document defines the confirmed requirements for a personal, offline, single-user desktop application for tracking study sessions. The application gamifies studying by awarding XP for completed study time and medals for daily study milestones.
+
+The application shall be implemented in Python using CustomTkinter for the GUI. It shall be packageable into a standalone Windows executable and shall not require an installed Python environment on the target machine.
+
+All user data shall be stored locally. The application shall not depend on any external server, network service, telemetry system, cloud storage, or remote authentication mechanism.
+
+This document includes the confirmed decisions for ambiguous areas, including XP calculation, midnight-crossing sessions, week definition, streak behavior, save file location, backup handling, and asset handling.
+
+---
+
+## 2. Glossary
+
+| Term | Definition |
+|---|---|
+| Session | A single logged period of study with a duration and timestamp. |
+| XP | Experience points awarded for completed study time. |
+| Medal | A daily award based on total study time for a calendar day. |
+| Calendar Day | A local date from midnight to midnight, according to the user’s system clock. |
+| Day Attribution | The rule that determines which calendar day a session counts toward. |
+| Streak | A count of consecutive qualifying study days. |
+| Qualifying Day | A calendar day that counts toward a streak. |
+| Active Day | A calendar day with at least one logged session. |
+| Save File | The local JSON file containing user data and settings. |
+| Backup File | A local copy of the last known good save file. |
+| Frozen App | The application when packaged into a standalone executable. |
+| Preset Session | A session logged using one of the predefined duration buttons. |
+| Custom Session | A session logged using user-entered hours and minutes. |
+
+---
+
+## 3. Confirmed Assumptions and Binding Decisions
+
+The following assumptions have been confirmed and shall be treated as requirements.
+
+| ID | Decision | Consequence / Rule |
+|---|---|---|
+| A-1 | XP rate is **10 XP per completed 10 minutes**. | The default XP rate is fixed at 10 XP per completed 10-minute block. |
+| A-2 | Partial 10-minute blocks award no XP. | Example: 25 minutes awards XP for 20 minutes only. |
+| A-3 | Sessions that cross midnight are attributed entirely to the **calendar day on which they started**. | The full duration and XP count toward the start day. Sessions are not split across days. |
+| A-4 | Custom session duration minimum is **5 minutes**, maximum is **12 hours**. | Sessions outside this range are rejected with a friendly validation message. |
+| A-5 | Default save location is the current user’s application data folder. | The save file is not required to be stored alongside the executable. |
+| A-6 | “This week” means **Monday through Sunday**. | Statistics use a local calendar week starting on Monday. |
+| A-7 | A streak counts a day only if the user studied for at least **10 minutes** on that day. | Days with less than 10 minutes do not extend or preserve a streak. |
+| A-8 | v1 supports deleting sessions but not editing sessions. | Editing may be considered for a future version. |
+| A-9 | Manual “Load” replaces the current in-memory data after confirmation. | Loading a file is treated as replacing the current dataset. |
+| A-10 | Default theme is **dark mode**. | Dark mode is used on first run unless the user changes it. |
+| A-11 | Medal counts in statistics use only the **highest medal earned per day**. | A 5-hour day counts as one Gold day, not Bronze, Silver, and Gold. |
+| A-12 | Overlapping sessions are allowed and simply added together. | The application does not need to detect or prevent overlapping study entries. |
+| A-13 | The app trusts the local system clock and does not synchronize time. | No network time, timezone correction, or server time validation is required. |
+
+---
+
+## 4. Product Overview
+
+Study Tracker Desktop is a personal productivity and gamification application. The user logs completed study sessions, receives XP for completed 10-minute blocks, and earns medals based on total study time per calendar day.
+
+The application shall provide:
+
+- Quick study logging using preset durations.
+- Custom study logging using hours and minutes.
+- A calendar view showing daily medals.
+- Day details showing sessions, XP, total time, and medal.
+- Statistics for today, this week, this month, lifetime, streaks, and medal counts.
+- Local save/load functionality using a JSON file.
+- Dark and light mode.
+- Standalone Windows executable packaging.
+
+The application shall not include:
+
+- Accounts or authentication.
+- Cloud synchronization.
+- Social features.
+- Telemetry.
+- Network connectivity requirements.
+- Multi-user profiles in v1.
+- Session editing in v1.
+
+---
+
+## 5. Proposed User Interface Structure
+
+The application shall follow a simple idle/mobile-style desktop layout: one main window, a persistent navigation bar, and a small number of primary screens.
+
+### 5.1 Screens
+
+| Screen | Purpose | Main Action |
+|---|---|---|
+| Home / Log Study | Quick logging and today summary | Log a study session |
+| Calendar | Month view with medals | Inspect a day |
+| Stats | XP, time, streaks, and medal totals | Review progress |
+| Settings | Theme, save/load, and data controls | Configure app and manage data |
+
+### 5.2 UI Requirements
+
+| ID | Requirement | Notes |
+|---|---|---|
+| UI-1 | The main window shall have a persistent bottom navigation bar with four destinations: Home, Calendar, Stats, and Settings. | Bottom navigation is preferred. Side navigation is acceptable only if it preserves the same simplicity. |
+| UI-2 | Only one primary screen shall be visible at a time. | This keeps the app simple and uncluttered. |
+| UI-3 | The Home screen shall be the default screen after launch. | The primary action is logging study time. |
+| UI-4 | The Home screen shall show today’s total study time, XP earned, and current medal status. | This provides immediate feedback. |
+| UI-5 | The Home screen shall provide preset session buttons for 30 minutes, 1 hour, and 2 hours. | These should log immediately with minimal friction. |
+| UI-6 | The Home screen shall provide a button to open a custom session logging dialog. | Custom logging shall use hours and minutes. |
+| UI-7 | Custom session logging shall use a modal dialog. | Preset buttons may log directly without a modal. |
+| UI-8 | After a session is logged successfully, the Home screen summary shall update immediately. | The user should see the effect without reopening the screen. |
+| UI-9 | The Calendar screen shall show a month grid with medal indicators on days. | Medal display rules are defined in the medal requirements. |
+| UI-10 | Clicking or tapping a calendar day shall open a modal day-details dialog. | The dialog shows total time, XP, medal, and session list. |
+| UI-11 | The Stats screen shall display summary cards or sections for totals and streaks. | No editing is required on this screen. |
+| UI-12 | The Settings screen shall contain dark/light mode toggle, manual Save, manual Load, and data status information. | Settings should remain simple. |
+| UI-13 | Destructive actions shall require confirmation. | Examples include deleting a session and replacing current data through manual load. |
+| UI-14 | Empty states shall be friendly and non-technical. | Example: “No study sessions logged yet.” |
+| UI-15 | The UI shall not require internet access or show any network-dependent features. | The app is offline-only. |
+| UI-16 | The UI shall remain usable at a typical desktop window size. | The app does not need advanced responsive layout behavior. |
+
+---
+
+## 6. Functional Requirements
+
+## 6.1 Study Sessions and XP
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-1 | The application shall allow the user to log a study session using preset durations: 30 minutes, 1 hour, and 2 hours. | Preset logging should be one tap from the Home screen. |
+| FR-2 | The application shall allow the user to log a custom duration using hours and minutes. | Custom entry shall open a modal dialog. |
+| FR-3 | Custom duration entry shall provide separate fields for hours and minutes. | This is simpler and less error-prone than a single free-text field. |
+| FR-4 | Custom duration shall be valid only if total duration is at least 5 minutes and no more than 12 hours. | Values outside this range shall be rejected with a friendly message. |
+| FR-5 | Minutes input shall accept values from 0 to 59. | Hours input shall accept values from 0 to 12. |
+| FR-6 | When a session is logged, the application shall timestamp it with a start datetime and an end datetime. | The end datetime shall be the current local time at logging. The start datetime shall be end time minus duration. |
+| FR-7 | Each session shall be attributed to the calendar day on which its start datetime falls. | This is the confirmed day attribution rule. |
+| FR-8 | Sessions that cross midnight shall not be split across calendar days. | The full duration and XP are assigned to the start day. |
+| FR-9 | XP shall be awarded at a fixed rate of **10 XP per completed 10 minutes**. | This value shall be configurable as a persisted application setting, but v1 does not require a UI to change it. |
+| FR-10 | XP shall be calculated only from completed 10-minute blocks. | Partial blocks shall be rounded down. |
+| FR-11 | XP values shall be whole numbers. | No fractional XP shall be displayed or stored. |
+| FR-12 | Total session duration shall count toward daily medal thresholds even if the session is too short to earn XP. | Example: a 15-minute session gives 10 XP and counts as 15 minutes toward medals. |
+| FR-13 | The application shall allow the user to delete an existing session. | Editing is out of scope for v1. |
+| FR-14 | Deleting a session shall require confirmation. | This prevents accidental loss. |
+| FR-15 | Deleting a session shall immediately update daily totals, medals, calendar display, statistics, and streaks. | Derived values must not remain stale. |
+| FR-16 | The application shall not prevent overlapping sessions. | Overlap validation is not required for v1. |
+
+### XP Calculation Examples
+
+These examples assume the confirmed default rate of 10 XP per completed 10 minutes.
+
+| Session Duration | Completed 10-Minute Blocks | XP Awarded | Notes |
+|---:|---:|---:|---|
+| 5 minutes | 0 | 0 | Still counts toward medal time. |
+| 10 minutes | 1 | 10 | Minimum XP-earning duration. |
+| 25 minutes | 2 | 20 | Remaining 5 minutes are ignored for XP. |
+| 30 minutes | 3 | 30 | Preset duration. |
+| 1 hour | 6 | 60 | Preset duration. |
+| 2 hours | 12 | 120 | Preset duration. |
+| 2 hours 9 minutes | 12 | 120 | Extra 9 minutes do not create another block. |
+
+### Midnight-Crossing Examples
+
+| Scenario | Attribution Rule |
+|---|---|
+| User logs a 30-minute session at 00:10. The calculated start time is 23:40 on the previous day. | The full session is attributed to the previous day. |
+| User logs a 2-hour session from 23:30 to 01:30. | The full session is attributed to the day on which it started. |
+| User logs a 1-hour session at 00:20. The calculated start time is 23:20 on the previous day. | The full session is attributed to the previous day. |
+
+---
+
+## 6.2 Daily Medals
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-17 | The application shall award daily medals based on total study time attributed to a calendar day. | Total time is the sum of all sessions attributed to that day. |
+| FR-18 | Bronze medal shall require at least 2 hours of study in one day. | 120 minutes. |
+| FR-19 | Silver medal shall require at least 3 hours of study in one day. | 180 minutes. |
+| FR-20 | Gold medal shall require at least 5 hours of study in one day. | 300 minutes. |
+| FR-21 | Medal thresholds shall be inclusive. | Exactly 2 hours earns Bronze; exactly 3 hours earns Silver; exactly 5 hours earns Gold. |
+| FR-22 | If a user qualifies for multiple medals on the same day, only the highest earned medal shall be displayed and counted. | Example: 5 hours earns Gold only. |
+| FR-23 | Days with less than 2 hours of study shall display no medal. | No participation medal is required for v1. |
+| FR-24 | Medal state shall be derived from current session data. | Medals are not independent permanent records in v1. |
+| FR-25 | Medals shall be recalculated automatically whenever sessions are added or deleted. | If editing is added later, medals must recalculate after edits too. |
+| FR-26 | If a deleted session causes a day to fall below a medal threshold, the medal for that day shall be removed or downgraded automatically. | Calendar and statistics must update. |
+
+### Medal Threshold Table
+
+| Medal | Minimum Study Time | Display Priority |
+|---|---:|---:|
+| Bronze | 2 hours | Lower than Silver/Gold |
+| Silver | 3 hours | Lower than Gold |
+| Gold | 5 hours | Highest |
+
+---
+
+## 6.3 Calendar View
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-27 | The Calendar screen shall show the current month by default. | The current calendar month should be visible on first navigation to the Calendar screen. |
+| FR-28 | On first launch, the current date shall be selected by default in the calendar. | If the user later navigates away, the app may preserve the last viewed month, but initial selection must be today. |
+| FR-29 | Each calendar day shall display the medal earned for that day, if any. | Use the highest earned medal only. |
+| FR-30 | Days with no medal shall display no medal icon. | A subtle empty state is acceptable. |
+| FR-31 | Clicking or tapping a calendar day shall open a modal day-details dialog. | This dialog is required. |
+| FR-32 | The day-details dialog shall show the selected date, total study time, total XP, medal earned, and list of sessions for that day. | Sessions are those attributed to the selected calendar day. |
+| FR-33 | The session list in day details shall show at least start time, end time, and duration for each session. | A delete action should be available per session. |
+| FR-34 | The Calendar screen shall allow navigation to previous and next months. | Month and year should be clearly displayed. |
+| FR-35 | The Calendar screen shall provide a “Today” action to return to the current month and select the current date. | Helpful after navigating. |
+| FR-36 | If a day has no sessions, the day-details dialog shall show a friendly empty message. | Example: “No study logged for this day.” |
+| FR-37 | Because sessions are attributed to their start day, a session that crosses midnight shall appear only on the start day in calendar day details. | This follows confirmed assumption A-3. |
+
+---
+
+## 6.4 Statistics Menu
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-38 | The Stats screen shall display XP totals for today, this week, this month, and lifetime. | Time totals should also be displayed for each period. |
+| FR-39 | “Today” shall mean the current local calendar day from midnight to midnight. | Based on the system clock. |
+| FR-40 | “This week” shall mean Monday through Sunday of the current local calendar week. | Confirmed week definition. |
+| FR-41 | “This month” shall mean the current calendar month from the first day to the last day. | Local system calendar. |
+| FR-42 | “Lifetime” shall mean all recorded sessions in the current save data. | Lifetime does not require cloud backup or multiple devices. |
+| FR-43 | Statistics shall use the same day attribution rule as medals and calendar. | Sessions are counted on their start day. |
+| FR-44 | The Stats screen shall display current streak and longest streak. | Streak rules are defined below. |
+| FR-45 | The Stats screen shall display total hours studied, total sessions, active days, average daily study time, and medal counts. | These are useful supporting statistics. |
+| FR-46 | Medal counts shall count the highest medal earned per qualifying day. | Counts for Bronze, Silver, and Gold should be shown separately. |
+| FR-47 | A day shall qualify for a streak if it has at least 10 minutes of logged study. | Confirmed streak qualification rule. |
+| FR-48 | Current streak shall count consecutive qualifying days ending today if today qualifies; otherwise, it shall count consecutive qualifying days ending yesterday. | This prevents the streak from appearing broken before the current day has ended. |
+| FR-49 | Longest streak shall be the maximum number of consecutive qualifying days in the saved history. | Historical only; no future projections. |
+| FR-50 | Average daily study time shall be total study time divided by number of active days. | Active day means at least one logged session. |
+| FR-51 | Timezone and locale handling shall use the local system timezone and calendar. | No timezone selection UI is required. |
+| FR-52 | Date display may follow the Windows regional format where practical. | Internal calculations should remain stable and local-date-based. |
+
+### Required Statistics Table
+
+| Statistic | Required? | Definition |
+|---|---|---|
+| Today XP | Yes | XP from sessions attributed to today. |
+| Week XP | Yes | XP from sessions attributed to the current Monday-Sunday week. |
+| Month XP | Yes | XP from sessions attributed to the current calendar month. |
+| Lifetime XP | Yes | XP from all sessions in the save file. |
+| Today Time | Yes | Total study time attributed to today. |
+| Week Time | Yes | Total study time attributed to current week. |
+| Month Time | Yes | Total study time attributed to current month. |
+| Lifetime Time | Yes | Total study time across all saved sessions. |
+| Current Streak | Yes | Consecutive qualifying days, ending today or yesterday. |
+| Longest Streak | Yes | Longest recorded streak. |
+| Total Sessions | Yes | Number of saved sessions. |
+| Active Days | Yes | Number of days with at least one session. |
+| Average Daily Study Time | Yes | Total time divided by active days. |
+| Bronze Count | Yes | Days where Bronze was the highest medal. |
+| Silver Count | Yes | Days where Silver was the highest medal. |
+| Gold Count | Yes | Days where Gold was the highest medal. |
+
+---
+
+## 6.5 Save, Load, Backup, and Versioning
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-53 | User data shall be saved locally in a JSON file. | UTF-8 encoding is recommended. |
+| FR-54 | The default save file shall be stored in the current user’s application data folder. | On Windows, this should be a per-user writable location such as AppData. |
+| FR-55 | The application shall create the default save file automatically on first run if no save file exists. | First run should start with empty data and default settings. |
+| FR-56 | The application shall load the default save file automatically on startup. | No user action should be required for normal use. |
+| FR-57 | The application shall autosave after any data-changing action. | Examples: logging a session, deleting a session, changing theme, loading a file. |
+| FR-58 | The application shall save on exit if there are unsaved changes. | If autosave already handles this, exit save may be a safety flush. |
+| FR-59 | The Settings screen shall provide a manual “Save” action. | This writes the current state to the default save file immediately. |
+| FR-60 | The Settings screen shall provide a manual “Load” action. | This opens a file chooser to select a saved JSON file. |
+| FR-61 | Manual load shall validate the selected file before replacing current data. | Invalid files must not corrupt current state. |
+| FR-62 | Manual load shall ask for confirmation before replacing current data. | Confirmed behavior. |
+| FR-63 | If manual load is canceled or fails, current data shall remain unchanged. | A friendly error should be shown if the file cannot be used. |
+| FR-64 | The application shall maintain at least one backup of the last known good save file. | A simple backup file alongside the default save file is sufficient. |
+| FR-65 | The application shall create a backup before overwriting the default save file during risky operations. | Risky operations include manual load and schema migration. |
+| FR-66 | If the default save file is missing, the application shall start with empty default data. | This is normal first-run behavior. |
+| FR-67 | If the default save file is corrupt, the application shall attempt to load the most recent backup. | If backup load succeeds, the user should be notified in a friendly way. |
+| FR-68 | If neither default save file nor backup is usable, the application shall start with empty default data and notify the user. | The corrupt file should not be silently deleted. |
+| FR-69 | Corrupt or unloadable save files shall be preserved or quarantined for diagnosis. | The app should avoid overwriting them immediately. |
+| FR-70 | The save file shall include a schema version field. | The initial schema version is 1. |
+| FR-71 | The application shall handle missing schema version fields gracefully. | For v1, missing version may be treated as version 1 if otherwise valid. |
+| FR-72 | If a save file uses a future schema version that the app cannot understand, the application shall not overwrite it. | Show a friendly error instead. |
+| FR-73 | Application settings shall be persisted in the save file. | At minimum, theme and XP rate setting shall be saved. |
+| FR-74 | If a settings value is missing or invalid, the application shall use a safe default. | Example: invalid XP rate falls back to 10. |
+| FR-75 | Save operations should be atomic where practical. | For example, write to a temporary file and replace the old file only after successful write. |
+
+---
+
+## 6.6 Assets and Packaging
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-76 | All icons and medal images shall be placeholder PNG files in a local assets folder. | Final artwork is not required for v1. |
+| FR-77 | The application shall require placeholder assets for at least: app icon, home icon, calendar icon, stats icon, settings icon, bronze medal, silver medal, gold medal, and empty/placeholder state. | Additional icons may be added if needed. |
+| FR-78 | Asset loading shall work both when running from source and when running from a frozen executable. | A resource path resolution mechanism is required. |
+| FR-79 | If an asset file is missing, the application shall fall back to a text label or generic placeholder. | Missing assets must not crash the app. |
+| FR-80 | Medal display in the calendar and day details shall use the corresponding medal PNG. | If unavailable, fall back to text such as “Gold”. |
+| FR-81 | The application shall be packageable into a standalone Windows executable. | PyInstaller or an equivalent Python packaging tool is acceptable. |
+| FR-82 | The packaged executable shall run without requiring a Python installation on the user’s machine. | Standard standalone executable requirement. |
+| FR-83 | The packaged application shall not open a console window. | It should behave like a GUI desktop app. |
+| FR-84 | Packaging shall include all required assets. | Assets may be bundled directly or extracted at runtime depending on packaging mode. |
+| FR-85 | A PyInstaller one-folder build is recommended for v1. | One-folder builds simplify asset handling and startup behavior. A one-file build is acceptable only if asset path resolution works correctly. |
+
+---
+
+## 7. Accessibility and Usability
+
+| ID | Requirement | Notes |
+|---|---|---|
+| ACC-1 | The application shall provide a dark mode and light mode toggle. | This is the only accessibility requirement for v1. |
+| ACC-2 | The selected theme shall be persisted across app restarts. | Stored in the save file settings. |
+| ACC-3 | No additional accessibility features are required for v1. | Future versions may consider font scaling, keyboard navigation, and screen reader support. |
+
+---
+
+## 8. Non-Functional Requirements
+
+| ID | Requirement | Notes |
+|---|---|---|
+| NFR-1 | The target platform is Windows only. | The application will be distributed as a Windows executable. |
+| NFR-2 | The application shall run offline. | No network connection shall be required. |
+| NFR-3 | The application shall not send telemetry, analytics, crash reports, or any data externally. | Fully local and private. |
+| NFR-4 | The application shall be single-user. | No profiles, accounts, or multi-user switching are required. |
+| NFR-5 | The application shall have no external server dependencies. | No APIs, cloud storage, databases, or remote authentication. |
+| NFR-6 | Startup time shall be reasonable for a personal desktop app. | Target: under 3 seconds on a typical modern PC with an empty or small save file. |
+| NFR-7 | The application shall remain responsive during normal operations. | Logging, calendar navigation, and statistics updates should feel immediate. |
+| NFR-8 | The application shall not crash on invalid user input. | Friendly validation and error dialogs are required. |
+| NFR-9 | The application shall handle a realistic personal study history. | A target of at least 10,000 sessions should remain usable. |
+
+---
+
+## 9. Error Handling and Edge Cases
+
+The application should handle errors in the style of a normal mobile app: friendly, non-technical, and recovery-oriented.
+
+| ID | Scenario | Required Behavior |
+|---|---|---|
+| ERR-1 | User enters a custom duration with non-numeric input. | Show a friendly validation message; do not log a session. |
+| ERR-2 | User enters zero, negative, or otherwise invalid duration. | Show a friendly validation message; do not log a session. |
+| ERR-3 | User enters a duration below 5 minutes or above 12 hours. | Show a friendly limit message; do not log a session. |
+| ERR-4 | User enters minutes outside 0-59. | Show a friendly validation message. |
+| ERR-5 | User attempts to delete a session. | Ask for confirmation before deletion. |
+| ERR-6 | User attempts to load a file that would replace current data. | Ask for confirmation before proceeding. |
+| ERR-7 | Save file is missing on first run. | Create a new empty data file with default settings; no error dialog is required. |
+| ERR-8 | Save file is corrupt. | Attempt backup recovery. If backup fails, start with empty data and show a friendly warning. |
+| ERR-9 | Backup file is corrupt. | Start with empty default data and show a friendly warning. Preserve corrupt files where practical. |
+| ERR-10 | Save file contains a few invalid session records but is otherwise usable. | Skip or ignore invalid session records if possible, then notify the user that some data could not be loaded. |
+| ERR-11 | Save file uses an unknown future schema version. | Do not overwrite the file. Show a friendly message that the file is from a newer version. |
+| ERR-12 | Asset file is missing. | Use a text fallback or generic placeholder; do not crash. |
+| ERR-13 | Disk write fails due to permissions or disk full. | Show a friendly error and keep the app usable in memory. Do not lose current in-memory data. |
+| ERR-14 | System clock changes after sessions are logged. | Existing sessions remain attributed to their originally recorded start day. No retroactive rewriting is required. |
+| ERR-15 | DST or timezone changes occur. | The application uses recorded local start dates and does not attempt to recompute historical sessions. |
+| ERR-16 | User opens day details for a day with no sessions. | Show a friendly empty state. |
+| ERR-17 | Unexpected internal error occurs. | Show a friendly error dialog, avoid crashing if possible, and preserve current data. |
+
+---
+
+## 10. Proposed Save File Data Schema
+
+The save file shall be JSON-based. Derived values such as daily totals, medals, streaks, and statistics should be computed from sessions at runtime rather than stored as authoritative records. This reduces the risk of stale or inconsistent derived data.
+
+### 10.1 General Schema Rules
+
+| ID | Requirement | Notes |
+|---|---|---|
+| DATA-1 | The save file shall contain a top-level schema version field. | Initial version is 1. |
+| DATA-2 | The save file shall contain application settings and session records. | Derived data is not required to be stored. |
+| DATA-3 | The application shall tolerate missing optional fields by using safe defaults. | This supports forward compatibility and user editing. |
+| DATA-4 | Date and time values shall be stored as local date-time values in ISO-style format. | The exact serialization format should be stable and parseable. |
+| DATA-5 | Derived daily medal state shall not be the primary source of truth. | Medals are calculated from sessions. |
+| DATA-6 | Session identifiers shall be unique. | A UUID or equivalent unique string is recommended. |
+
+### 10.2 Top-Level Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| schema_version | Integer | Yes | Save file schema version. Initial value is 1. |
+| created_at | Date-time | Optional | Timestamp when the save file was created. |
+| updated_at | Date-time | Optional | Timestamp when the save file was last written. |
+| settings | Object | Yes | User settings and configuration. |
+| sessions | Array | Yes | List of session records. Empty on first run. |
+
+### 10.3 Settings Fields
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| theme | String | Yes | dark | Either dark or light. |
+| xp_per_10_minutes | Integer | Yes | 10 | XP awarded per completed 10-minute study block. |
+
+### 10.4 Session Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| id | String | Yes | Unique session identifier. |
+| start_local | Date-time | Yes | Local start date and time of the session. |
+| end_local | Date-time | Optional | Local end date and time. Can be derived from start and duration. |
+| duration_minutes | Integer | Yes | Total session duration in minutes. |
+| created_at_local | Date-time | Optional | Timestamp when the session was logged. |
+| source | String | Optional | Indicates whether session was preset or custom. Not required for core logic. |
+
+### 10.5 Derived Data Policy
+
+| Derived Data | Stored Persistently? | Calculation Source |
+|---|---|---|
+| Daily total study time | No | Sessions attributed to the day |
+| Daily XP | No | Sessions attributed to the day |
+| Daily medal | No | Daily total study time |
+| Calendar medal icons | No | Daily medal calculation |
+| Today / week / month / lifetime stats | No | Session history |
+| Current streak | No | Qualifying day history |
+| Longest streak | No | Qualifying day history |
+| Medal counts | No | Daily medal history |
+
+---
+
+## 11. Proposed Project Structure and Module Breakdown
+
+The project should separate GUI, domain logic, persistence, and utilities. This keeps gamification rules testable and prevents GUI code from becoming responsible for business logic.
+
+| ID | Requirement | Notes |
+|---|---|---|
+| ARCH-1 | The codebase shall separate GUI, core logic, persistence, and utility modules. | GUI should not contain XP or medal calculation rules directly. |
+| ARCH-2 | Core logic shall be usable without GUI dependencies where practical. | This supports unit testing of XP, medals, streaks, and date attribution. |
+| ARCH-3 | Persistence shall be isolated from GUI and core logic. | GUI and core should not read/write JSON directly. |
+| ARCH-4 | Asset path handling shall be centralized in a utility module. | Ensures consistent behavior in source and frozen executable. |
+
+### Suggested Directory Layout
+
+| Path / Module | Responsibility |
+|---|---|
+| main entry point | Starts the application and initializes the main window. |
+| GUI package | Contains screens, dialogs, navigation, widgets, and theme handling. |
+| Core package | Contains session models, XP rules, medal rules, streak rules, and statistics calculations. |
+| Persistence package | Handles loading, saving, backup, validation, migration, and schema versioning. |
+| Utilities package | Handles resource path resolution, date helpers, friendly error dialogs, and logging helpers. |
+| Assets folder | Contains placeholder PNG icons and medal images. |
+| Tests folder | Optional unit tests for core logic. |
+
+### Example Module Responsibilities
+
+| Module Area | Example Responsibilities |
+|---|---|
+| Session logic | Represent a study session, validate duration, determine start/end time. |
+| XP engine | Calculate XP from duration using the configured rate and rounding rule. |
+| Medal engine | Determine the highest medal earned for a given day. |
+| Stats engine | Calculate totals, streaks, averages, and medal counts. |
+| Storage service | Read/write JSON, create backups, recover from corruption, migrate schema. |
+| Resource helper | Resolve asset paths in development and packaged executable. |
+| Screens | Render Home, Calendar, Stats, and Settings UI. |
+| Dialogs | Custom session entry, day details, confirmation prompts, error messages. |
+
+---
+
+## 12. Suggested Libraries
+
+| Library | Justification |
+|---|---|
+| CustomTkinter | Required GUI toolkit for the desktop interface. |
+| Pillow | Useful for loading, scaling, and displaying PNG icons and medal images. |
+| platformdirs | Provides a reliable way to locate the Windows application data folder. |
+| python-dateutil | Helps with date parsing, formatting, and edge-case handling if needed. |
+| PyInstaller | Packages the Python application into a standalone Windows executable. |
+
+---
+
+## 13. Future / Optional Enhancements — Out of Scope for v1
+
+The following items are explicitly **out of scope for v1** but may be considered later.
+
+| ID | Enhancement | Notes |
+|---|---|---|
+| FUT-1 | Editing existing sessions. | v1 supports delete only. |
+| FUT-2 | Study categories or subjects. | Would allow per-subject stats. |
+| FUT-3 | Real-time study timer. | v1 logs completed sessions only. |
+| FUT-4 | Reminders or notifications. | Could encourage daily study. |
+| FUT-5 | Weekly goals. | For example, target hours per week. |
+| FUT-6 | Achievements beyond daily medals. | Examples: total milestones, streak badges. |
+| FUT-7 | CSV export/import. | Useful for backup and analysis. |
+| FUT-8 | Cloud backup or sync. | Explicitly not included in offline v1. |
+| FUT-9 | Multiple user profiles. | v1 is single-user only. |
+| FUT-10 | Custom medal thresholds. | v1 uses fixed thresholds. |
+| FUT-11 | Custom XP rates in the UI. | v1 may persist the value but does not require a UI editor. |
+| FUT-12 | Sound effects or animations. | Optional gamification polish. |
+| FUT-13 | Minimize to tray. | Not required for v1. |
+| FUT-14 | Portable mode alongside the executable. | Could be added if required, but default save location is AppData for v1. |

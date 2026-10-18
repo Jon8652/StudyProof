@@ -1,0 +1,713 @@
+# Requirements Document — Study Tracker Desktop v1 (Consolidated / Fully Updated)
+
+**Document status:** Consolidated requirements — merges the initial confirmed requirements (`Initial_Requirements_document`) with the as-built updates (`Updated_Requirements_document`) and the current repository. Where the two documents conflicted, this document follows the updated document and the implemented code. This is the single authoritative requirements source going forward.
+**Target product:** Personal study-tracking desktop application with XP, medals, notes, and a study stopwatch
+**Primary technology:** Python 3.10+ / CustomTkinter (+ Tkinter), Pillow, platformdirs, python-dateutil
+**Distribution target:** Standalone Windows executable built with PyInstaller (one-folder, windowed); source runs cross-platform (Windows/macOS/Linux)
+**Assumptions:** All original binding decisions A-1 … A-13 remain in force; new/updated decisions A-14 … A-20 are added below.
+
+---
+
+## Table of Contents
+
+1. Introduction and Scope Changes
+2. Glossary
+3. Confirmed Assumptions and Binding Decisions
+4. Product Overview
+5. User Interface Structure
+   - 5.1 Overall layout
+   - 5.2 Screens
+   - 5.3 UI Requirements (consolidated)
+   - 5.4 Dialogs and widgets
+   - 5.5 Visual theme system
+6. Functional Requirements
+   - 6.1 Study Sessions and XP
+   - 6.2 Daily Medals
+   - 6.3 Calendar View
+   - 6.4 Statistics Screen
+   - 6.5 Save, Load, Backup, and Versioning
+   - 6.6 Assets and Packaging
+   - 6.7 Notes **[NEW]**
+   - 6.8 Study Stopwatch **[NEW]**
+7. Accessibility and Usability
+8. Non-Functional Requirements (incl. Performance Budgets)
+9. Error Handling and Edge Cases
+10. Save File Data Schema (As Implemented)
+11. Project Structure and Module Breakdown
+12. Libraries and Tooling
+13. Testing, Build Gates, and Validation
+14. Future / Optional Enhancements — Out of Scope
+
+---
+
+## 1. Introduction and Scope Changes
+
+This document defines the confirmed requirements for **Study Tracker Desktop**, a personal, offline, single-user desktop application that gamifies studying: users log study sessions, earn XP for completed 10-minute blocks, win daily Bronze/Silver/Gold medals, maintain streaks, keep free-text notes, and review statistics — all stored locally in JSON. The application shall not depend on any external server, network service, telemetry system, cloud storage, or remote authentication mechanism.
+
+The application implements every core rule confirmed in the original requirements (XP rate, medal thresholds, day attribution, week definition, streak rules, save/backup/versioning behavior, asset fallbacks, packaging). During implementation the following scope changes were made and are now part of the confirmed requirements:
+
+| Change | Description |
+|---|---|
+| **[UPDATED] Navigation model** | The persistent *bottom* navigation bar with four destinations became a persistent **left sidebar** with **five** destinations: Home, Calendar, Notes, Statistics, Settings. The original UI-1 clause "side navigation is acceptable only if it preserves the same simplicity" is exercised. |
+| **[NEW] Notes feature** | A dedicated Notes screen and data type (titled free-text notes, optionally attached to a calendar day), with full CRUD, search, and integration into Calendar and Day Details. |
+| **[NEW] Study stopwatch** | A real-time digital stopwatch in the sidebar that can automatically log a completed run as a custom session. This was listed as out of scope in the initial document (FUT-3 "Real-time study timer") and is now an implemented, required feature. |
+| **[UPDATED] Platform target** | Primary distribution remains a standalone Windows executable, but the app is explicitly **cross-platform at source level** (macOS/Linux supported via `platformdirs`); the README documents running from source on any OS. NFR-1 is relaxed accordingly. |
+| **[UPDATED] Editing policy** | Session editing remains out of scope (A-8 holds). However, **note editing is fully supported** (create/edit/delete notes), so the blanket "no editing" phrasing applies only to sessions. |
+| **[UPDATED] Persistence naming** | Concrete save-file names: `study_tracker_save.json` with backup `study_tracker_save.backup.json` and `.corrupt[.N]` quarantine suffixes, located in the per-user app-data directory (`APP_SLUG = "StudyTrackerDesktop"`). |
+| **[NEW] Performance engineering layer** | An incremental daily-aggregate index and lazy screen construction were added specifically to satisfy the ≥10,000-session responsiveness requirement (NFR-9), with an automated budget gate (`scripts/perf_check.py`). |
+| **[NEW] Build pipeline** | A scripted Windows release pipeline (`run_build.ps1` + `study_tracker.spec`) that gates shipping on the test suite and the performance check. |
+
+All requirement IDs from the initial document (FR-, UI-, DATA-, ERR-, ACC-, NFR-, ARCH-) remain valid unless explicitly revised here; new or changed requirements are marked **[UPDATED]** or **[NEW]**.
+
+---
+
+## 2. Glossary
+
+Original terms remain valid:
+
+| Term | Definition |
+|---|---|
+| Session | A single logged period of study with a duration and timestamp. |
+| XP | Experience points awarded for completed study time. |
+| Medal | A daily award based on total study time for a calendar day. |
+| Calendar Day | A local date from midnight to midnight, according to the user's system clock. |
+| Day Attribution | The rule that determines which calendar day a session counts toward. |
+| Streak | A count of consecutive qualifying study days. |
+| Qualifying Day | A calendar day that counts toward a streak (≥10 minutes of study). |
+| Active Day | A calendar day with at least one logged session. |
+| Save File | The local JSON file containing user data and settings. |
+| Backup File | A local copy of the last known good save file. |
+| Frozen App | The application when packaged into a standalone executable. |
+| Preset Session | A session logged using one of the predefined duration buttons. |
+| Custom Session | A session logged using user-entered hours and minutes (or an auto-logged stopwatch run). |
+
+Additional terms **[NEW]**:
+
+| Term | Definition |
+|---|---|
+| Note | A user-created record with a title, free-text body, optional calendar-day attachment, and created/updated timestamps. |
+| Dated note | A note attached to a specific calendar day; it also appears in that day's Calendar cell marker and Day Details dialog. |
+| Undated note | A note with no day attachment (`day = None`); appears only in the Notes screen. |
+| Stopwatch | The sidebar digital timer with Start/Stop/Reset that can auto-log a finished run as a study session. |
+| Auto-log threshold | Minimum stopwatch run length (10 minutes) required for stopping to log a session. |
+| Daily aggregate index | In-memory map of calendar day → (total minutes, total XP, medal, session ids), maintained incrementally by `AppState`. |
+| Quarantine file | A copy of a corrupt/unreadable save or backup renamed with a `.corrupt` suffix and preserved for diagnosis. |
+| AppState | The single in-memory coordinator between GUI screens, core engines, and the persistence repository. |
+| ActionResult | Uniform `{ok, message, value}` result object returned by all state/actions operations to the GUI. |
+| Performance gate | `scripts/perf_check.py`, which asserts timing budgets against a generated ~10,000-session dataset. |
+
+---
+
+## 3. Confirmed Assumptions and Binding Decisions
+
+All initial assumptions A-1 through A-13 remain binding and are implemented as stated (verified in `app/constants.py` and the core engines):
+
+| ID | Decision | Consequence / Rule |
+|---|---|---|
+| A-1 | XP rate is **10 XP per completed 10 minutes**. | The default XP rate is fixed at 10 XP per completed 10-minute block (`XP_BLOCK_MINUTES = 10`, persisted setting `xp_per_10_minutes`). |
+| A-2 | Partial 10-minute blocks award no XP. | Example: 25 minutes awards XP for 20 minutes only. |
+| A-3 | Sessions that cross midnight are attributed entirely to the **calendar day on which they started**. | The full duration and XP count toward the start day. Sessions are not split across days. |
+| A-4 | Custom session duration minimum is **5 minutes**, maximum is **12 hours**. | Sessions outside this range are rejected with a friendly validation message. |
+| A-5 | Default save location is the current user's application data folder. | The save file is not required to be stored alongside the executable. See A-19 for the cross-platform resolution rule. |
+| A-6 | "This week" means **Monday through Sunday**. | Statistics use a local calendar week starting on Monday (`week_bounds`). |
+| A-7 | A streak counts a day only if the user studied for at least **10 minutes** on that day. | Days with less than 10 minutes do not extend or preserve a streak (`STREAK_QUALIFYING_MIN_MINUTES = 10`). |
+| A-8 | v1 supports deleting sessions but not editing sessions. | Editing may be considered for a future version. Note editing exists and does not change this (see A-14). |
+| A-9 | Manual "Load" replaces the current in-memory data after confirmation. | Loading a file is treated as replacing the current dataset (three-step flow, §6.5). |
+| A-10 | Default theme is **dark mode**. | Dark mode is used on first run unless the user changes it (`DEFAULT_THEME = "dark"`). |
+| A-11 | Medal counts in statistics use only the **highest medal earned per day**. | A 5-hour day counts as one Gold day, not Bronze, Silver, and Gold. |
+| A-12 | Overlapping sessions are allowed and simply added together. | The application does not detect or prevent overlapping study entries. |
+| A-13 | The app trusts the local system clock and does not synchronize time. | No network time, timezone correction, or server time validation is required. |
+
+New/updated decisions **[NEW]/[UPDATED]**:
+
+| ID | Decision | Consequence / Rule |
+|---|---|---|
+| A-14 | Notes are first-class persisted data alongside sessions. | Stored in the same JSON save file (`notes` array), covered by autosave, backup, atomic write, and recovery flows. Unlike sessions, notes **are** editable. |
+| A-15 | Note limits are fixed: title ≤ 120 characters, body ≤ 100,000 characters. | Values are truncated defensively on load; a note with neither title nor body text is rejected with a friendly message. |
+| A-16 | A stopwatch stop logs a session only when elapsed time ≥ 10 minutes (±0.25 s floating-point slack), rounded **down** to whole 10-minute steps. | Shorter stops preserve the reading so the run can be resumed; Reset always returns the display to zero without logging. Logged runs use the normal custom-session validation path. |
+| A-17 | Stopwatch timing uses a monotonic clock, not wall-clock deltas. | Display accuracy survives delayed Tk callbacks; system clock changes do not distort a running measurement. |
+| A-18 | Derived views are backed by an incrementally maintained daily index. | Adding/deleting a session updates only the affected day's aggregate; stats/calendar/home read the index. Deletion recomputes day XP from remaining sessions (partial-block rounding makes XP non-additive). |
+| A-19 | Cross-platform data location *(updates A-5/A-13/NFR-1)*. | Default save directory resolves via `platformdirs.user_data_dir`: `%APPDATA%\StudyTrackerDesktop`-style per-user location on Windows and platform-standard locations on macOS/Linux. Windows remains the packaging/distribution target. |
+| A-20 | Screens are constructed lazily on first visit. | Startup does not build the calendar grid, notes list, or stats cards until navigated to; unvisited screens are skipped by global refresh broadcasts. |
+
+---
+
+## 4. Product Overview
+
+Study Tracker Desktop is a personal productivity and gamification application. The user logs completed study sessions, receives XP for completed 10-minute blocks, and earns medals based on total study time per calendar day. The application provides:
+
+- Quick study logging using preset durations (30 min / 1 h / 2 h) — one tap from Home.
+- Custom study logging via a modal hours-and-minutes dialog with friendly inline validation (5 min – 12 h).
+- **Study stopwatch [NEW]** in the sidebar with Start/Stop/Reset; stopping a run of ≥10 minutes auto-logs it as a custom session rounded down to the nearest 10 minutes.
+- XP engine: 10 XP per completed 10-minute block (configurable/persisted rate, no UI editor in v1).
+- Daily medals: Bronze ≥ 120 min, Silver ≥ 180 min, Gold ≥ 300 min (inclusive thresholds, highest medal only), shown as image badges with text fallback.
+- Calendar view: Monday-first month grid with per-day medal icons and note-count markers, prev/next/today navigation, and a modal day-details dialog (totals, medal, session list with delete, attached notes with add/edit).
+- **Notes [NEW]**: a full CRUD note-taking screen with search, list + detail panes, optional day attachment, and integration into Calendar and Day Details.
+- Statistics: today/week/month/lifetime XP and time, current & longest streaks, total sessions, active days, average daily time, medal-day counts, and total-notes count.
+- Settings: dark/light theme (persisted), manual Save, safe manual Load (validate → confirm → backup → replace), and data-status information (save path, session count, last saved, backup availability).
+- Resilient local persistence: atomic JSON writes, single last-known-good backup, corrupt-file quarantine/recovery, schema-version protection, close-flush of unsaved changes.
+- Standalone Windows executable (PyInstaller one-folder, windowed) with bundled assets; runnable from source on Windows/macOS/Linux.
+
+The application shall **not** include: accounts/authentication, cloud synchronization, social features, telemetry, network connectivity requirements, multi-user profiles, or session editing.
+
+---
+
+## 5. User Interface Structure
+
+### 5.1 Overall layout **[UPDATED]**
+
+One main window (default 900×640, minimum 700×520) divided into:
+
+- **Left sidebar (fixed ≈210 px):** brand block (app icon + name + tagline), separator, five navigation buttons (icon when available + always-visible text label), then at the bottom: the **Study Stopwatch widget** packed above the version label (`v1.0.0`).
+- **Content area:** exactly one primary screen visible at a time (UI-2 preserved), raised via `tkraise()`; screens are created lazily on first visit (A-20).
+
+Home remains the default screen after launch (UI-3). The active nav item is highlighted with the accent-blue pill; inactive items use theme-appropriate grey text.
+
+### 5.2 Screens
+
+| Screen | Purpose | Main actions |
+|---|---|---|
+| Home / Log Study | Today summary card (time, XP, medal badge, progress bar toward next medal) | Preset buttons (30 m / 1 h / 2 h, responsive row/grid layout); open custom-session modal |
+| Calendar | Monday-first month grid with medal-icon and note-count markers per day | Prev/Next month, "Today" button, click day → Day Details modal |
+| Notes **[NEW]** | List + detail panes (fixed 2:3 split) with search and New-note toolbar | Create, edit, delete, open attached day |
+| Statistics | Colour-coded summary-card sections: Time, XP earned, Streaks, Medal days, Activity | Read-only review |
+| Settings | Appearance card, Data management card, Data status card | Theme toggle, Save now, Load from file |
+
+### 5.3 UI Requirements (consolidated)
+
+| ID | Requirement | Notes / status |
+|---|---|---|
+| UI-1 | The main window shall have a persistent navigation area with five destinations: Home, Calendar, Notes, Statistics, Settings. | **[UPDATED]** Implemented as a left sidebar (the initial doc permitted side navigation "if it preserves the same simplicity"). |
+| UI-2 | Only one primary screen shall be visible at a time. | Implemented (`tkraise()` content stack). |
+| UI-3 | The Home screen shall be the default screen after launch. | Implemented. |
+| UI-4 | The Home screen shall show today's total study time, XP earned, and current medal status. | Implemented; additionally shows a progress bar toward the next medal. |
+| UI-5 | The Home screen shall provide preset session buttons for 30 minutes, 1 hour, and 2 hours. | Implemented; log immediately with minimal friction. |
+| UI-6 | The Home screen shall provide a button to open a custom session logging dialog. | Implemented. |
+| UI-7 | Custom session logging shall use a modal dialog. | Implemented; preset buttons log directly without a modal. |
+| UI-8 | After a session is logged successfully, the Home screen summary shall update immediately. | Implemented via the listener broadcast. |
+| UI-9 | The Calendar screen shall show a month grid with medal indicators on days. | Implemented; plus note-count markers **[NEW]** (§6.7 NOTE-7). |
+| UI-10 | Clicking or tapping a calendar day shall open a modal day-details dialog. | Implemented; dialog shows total time, XP, medal, session list, and attached notes **[NEW]**. |
+| UI-11 | The Stats screen shall display summary cards or sections for totals and streaks. | Implemented; no editing on this screen. |
+| UI-12 | The Settings screen shall contain dark/light mode toggle, manual Save, manual Load, and data status information. | Implemented (Appearance / Data management / Data status cards). |
+| UI-13 | Destructive actions shall require confirmation. | Implemented for deleting a session, deleting a note **[NEW]**, and replacing current data through manual load. |
+| UI-14 | Empty states shall be friendly and non-technical. | Implemented (e.g., "No study sessions logged yet."); empty-state helper shows the `empty_state` asset when present. |
+| UI-15 | The UI shall not require internet access or show any network-dependent features. | Implemented; offline-only, no network code. |
+| UI-16 | The UI shall remain usable at a typical desktop window size. | Implemented; 900×640 default, 700×520 minimum. |
+| UI-17 **[NEW]** | The Notes screen shall present a searchable list pane and a detail pane in a fixed 2:3 horizontal split. | See §6.7 (NOTE-8). |
+| UI-18 **[NEW]** | A stopwatch widget shall be persistently visible in the sidebar below the navigation. | See §6.8 (SW-1). |
+
+### 5.4 Dialogs and widgets
+
+| Component | Behaviour |
+|---|---|
+| Custom session dialog | Modal; separate hours/minutes fields; inline friendly validation (ERR-1..ERR-4). |
+| Day Details dialog | Modal (600×560); date header, totals + medal badge, scrollable session rows with per-session delete (confirm first), notes section listing attached notes with "+ Add note" and edit routes; friendly empty states for both sessions and notes. |
+| Note editor dialog **[NEW]** | Modal (520×460); title field, body textbox, optional day; routes through AppState so all screens refresh; rejects blank notes with a friendly message. |
+| Confirm dialog (`ask_yes_no`) | Generic modal yes/no used before destructive/replacement actions (delete session, delete note, replace data on manual load). |
+| Message/error dialogs | Non-technical friendly notices used throughout (save failures, recovery notices, stopwatch auto-log confirmation). |
+| MedalBadge | Shows medal PNG when the asset exists; otherwise coloured text ("Bronze"/"Silver"/"Gold"); empty when no medal. |
+| SummaryCard | Statistic caption/value card used on the Stats screen. |
+| SessionRow | Start→End time, duration, XP, source, and delete button. |
+| StopwatchWidget **[NEW]** | See §6.8. |
+
+### 5.5 Visual theme system **[UPDATED]**
+
+All GUI colours are centralised in `app/gui/theme` tokens (accent blue `#2b6cb0`, neutral, danger, card/border surfaces, muted text, time-blue, XP-gold, medal colours) defined as `(light, dark)` tuples resolved per appearance mode. Dark mode remains the default (A-10). Specific documented behaviours:
+
+- Calendar tiles are light-grey-tinted in light mode and lighter navy in dark mode; today's tile uses the **same blue accent** as the header "Today" button; selected day gets an accent outline ring. Tile contents use a uniform composite structure so the date number sits at identical vertical position whether or not the day carries a medal/note marker.
+- Date-number colours follow live appearance-mode switches (an appearance watcher recolours rendered cells immediately).
+- Notes rows: selected rows get a tinted accent background per theme; unselected titles use exactly the body-text colour pair.
+- Symmetric content insets across all screens (equal left/right outer gaps).
+
+---
+
+## 6. Functional Requirements
+
+## 6.1 Study Sessions and XP
+
+FR-1 … FR-16 from the initial document are confirmed requirements and are implemented as written, with these concrete implementation specifics:
+
+| ID | Requirement (as built) |
+|---|---|
+| FR-1 | The application allows logging preset durations 30 minutes, 1 hour, and 2 hours. Presets `(30, 60, 120)` minutes are defined in constants with labels "30 minutes / 1 hour / 2 hours"; buttons log immediately via `log_preset_session(source="preset")`. |
+| FR-2 | The application allows logging a custom duration using hours and minutes via a modal dialog. |
+| FR-3 | Custom duration entry provides separate fields for hours and minutes. |
+| FR-4 | Custom duration is valid only if total duration is at least 5 minutes and no more than 12 hours; invalid values are rejected with a friendly message. |
+| FR-5 | Minutes input accepts 0–59; hours input accepts 0–12. Validation runs through `Session.validate_custom_inputs(hours, minutes)` returning `(total_minutes, friendly_error_or_None)`. |
+| FR-6 | When a session is logged, it is timestamped with a start datetime and an end datetime: `Session.create()` stamps end = current local time (or injected `now` for tests), start = end − duration, plus `created_at_local` and `source` ("preset"/"custom"). Naive local datetimes throughout. |
+| FR-7 | Each session is attributed to the calendar day on which its start datetime falls (`Session.day = start_local.date()`). |
+| FR-8 | Sessions that cross midnight are not split across calendar days; no splitting exists anywhere in the codebase. |
+| FR-9 | XP is awarded at the configured rate of **10 XP per completed 10 minutes**; the rate is a persisted application setting without a v1 UI editor. |
+| FR-10 | XP is calculated only from completed 10-minute blocks: `(duration // 10) * settings.xp_per_10_minutes`; partial blocks round down. |
+| FR-11 | XP values are whole numbers; no fractional XP is displayed or stored. |
+| FR-12 | Total session duration counts toward daily medal thresholds even if the session is too short to earn XP; medal/time engines use raw `duration_minutes`, independent of XP rounding. |
+| FR-13 | The user can delete an existing session (editing remains out of scope). Delete flows through `AppState.delete_session` → index update → autosave → listener broadcast refreshing every built screen (Home, Calendar, Stats, Notes, open Day Details). |
+| FR-14 | Deleting a session requires confirmation. |
+| FR-15 | Deleting a session immediately updates daily totals, medals, calendar display, statistics, and streaks (derived values must not remain stale). |
+| FR-16 | The application does not prevent overlapping sessions; no overlap detection exists. |
+| **[UPDATED]** | Manual-load validation additionally rejects nonsensical persisted durations (≤0 or >24 h) by skipping those records rather than crashing (see ERR-10/ERR-21). |
+
+### XP Calculation Examples
+
+These examples assume the confirmed default rate of 10 XP per completed 10 minutes.
+
+| Session Duration | Completed 10-Minute Blocks | XP Awarded | Notes |
+|---:|---:|---:|---|
+| 5 minutes | 0 | 0 | Still counts toward medal time. |
+| 10 minutes | 1 | 10 | Minimum XP-earning duration. |
+| 25 minutes | 2 | 20 | Remaining 5 minutes are ignored for XP. |
+| 30 minutes | 3 | 30 | Preset duration. |
+| 1 hour | 6 | 60 | Preset duration. |
+| 2 hours | 12 | 120 | Preset duration. |
+| 2 hours 9 minutes | 12 | 120 | Extra 9 minutes do not create another block. |
+
+### Midnight-Crossing Examples
+
+| Scenario | Attribution Rule |
+|---|---|
+| User logs a 30-minute session at 00:10. The calculated start time is 23:40 on the previous day. | The full session is attributed to the previous day. |
+| User logs a 2-hour session from 23:30 to 01:30. | The full session is attributed to the day on which it started. |
+| User logs a 1-hour session at 00:20. The calculated start time is 23:20 on the previous day. | The full session is attributed to the previous day. |
+
+## 6.2 Daily Medals
+
+FR-17 … FR-26 are confirmed requirements, implemented as written: inclusive thresholds 120/180/300 minutes, highest-medal-only display and counting, derived-not-stored state, and automatic recalculation/downgrade on add and delete (the daily index recomputes `medal_for_minutes(total)` on every mutation). Medal keys/labels/asset names are enumerated centrally (`bronze/silver/gold` → `*_medal` assets).
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-17 | The application awards daily medals based on total study time attributed to a calendar day. | Total time is the sum of all sessions attributed to that day. |
+| FR-18 | Bronze medal requires at least 2 hours of study in one day. | 120 minutes (`BRONZE_MIN_MINUTES`). |
+| FR-19 | Silver medal requires at least 3 hours of study in one day. | 180 minutes (`SILVER_MIN_MINUTES`). |
+| FR-20 | Gold medal requires at least 5 hours of study in one day. | 300 minutes (`GOLD_MIN_MINUTES`). |
+| FR-21 | Medal thresholds are inclusive. | Exactly 2 hours earns Bronze; exactly 3 hours earns Silver; exactly 5 hours earns Gold. |
+| FR-22 | If a user qualifies for multiple medals on the same day, only the highest earned medal is displayed and counted. | Example: 5 hours earns Gold only. |
+| FR-23 | Days with less than 2 hours of study display no medal. | No participation medal in v1. |
+| FR-24 | Medal state is derived from current session data. | Medals are not independent permanent records. |
+| FR-25 | Medals are recalculated automatically whenever sessions are added or deleted. | |
+| FR-26 | If a deleted session causes a day to fall below a medal threshold, the medal is removed or downgraded automatically. | Calendar and statistics must update. |
+
+### Medal Threshold Table
+
+| Medal | Minimum Study Time | Display Priority |
+|---|---:|---:|
+| Bronze | 2 hours | Lower than Silver/Gold |
+| Silver | 3 hours | Lower than Gold |
+| Gold | 5 hours | Highest |
+
+## 6.3 Calendar View
+
+FR-27 … FR-37 are confirmed requirements, implemented with these refinements:
+
+| ID | Requirement (as built) |
+|---|---|
+| FR-27 | The Calendar screen opens on the current month by default. |
+| FR-28 | Today is selected on first visit; the last viewed month is preserved while the app runs. |
+| FR-29 | Each tile shows the date number plus tiny markers under it: a 14 px medal icon when earned (image; text-coloured fallback logic in MedalBadge), and a 📝 note marker with count when the day has attached notes (**[NEW]**, see §6.7). |
+| FR-30 | Days with neither medal nor notes show just the number (subtle empty state). |
+| FR-31 | Clicking or tapping a calendar day opens a modal Day Details dialog. This dialog is required. |
+| FR-32 | The Day Details dialog shows the selected date, total study time, total XP, medal earned, and list of sessions attributed to that day. As built it also lists attached notes **[NEW]** (§6.7 NOTE-6). |
+| FR-33 | The session list in day details shows start time, end time, duration, XP, and source for each session, with a per-session delete action requiring confirmation. |
+| FR-34 | Prev/Next month navigation with clear month/year heading. |
+| FR-35 | A "Today" button (accent blue, matching today's tile) returns to the current month and selects the current date. |
+| FR-36 | Friendly empty message when the day has no sessions. |
+| FR-37 | Midnight-crossing sessions appear only on their start day (per A-3). |
+| **[NEW]** | Weekday columns are labelled Mon…Sun (Monday-first, consistent with A-6). Leading/trailing adjacent-month days render as blanks. |
+
+## 6.4 Statistics Screen
+
+FR-38 … FR-52 are confirmed requirements, implemented via the pure `compute_stats` engine, which accepts an optional pre-built `day_index` (performance optimization, A-18) and an optional notes collection. The Stats screen renders colour-coded `SummaryCard`s grouped into sections: Study time (Today/Week/Month/Lifetime), XP earned (same four periods), Streaks (current/longest, "N day(s)" pluralisation), Medal days (Bronze/Silver/Gold, highest-per-day), and Activity (total sessions, active days, average daily time, **total notes [NEW]**). A friendly empty hint appears below the cards when no sessions exist. All period math uses local dates and start-day attribution; week bounds are Monday–Sunday (`week_bounds`), month bounds first-to-last day (`month_bounds`).
+
+| ID | Requirement | Notes |
+|---|---|---|
+| FR-38 | The Stats screen displays XP totals for today, this week, this month, and lifetime, plus time totals for each period. | |
+| FR-39 | "Today" means the current local calendar day from midnight to midnight. | Based on the system clock. |
+| FR-40 | "This week" means Monday through Sunday of the current local calendar week. | Confirmed week definition (A-6). |
+| FR-41 | "This month" means the current calendar month from the first day to the last day. | Local system calendar. |
+| FR-42 | "Lifetime" means all recorded sessions in the current save data. | No cloud backup or multiple devices implied. |
+| FR-43 | Statistics use the same day attribution rule as medals and calendar. | Sessions are counted on their start day. |
+| FR-44 | The Stats screen displays current streak and longest streak. | Rules below. |
+| FR-45 | The Stats screen displays total hours studied, total sessions, active days, average daily study time, and medal counts. | Plus total notes **[NEW]** (NOTE-15). |
+| FR-46 | Medal counts count the highest medal earned per qualifying day; Bronze, Silver, and Gold shown separately. | A-11. |
+| FR-47 | A day qualifies for a streak if it has at least 10 minutes of logged study. | A-7. |
+| FR-48 | Current streak counts consecutive qualifying days ending today if today qualifies; otherwise ending yesterday. | Prevents the streak from appearing broken before the day ends. |
+| FR-49 | Longest streak is the maximum number of consecutive qualifying days in the saved history. | Historical only. |
+| FR-50 | Average daily study time is total study time divided by number of active days. | Active day = at least one logged session. |
+| FR-51 | Timezone and locale handling uses the local system timezone and calendar. | No timezone selection UI. |
+| FR-52 | Date display may follow the Windows regional format where practical. | Internal calculations remain stable and local-date-based. |
+
+### Required Statistics Table
+
+| Statistic | Required? | Definition |
+|---|---|---|
+| Today XP | Yes | XP from sessions attributed to today. |
+| Week XP | Yes | XP from sessions attributed to the current Monday-Sunday week. |
+| Month XP | Yes | XP from sessions attributed to the current calendar month. |
+| Lifetime XP | Yes | XP from all sessions in the save file. |
+| Today Time | Yes | Total study time attributed to today. |
+| Week Time | Yes | Total study time attributed to current week. |
+| Month Time | Yes | Total study time attributed to current month. |
+| Lifetime Time | Yes | Total study time across all saved sessions. |
+| Current Streak | Yes | Consecutive qualifying days, ending today or yesterday. |
+| Longest Streak | Yes | Longest recorded streak. |
+| Total Sessions | Yes | Number of saved sessions. |
+| Active Days | Yes | Number of days with at least one session. |
+| Average Daily Study Time | Yes | Total time divided by active days. |
+| Bronze Count | Yes | Days where Bronze was the highest medal. |
+| Silver Count | Yes | Days where Silver was the highest medal. |
+| Gold Count | Yes | Days where Gold was the highest medal. |
+| Total Notes **[NEW]** | Yes | Number of saved notes. |
+
+## 6.5 Save, Load, Backup, and Versioning
+
+FR-53 … FR-75 are confirmed requirements, implemented by `app/persistence` + `AppState`, with these concrete behaviours:
+
+| ID | Requirement (as built) |
+|---|---|
+| FR-53/FR-54 | User data is saved locally as UTF-8 JSON (`indent=2`, `ensure_ascii=False`) in `platformdirs.user_data_dir("StudyTrackerDesktop")`; file names `study_tracker_save.json` / `study_tracker_save.backup.json`; quarantine suffix `.corrupt` (numbered `.corrupt.N` on collision). |
+| FR-55/FR-56 | First run creates the directory and an empty-default save silently; startup loads automatically (`AppState.load_startup` invoked by `MainWindow.run_startup_load`). No user action required for normal use. |
+| FR-57 | Autosave fires inside every mutating operation (session add/delete, note create/update/delete, theme change, manual load commit) via `_mark_dirty_and_save()`. |
+| FR-58 | The `WM_DELETE_WINDOW` handler flushes when `dirty` is set; a failed final save shows a friendly error before quitting. |
+| FR-59/FR-60 | Settings provides "Save now" (immediate write + confirmation message) and "Load from file" (JSON file chooser). Cancelling the chooser changes nothing. |
+| FR-61 | Manual load validates the selected file before replacing current data (step 1 of the three-step flow: parse+validate **without touching current data**; failure → friendly message, data unchanged). Invalid files must not corrupt current state. |
+| FR-62 | Manual load asks for confirmation before replacing current data (step 2: explicit "Replace current data?" confirmation noting a backup will be made; cancel → unchanged). Confirmed behavior (A-9). |
+| FR-63 | If manual load is canceled or fails, current data remains unchanged (step 3 executes only after confirmation: backup current default save, then atomically replace with loaded dataset; success/failure reported with friendly messages). |
+| FR-64 | The application maintains one last-known-good backup (`study_tracker_save.backup.json`) beside the default save file. |
+| FR-65 | A backup is created before overwriting the default save file during risky operations (manual load; schema migration would also qualify). Backup failures never block normal saving (atomic write alone protects the main file). |
+| FR-66 | If the default save file is missing, the application starts with empty default data (normal first-run behavior — silent). |
+| FR-67 | If the default save file is corrupt, the application attempts to load the most recent backup; on success it recovers with a friendly notice and quarantines the bad default. |
+| FR-68 | If neither default save nor backup is usable, the application starts with empty default data, quarantines both files, and notifies the user. The corrupt file is not silently deleted. |
+| FR-69 | Corrupt or unloadable save files are preserved/quarantined (`.corrupt[.N]` rename) for diagnosis rather than overwritten immediately. |
+| FR-70 | The save file includes a `schema_version` field, currently written as 1. |
+| FR-71 | Missing schema-version fields are handled gracefully: a missing version is treated as version 1 if the file is otherwise valid. |
+| FR-72 | A save file using a future schema version the app cannot understand is never overwritten: version > supported raises `FutureSchemaError`, the app starts with empty data, and a friendly "newer version" notice is shown. |
+| FR-73/FR-74 | Settings (`theme`, `xp_per_10_minutes`) persisted; `Settings.sanitized()` coerces invalid values back to defaults (dark / 10). |
+| FR-75 | Atomic save: write temp file → flush + `fsync` → `os.replace`; temp cleanup on failure; in-memory state untouched on disk errors (ERR-13). |
+
+## 6.6 Assets and Packaging
+
+FR-76 … FR-85 are confirmed requirements, implemented and refined as follows:
+
+| ID | Requirement (as built) |
+|---|---|
+| FR-76/FR-77 | Ten PNG assets ship in `assets/`: `app_icon`, `home_icon`, `calendar_icon`, `stats_icon`, `settings_icon`, **`notes_icon` [NEW]**, `bronze_medal`, `silver_medal`, `gold_medal`, `empty_state`. Artwork may be any size/mode (placeholders acceptable for v1). |
+| FR-78 | `paths.get_resource_dir()` resolves project root from source and `sys._MEIPASS` when frozen, with a fallback to the exe-adjacent `assets/` folder for PyInstaller 6.x `_internal` layouts. Asset loading works both from source and from the frozen executable. |
+| FR-79/FR-80 | `utils/resources.load_photo` caches images and returns `None` on any failure; every consumer falls back to text (medal names, nav labels always retained). Missing app/window icons are best-effort and never crash. Medal display in calendar and day details uses the corresponding medal PNG with text fallback such as "Gold". |
+| FR-81 | The application is packageable into a standalone Windows executable via PyInstaller. |
+| FR-82 | The packaged executable runs without requiring a Python installation on the user's machine. |
+| FR-83 | The packaged application does not open a console window (windowed GUI-mode build). |
+| FR-84 | Packaging includes all required assets — `study_tracker.spec` bundles the `assets/` folder directly into the distribution. |
+| FR-85 | A PyInstaller **one-folder** build is the shipped configuration: `dist\StudyTracker\StudyTracker.exe` with bundled assets; the spec derives a multi-size `.ico` from `app_icon.png` at build time (best-effort) and declares hidden imports (`customtkinter`, `platformdirs`, `PIL.ImageTk`, `PIL._imagingtk`, `PIL._tkinter_finder`, `PIL.ImageDraw`, `PIL.ImageFont`). No console window; no Python installation needed on the target machine. |
+
+## 6.7 Notes **[NEW]**
+
+| ID | Requirement | Implementation reference |
+|---|---|---|
+| NOTE-1 | The application shall provide a Notes screen as a fifth navigation destination for titled free-text notes. | `notes_screen.py`, `NAV_ITEMS` |
+| NOTE-2 | Users shall be able to create, view, edit, and delete notes. Unlike sessions, notes are editable. | `NoteEditorDialog`, `AppState.create_note/update_note/delete_note` |
+| NOTE-3 | Every note shall have a title (max 120 chars), a body (max 100,000 chars), and created/updated local timestamps. Over-length values are truncated defensively, never rejected with a crash. | `MAX_NOTE_TITLE_LENGTH`, `MAX_NOTE_BODY_LENGTH`, `Note.sanitize_text` |
+| NOTE-4 | A note must contain a title or body text; submitting both empty shows a friendly rejection message. | `AppState.create_note/update_note` |
+| NOTE-5 | A note may optionally be attached to a calendar day; undated notes are allowed. | `Note.day: date \| None` |
+| NOTE-6 | Dated notes shall additionally appear in the Day Details dialog for that day, where they can be viewed, added ("+ Add note"), and edited. | `DayDetailsDialog` notes section |
+| NOTE-7 | Calendar day tiles shall show a note marker (📝, with a count when >1) on days that have attached notes, alongside any medal icon, without disturbing tile alignment. | `get_note_counts_by_day`, `NOTE_MARKER` |
+| NOTE-8 | The Notes screen shall use a list pane (newest-updated first) plus a detail pane in a fixed 2:3 horizontal split that stays constant regardless of selection or window content; the split recomputes proportionally on resize. | `_apply_split`, `_on_body_configure` |
+| NOTE-9 | Search shall filter notes case-insensitively by title or body substring; keystroke-driven re-rendering is debounced (~150 ms idle) for responsiveness. | `_on_search_key`, `_filtered_notes` |
+| NOTE-10 | The detail pane shall show the selected note's title (wrapped/clipped safely), read-only body text, Edit/Delete/Open-day actions, and the updated timestamp at bottom-right so long titles never overlap metadata. | `_render_detail` |
+| NOTE-11 | Deleting a note shall require confirmation ("This cannot be undone."). | `_delete_selected` + `ask_yes_no` |
+| NOTE-12 | Blank-title notes shall display as "Untitled note". | `Note.display_title()` |
+| NOTE-13 | Notes shall persist in the same JSON save file (`notes` array) and participate in autosave, atomic write, backup, quarantine recovery, and manual load exactly like sessions. Invalid/duplicate-id note records are skipped with a friendly partial-load warning; a structurally broken `notes` list marks the file corrupt. | `repository.dataset_to_payload`, `validation._parse_note` |
+| NOTE-14 | Every note create/edit/delete shall autosave immediately and refresh all screens (Notes list, Calendar markers, Day Details, Stats total-notes) through the shared listener mechanism. | `AppState` mutations + `_notify` |
+| NOTE-15 | The Stats screen shall report the total number of notes. | `StatsResult.total_notes` |
+| NOTE-16 | Saving a note from the Day Details dialog shall keep the dialog and all other screens in sync without reopening. | listener-driven refresh |
+
+## 6.8 Study Stopwatch **[NEW]**
+
+| ID | Requirement | Implementation reference |
+|---|---|---|
+| SW-1 | A compact digital stopwatch shall live in the sidebar underneath the navigation area and above the version label. | `main_window.py` (packed `side="bottom"`) |
+| SW-2 | The display shall show elapsed time as `H:MM:SS` (e.g. `2:35:12`) and default to `0:00:00` when the app opens. | `format_stopwatch` |
+| SW-3 | Start / Stop / Reset controls shall drive the timer; Start disables while running, Stop disables when idle. | `_sync_buttons` |
+| SW-4 | Timing shall use a monotonic clock accumulated over start/stop segments so paused time is preserved and delayed UI callbacks do not skew elapsed time. | `time.monotonic`, `_accumulated_s` |
+| SW-5 | On Stop, a run of at least 10 minutes (with 0.25 s slack) shall be logged automatically as a **custom** study session, rounded **down** to the nearest whole 10 minutes (e.g. 2:35:12 → 2 h 30 m), attributed to the current day like any other session, and the display resets to zero. | `AUTO_LOG_THRESHOLD_S`, `ROUND_TO_MINUTES`, `log_custom_session` |
+| SW-6 | Stopping a run shorter than 10 minutes shall keep the reading so the user can resume; Reset shall work while running or stopped and always return the display to zero without logging anything. | `_on_stop`, `_on_reset` |
+| SW-7 | After an auto-log, the user shall receive a friendly confirmation message stating the rounded duration added; a validation failure shall instead surface the engine's friendly message. | `show_message` on result |
+| SW-8 | The logged duration shall pass through the standard custom-session validation and XP pipeline (rounded-down value ≥ 10 min always earns XP). | FR-2..FR-11 reuse |
+| SW-9 | The widget shall be themed with distinct colours in both light and dark modes and shall cancel its tick loop on destroy (no dangling callbacks). | theme tokens; `destroy()` |
+
+---
+
+## 7. Accessibility and Usability
+
+| ID | Requirement | Status |
+|---|---|---|
+| ACC-1 | The application shall provide a dark mode and light mode toggle. | Implemented (Settings card; active button highlighted with ✓). This remains the only accessibility requirement for v1. |
+| ACC-2 | The selected theme shall be persisted across app restarts. | Implemented via settings in the save file; applied during startup load. |
+| ACC-3 | No additional accessibility features are required for v1. | Still true. **[NEW]** Additional usability refinements shipped: live recolouring of calendar cells on theme switch, debounced search, responsive preset-button layout, symmetric padding across screens, and uniform calendar-tile geometry. Font scaling, keyboard navigation, and screen-reader support remain future considerations. |
+
+---
+
+## 8. Non-Functional Requirements (incl. Performance Budgets)
+
+| ID | Requirement | Status / Notes |
+|---|---|---|
+| NFR-1 | Target platform: Windows executable is the distribution target. **[UPDATED]** | Source runs on Windows/macOS/Linux; `platformdirs` resolves per-OS data locations. Distribution artifact remains a Windows `.exe`. |
+| NFR-2 | The application shall run offline. | Unchanged; no network code exists. |
+| NFR-3 | The application shall not send telemetry, analytics, crash reports, or any data externally. | Unchanged; fully local and private. |
+| NFR-4 | The application shall be single-user. | Unchanged; no profiles or accounts. |
+| NFR-5 | The application shall have no external server dependencies. | Unchanged; no APIs, cloud storage, databases, or remote auth. |
+| NFR-6 | Startup time shall be reasonable (<3 s on a typical modern PC). | **[UPDATED]** Enforced by automated budget: startup load + index build ≤ 3.0 s at 10k sessions; measured ≈35 ms. Lazy screen creation (A-20) removes ~50 tiles/list construction from startup. |
+| NFR-7 | The application shall remain responsive during normal operations. | **[UPDATED]** Quantified budgets (perf gate): home refresh ≤ 50 ms; calendar month slice ≤ 250 ms; stats refresh ≤ 1 s (measured ≈3 ms via maintained index); session delete + autosave ≤ 1.5 s (measured ≈60 ms). |
+| NFR-8 | The application shall not crash on invalid user input. | Implemented through sanitising parsers, `ActionResult` messaging, defensive listeners (`_notify` swallows listener exceptions), and guarded screen refreshes. Friendly validation and error dialogs required. |
+| NFR-9 | The application shall handle a realistic personal study history (≥10,000 sessions). | **[UPDATED]** Explicitly validated: `scripts/perf_check.py` generates ~10,000 sessions over ~3 years and asserts all budgets; wired into the release build as a hard gate. |
+| NFR-10 **[NEW]** | Deterministic, injectable clocks in core logic for testing. | `Session.create(now=…)`, `Note.create(now=…)`, `compute_stats(today=…)` accept injected times. |
+| NFR-11 **[NEW]** | Testability without GUI. | Core engines, persistence, and AppState run headless; 73 unit tests cover them; GUI verified separately by an xvfb smoke script. |
+
+---
+
+## 9. Error Handling and Edge Cases
+
+Errors shall be handled in the style of a normal mobile app: friendly, non-technical, and recovery-oriented. ERR-1 … ERR-17 from the initial document are confirmed requirements, implemented as specified (friendly validation strings from `Session.validate_*`, confirmation dialogs, silent first-run creation, backup recovery with notice, quarantine preservation, partial-record skipping with the "some sessions could not be loaded" warning, future-schema refusal to overwrite, asset text fallbacks, disk-write errors keeping memory intact, clock/DST stability, friendly empty states, and exception-swallowing refresh guards):
+
+| ID | Scenario | Required Behavior |
+|---|---|---|
+| ERR-1 | User enters a custom duration with non-numeric input. | Show a friendly validation message; do not log a session. |
+| ERR-2 | User enters zero, negative, or otherwise invalid duration. | Show a friendly validation message; do not log a session. |
+| ERR-3 | User enters a duration below 5 minutes or above 12 hours. | Show a friendly limit message; do not log a session. |
+| ERR-4 | User enters minutes outside 0-59. | Show a friendly validation message. |
+| ERR-5 | User attempts to delete a session. | Ask for confirmation before deletion. |
+| ERR-6 | User attempts to load a file that would replace current data. | Ask for confirmation before proceeding. |
+| ERR-7 | Save file is missing on first run. | Create a new empty data file with default settings; no error dialog is required. |
+| ERR-8 | Save file is corrupt. | Attempt backup recovery. If backup fails, start with empty data and show a friendly warning. |
+| ERR-9 | Backup file is corrupt. | Start with empty default data and show a friendly warning. Preserve corrupt files where practical. |
+| ERR-10 | Save file contains a few invalid session records but is otherwise usable. | Skip or ignore invalid session records if possible, then notify the user that some data could not be loaded. |
+| ERR-11 | Save file uses an unknown future schema version. | Do not overwrite the file. Show a friendly message that the file is from a newer version. |
+| ERR-12 | Asset file is missing. | Use a text fallback or generic placeholder; do not crash. |
+| ERR-13 | Disk write fails due to permissions or disk full. | Show a friendly error and keep the app usable in memory. Do not lose current in-memory data. |
+| ERR-14 | System clock changes after sessions are logged. | Existing sessions remain attributed to their originally recorded start day. No retroactive rewriting. |
+| ERR-15 | DST or timezone changes occur. | The application uses recorded local start dates and does not attempt to recompute historical sessions. |
+| ERR-16 | User opens day details for a day with no sessions. | Show a friendly empty state. |
+| ERR-17 | Unexpected internal error occurs. | Show a friendly error dialog, avoid crashing if possible, and preserve current data. |
+
+Additional behaviours introduced with the new features **[NEW]**:
+
+| ID | Scenario | Required Behavior |
+|---|---|---|
+| ERR-18 | Stopwatch auto-log fails validation unexpectedly. | Show the engine's friendly message; do not lose the elapsed display semantics defined in SW-5/SW-6. |
+| ERR-19 | Note submitted with empty title and empty body. | Friendly rejection ("Give your note a title or some text before saving."); nothing stored. |
+| ERR-20 | Note/day references point to a note id that no longer exists (stale UI). | Friendly "could not be found" message; no crash. |
+| ERR-21 | Save payload contains duplicate session/note ids or malformed individual records. | Skip duplicates/invalid records, warn once with the partial-load message, load everything else. |
+| ERR-22 | Note text fields arrive non-string or oversized in a hand-edited save file. | Coerce to string and clamp to limits (`sanitize_text`); never crash. |
+| ERR-23 | Any screen's `refresh()` throws. | Exception is contained per-screen; other screens continue refreshing; app stays alive. |
+| ERR-24 | Running without CustomTkinter installed from source. | `main.py` exits with a clear install-instruction message instead of a traceback. |
+
+---
+
+## 10. Save File Data Schema (As Implemented)
+
+The save file is JSON-based. Derived values such as daily totals, medals, streaks, and statistics are computed from sessions at runtime rather than stored as authoritative records. Schema version remains **1**; DATA-1 … DATA-6 hold. The implemented top-level structure adds the `notes` array **[NEW]**:
+
+```json
+{
+  "schema_version": 1,
+  "created_at": "YYYY-MM-DDTHH:MM:SS",
+  "updated_at": "YYYY-MM-DDTHH:MM:SS",
+  "settings": { "theme": "dark", "xp_per_10_minutes": 10 },
+  "sessions": [
+    {
+      "id": "<uuid>",
+      "start_local": "<ISO local datetime>",
+      "end_local": "<ISO local datetime>",
+      "duration_minutes": 60,
+      "created_at_local": "<ISO local datetime>",
+      "source": "preset | custom"
+    }
+  ],
+  "notes": [
+    {
+      "id": "<uuid>",
+      "title": "…",
+      "body": "…",
+      "day": "YYYY-MM-DD | null",
+      "created_at_local": "<ISO local datetime>",
+      "updated_at_local": "<ISO local datetime>"
+    }
+  ]
+}
+```
+
+### 10.1 General Schema Rules
+
+| ID | Requirement | Notes |
+|---|---|---|
+| DATA-1 | The save file contains a top-level schema version field. | Initial and current version is 1. |
+| DATA-2 | The save file contains application settings, session records, and note records. | Derived data is not stored. |
+| DATA-3 | The application tolerates missing optional fields by using safe defaults. | Supports forward compatibility and user editing. |
+| DATA-4 | Date and time values are stored as local date-time values in ISO-style format. | Serialised via `format_dt`; naive local strings, stable and parseable. |
+| DATA-5 | Derived daily medal state is not the primary source of truth. | Medals are calculated from sessions. |
+| DATA-6 | Session and note identifiers are unique. | UUID strings; duplicate ids are skipped on load (ERR-21). |
+
+### 10.2 Top-Level Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| schema_version | Integer | Yes | Save file schema version. Value is 1. |
+| created_at | Date-time | Optional | Timestamp when the save file was created. |
+| updated_at | Date-time | Optional | Timestamp refreshed on every successful save. |
+| settings | Object | Yes | User settings and configuration. |
+| sessions | Array | Yes | List of session records. Empty on first run. |
+| notes | Array | Optional **[NEW]** | List of note records. Missing key loads as an empty list; a non-list value marks the file corrupt. |
+
+### 10.3 Settings Fields
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| theme | String | Yes | dark | Either "dark" or "light"; invalid/missing → "dark". |
+| xp_per_10_minutes | Integer | Yes | 10 | XP awarded per completed 10-minute study block; invalid/negative → 10. |
+
+### 10.4 Session Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| id | String | Yes | Unique session identifier (non-empty). |
+| start_local | Date-time | Yes | Local start date and time of the session; must parse. |
+| end_local | Date-time | Optional | Local end date and time; derived as start + duration when absent. |
+| duration_minutes | Integer | Yes | Total session duration in minutes; must be in (0, 1440] or the record is skipped. |
+| created_at_local | Date-time | Optional | Timestamp when the session was logged; defaults to end. |
+| source | String | Optional | "preset" or "custom"; unknown values default to "preset". Not required for core logic. |
+
+### 10.5 Note Fields **[NEW]**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| id | String | Yes | Unique note identifier. |
+| title | String | Optional | Note title, clamped to 120 characters on load. |
+| body | String | Optional | Free-text body, clamped to 100,000 characters on load. |
+| day | Date | Optional | Attached calendar day as plain ISO date (datetime strings accepted and reduced to their date part); `null` = undated; unparsable values yield an undated note rather than a rejected record. |
+| created_at_local | Date-time | Optional | Fallback chain: missing created ← updated ← now. |
+| updated_at_local | Date-time | Optional | Fallback: missing updated ← created. |
+
+### 10.6 Derived Data Policy
+
+| Derived Data | Stored Persistently? | Calculation Source |
+|---|---|---|
+| Daily total study time | No | Sessions attributed to the day |
+| Daily XP | No | Sessions attributed to the day |
+| Daily medal | No | Daily total study time |
+| Calendar medal icons | No | Daily medal calculation |
+| Calendar note markers | No | Notes grouped by day |
+| Today / week / month / lifetime stats | No | Session history |
+| Current streak | No | Qualifying day history |
+| Longest streak | No | Qualifying day history |
+| Medal counts | No | Daily medal history |
+| Total notes | No | Notes array |
+
+Files whose overall structure is unusable raise typed errors mapped to friendly messages; a future `schema_version` raises `FutureSchemaError` and is never overwritten.
+
+---
+
+## 11. Project Structure and Module Breakdown
+
+ARCH-1 … ARCH-4 are confirmed requirements and hold:
+
+| ID | Requirement | Status |
+|---|---|---|
+| ARCH-1 | The codebase separates GUI, core logic, persistence, and utility modules; GUI contains no XP or medal rules directly. | Implemented (`app/gui` vs `app/core` vs `app/persistence` vs `app/utils`). |
+| ARCH-2 | Core logic is usable without GUI dependencies. | Implemented — pure engines support unit testing of XP, medals, streaks, and date attribution (NFR-11). |
+| ARCH-3 | Persistence is isolated from GUI and core logic; neither reads/writes JSON directly. | Implemented — all file I/O confined to `app/persistence`. |
+| ARCH-4 | Asset path handling is centralised in a utility module. | Implemented — `app/utils/paths.py` + `app/utils/resources.py`, consistent in source and frozen executable. |
+
+Actual layout (as implemented):
+
+```
+main.py                      entry point (dependency fail-fast, MainWindow bootstrap)
+study_tracker.spec           PyInstaller one-folder windowed config (exe .ico derived at build)
+run_build.ps1                Windows release pipeline: venv → deps → pytest gate → perf gate → build → sanity checks
+requirements.txt             pinned dependency floors incl. pytest
+app/constants.py             gameplay rules, limits, presets, window metrics, file names, APP_VERSION
+app/core/models.py           Session, Note (+limits/sanitizers), Settings, Dataset — pure data + validation hooks
+app/core/xp.py               XP engine (completed-block floor × rate)
+app/core/medals.py           medal thresholds/labels/assets, DayAggregate, build_day_aggregates
+app/core/streaks.py          qualifying days, current/longest streak (precomputed-set fast path)
+app/core/stats.py            compute_stats over the daily index; StatsResult incl. total_notes
+app/core/date_rules.py       start-day attribution, grouping, per-day sorted sessions
+app/persistence/repository.py      atomic save, startup recovery sequence, manual-load validate/commit
+app/persistence/schema.py            error types + FRIENDLY_MESSAGES catalogue
+app/persistence/validation.py        payload → Dataset coercion, skipping, warnings
+app/persistence/backup.py            last-known-good backup, existence check, quarantine rename
+app/state/app_state.py       AppState: mutations, autosave, listener broadcast, incremental daily/note indexes
+app/state/actions.py         thin GUI-facing action wrappers returning ActionResult
+app/gui/main_window.py       sidebar nav, lazy screen cache, theme application, startup load UX, close flush
+app/gui/theme.py             centralised (light, dark) colour tokens and card/button helpers
+app/gui/screens/             base_screen + home, calendar, notes, stats, settings
+app/gui/dialogs/             custom_session, day_details, note_editor, confirm (ask_yes_no), message
+app/gui/widgets/             medal_badge, summary_card, session_row, stopwatch
+app/utils/paths.py           app-data/save/backup/temp/quarantine paths, frozen-aware resource dir, test override hook
+app/utils/date_utils.py      parse/format datetimes, week/month bounds, add_months, format_minutes
+app/utils/resources.py       cached asset loader with None-on-failure contract; build-time PNG→ICO export
+assets/                      ten PNG icons/medals/empty-state artwork
+tests/                       73 unit tests (xp, medals, streaks, stats, persistence, resources, stopwatch) + conftest + smoke_gui.py
+scripts/perf_check.py        performance-budget validator @ ~10k sessions
+```
+
+Key architectural additions beyond the initial proposal **[NEW]**:
+
+- **AppState as single source of truth** with incremental indexes: `_day_index` (DayAggregate per day), `_sessions_by_day`, `_session_by_id`, `_note_by_id`, `_note_counts_by_day`; rebuilt wholesale only on load/manual-load, updated O(day-size) on mutations; deletion recomputes day XP from remaining sessions because partial-block rounding makes XP non-additive (A-18).
+- **Listener pattern**: every mutation notifies registered callbacks; `MainWindow.refresh_all` refreshes only screens already constructed, each under an exception guard (ERR-23).
+- **Lazy screen construction** for startup performance (A-20).
+- **Test-only path override** (`paths.set_override_data_dir`) enabling hermetic persistence tests and the GUI smoke run.
+
+Module responsibilities (from the initial plan, still accurate): session logic (represent/validate/time stamp), XP engine, medal engine, stats engine, storage service (read/write JSON, backups, corruption recovery, schema protection), resource helper (dev vs packaged asset paths), screens (Home, Calendar, Notes, Stats, Settings), dialogs (custom session entry, day details, note editor, confirmations, messages), and the stopwatch widget.
+
+---
+
+## 12. Libraries and Tooling
+
+| Library / tool | Role (as used) |
+|---|---|
+| CustomTkinter ≥5.2 | Required GUI toolkit — entire interface (window, screens, dialogs, widgets, appearance modes). |
+| Pillow ≥10 | PNG loading/scaling for icons and medals; ImageTk bridge; build-time .ico generation. |
+| platformdirs ≥3.10 | Per-user app-data directory resolution across Windows/macOS/Linux. |
+| python-dateutil ≥2.9 | Lenient datetime parsing helpers. |
+| PyInstaller ≥6.0 | One-folder, windowed Windows executable via `study_tracker.spec`. |
+| pytest ≥8.0 | Unit-test runner for the core/persistence/widget-logic suites. |
+| Tkinter (stdlib) | Underlying toolkit; `filedialog` for manual load. |
+
+Python requirement: **3.10+** with Tk/Tcl (bundled with python.org Windows installers).
+
+---
+
+## 13. Testing, Build Gates, and Validation **[NEW]**
+
+| ID | Requirement | Status |
+|---|---|---|
+| QA-1 | Core gamification logic (XP, medals, streaks, stats) shall have GUI-free unit tests. | 54 tests across `test_xp`, `test_medals`, `test_streaks`, `test_stats`. |
+| QA-2 | Persistence behaviour (atomic save, recovery, quarantine, schema handling, note round-trips) shall be tested against temp directories. | 11 tests in `test_persistence` using the path override hook. |
+| QA-3 | Asset/resource fallback behaviour shall be tested. | 8 tests in `test_resources`. |
+| QA-4 | Stopwatch formatting/auto-log logic shall be tested headlessly. | 12 tests in `test_stopwatch`. |
+| QA-5 | An end-to-end GUI smoke test shall exercise navigation, logging, dialogs, calendar navigation, theme switching, and disk round-trip. | `tests/smoke_gui.py` (run under xvfb on Linux CI). |
+| QA-6 | A performance validator shall assert the NFR-7/NFR-9 budgets against ~10,000 sessions. | `scripts/perf_check.py`; exit code gates builds. Latest recorded run: PASS (startup ≈35 ms, stats ≈3 ms, delete+save ≈60 ms). |
+| QA-7 | Release builds shall be reproducible and gated. | `run_build.ps1`: creates venv → installs pinned deps → runs full pytest suite (abort on red) → runs perf gate (abort on breach) → PyInstaller build → output-layout sanity checks (`dist\StudyTracker\StudyTracker.exe` + bundled assets). |
+
+---
+
+## 14. Future / Optional Enhancements — Out of Scope
+
+Status of the initial v1 out-of-scope list relative to the consolidated requirements:
+
+| ID | Enhancement | Status |
+|---|---|---|
+| FUT-1 | Editing existing sessions. | Still out of scope (sessions: delete only). Note editing exists but does not change this. |
+| FUT-2 | Study categories or subjects. | Still out of scope; Notes provide free-form context, not per-subject statistics. |
+| FUT-3 | Real-time study timer. | **Delivered** as the sidebar Study Stopwatch (§6.8) — removed from the out-of-scope list. |
+| FUT-4 | Reminders or notifications. | Still out of scope. |
+| FUT-5 | Weekly goals. | Still out of scope (Home shows a next-medal progress bar, not user-defined goals). |
+| FUT-6 | Achievements beyond daily medals. | Still out of scope. |
+| FUT-7 | CSV export/import. | Still out of scope. |
+| FUT-8 | Cloud backup or sync. | Still out of scope (explicitly offline). |
+| FUT-9 | Multiple user profiles. | Still out of scope. |
+| FUT-10 | Custom medal thresholds. | Still out of scope (fixed constants). |
+| FUT-11 | Custom XP rates in the UI. | Still out of scope (rate persisted, no editor). |
+| FUT-12 | Sound effects or animations. | Still out of scope. |
+| FUT-13 | Minimize to tray. | Still out of scope. |
+| FUT-14 | Portable mode alongside the executable. | Still out of scope (AppData/user-dir default). |
+
+Candidate future ideas introduced by the new features (not requirements): note tagging/search ranking, stopwatch pause-vs-reset distinction surfacing, exporting notes, attaching notes to sessions, and a UI for editing the XP rate.

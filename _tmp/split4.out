@@ -1,0 +1,19 @@
+INITIAL: list x=0 w=402 | detail x=443 w=533 | btn-gaps=[8]
+CAL-long: list x=0 w=403 | detail x=444 w=532 | btn-gaps=[8, 8]
+PLAIN: list x=0 w=402 | detail x=443 w=533 | btn-gaps=[8]
+EMPTY-cal: list x=0 w=402 | detail x=443 w=533 | btn-gaps=[8, 8]
+NONE: list x=0 w=402 | detail x=443 w=533 | btn-gaps=[8]
+Traceback (most recent call last):
+  File "/workspace/_tmp/verify_split4.py", line 52, in <module>
+    screen._select(cal.id); settle(); snap("CAL again")
+    ^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/app/gui/screens/notes_screen.py", line 254, in _select
+    self._render_detail()
+  File "/workspace/app/gui/screens/notes_screen.py", line 448, in _render_detail
+    self.open_day_button.pack(side="left", padx=pad,
+  File "/usr/local/lib/python3.12/site-packages/customtkinter/windows/widgets/core_widget_classes/ctk_base_class.py", line 298, in pack
+    return super().pack(**self._apply_argument_scaling(kwargs))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/tkinter/__init__.py", line 2483, in pack_configure
+    self.tk.call(
+_tkinter.TclError: window ".!notesscreen.!ctkframe.!ctkframe2.!ctkframe2.!ctkframe.!ctklabel" isn't packed

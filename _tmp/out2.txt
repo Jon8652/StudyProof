@@ -1,0 +1,22 @@
+CAL | actions reqw: 471 | pack order: ['Edit note', 'Delete', 'Open day', 'Updated 2']
+    'Edit note' side= left padx= 4 reqw= 110 x= 4
+    'Delete' side= left padx= 4 reqw= 90 x= 122
+    'Open day' side= left padx= 4 reqw= 100 x= 220
+    'Updated 2026' side= right padx= 0 reqw= 147 x= 431
+    detail actual w: 626 list actual w: 289
+PLAIN | actions reqw: 363 | pack order: ['Edit note', 'Delete', 'Updated 2']
+    'Edit note' side= left padx= 4 reqw= 110 x= 4
+    'Delete' side= left padx= 4 reqw= 90 x= 122
+    'Updated 2026' side= right padx= 0 reqw= 147 x= 382
+    detail actual w: 577 list actual w: 338
+CAL again | actions reqw: 471 | pack order: ['Edit note', 'Delete', 'Open day', 'Updated 2']
+    'Edit note' side= left padx= 4 reqw= 110 x= 4
+    'Delete' side= left padx= 4 reqw= 90 x= 122
+    'Open day' side= left padx= 4 reqw= 100 x= 220
+    'Updated 2026' side= right padx= 0 reqw= 147 x= 431
+    detail actual w: 626 list actual w: 289
+PLAIN again | actions reqw: 363 | pack order: ['Edit note', 'Delete', 'Updated 2']
+    'Edit note' side= left padx= 4 reqw= 110 x= 4
+    'Delete' side= left padx= 4 reqw= 90 x= 122
+    'Updated 2026' side= right padx= 0 reqw= 147 x= 382
+    detail actual w: 577 list actual w: 338

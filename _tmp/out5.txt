@@ -1,0 +1,4 @@
+widths: [995, 995, 995]
+xs: [252, 252, 252]
+ys: [296, 358, 420] custom y: 484
+right edges: [1247, 1247, 1247] custom right: 1248

@@ -1,0 +1,8 @@
+size 1280x800: widths=[326, 322, 327] eq=False p3right=1247 customright=1248 aligned=True
+Traceback (most recent call last):
+  File "/workspace/_tmp/verify3.py", line 37, in <module>
+    check(1280, 800)
+  File "/workspace/_tmp/verify3.py", line 35, in check
+    assert ok_eq and ok_right
+           ^^^^^^^^^^^^^^^^^^
+AssertionError
