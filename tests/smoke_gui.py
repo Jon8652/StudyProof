@@ -116,13 +116,145 @@ def main() -> int:
     check("theme-toggle-persisted", state.settings.theme == new_theme)
 
     # 8. Close-flush (FR-58): data round-trips to the save file.
-    app._on_close()
-    ds, _warnings = repository.validate_file_for_manual_load(paths.get_default_save_path())
+    #    (Flush through the state layer; app._on_close() destroys the Tk root,
+    #    so it is exercised at the very end of this script instead.)
+    state.autosave()
+    outcome = repository.validate_file_for_manual_load(paths.get_default_save_path())
+    ds, _warnings = outcome.dataset, outcome.warnings
     check("close-flush-roundtrip", len(ds.sessions) == 4,
           f"(persisted={len(ds.sessions)})")
     check("assets-load-no-crash", all(
         paths.get_asset_path(f).exists() for f in
         ("app_icon.png", "bronze_medal.png", "silver_medal.png", "gold_medal.png")))
+
+    # ---- Phase 1-3 (v2): PDF library, page viewer, selection, coach ----
+    import pymupdf  # noqa: E402
+
+    pdf_path = _data_dir / "sample.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Photosynthesis converts light into glucose.")
+    doc.save(str(pdf_path))
+    doc.close()
+
+    # 9. Import a real PDF; extraction runs in the background worker.
+    res = state.import_document(pdf_path)
+    check("import-document", res.ok and res.value is not None,
+          f"(msg={res.message!r})")
+    imported_doc = res.value
+
+    # Library screen navigates (this is where the visible=False crash was).
+    try:
+        app.show_screen("library")
+        app.update_idletasks()
+        app.update()
+        check("navigate:library", True)
+    except Exception as exc:  # noqa: BLE001
+        check("navigate:library", False, repr(exc))
+
+    lib = app._get_screen("library")
+    lib._start_extraction(imported_doc.id)
+    deadline = __import__("time").time() + 15
+    while __import__("time").time() < deadline:
+        app.update()
+        d = state.document_by_id(imported_doc.id)
+        if d and d.status in ("ready", "textless"):
+            break
+        __import__("time").sleep(0.02)
+    d = state.document_by_id(imported_doc.id)
+    check("extraction-completes", d is not None and d.status == "ready",
+          f"(status={d.status if d else None}, pages={d.page_count if d else 0})")
+    check("extracted-text-stored", bool(d and any(
+        p.get("page") == 1 and p.get("text", "").strip()
+        for p in d.text_pages)),
+          f"(pages={[(p['page'], len(p['text'])) for p in d.text_pages] if d else []})")
+
+    # 11. Duplicate import refused with existing id (PDF-3).
+    dup = state.import_document(pdf_path)
+    check("duplicate-refused", (not dup.ok) and dup.value == imported_doc.id,
+          f"(msg={dup.message!r})")
+
+    # 12. Oversized refusal before any copy (ERR-30/PDF-2).
+    from app.constants import MAX_PDF_BYTES
+    big = state.import_document(pdf_path, file_size=MAX_PDF_BYTES + 1)
+    check("oversize-refused", not big.ok, f"(msg={big.message!r})")
+
+    # 13. Page viewer shows the page image without crashing.
+    lib.select_document(imported_doc.id)
+    for _ in range(100):
+        app.update()
+        __import__("time").sleep(0.02)
+    check("page-viewer-renders", True)
+
+    # 14. Selection dialog lists sources; confirm returns selection.
+    note_res = state.create_note("Biology recap",
+                                 "The Calvin cycle fixes carbon in the stroma.")
+    check("create-note", note_res.ok)
+    entries = state.selectable_sources()
+    kinds_ids = {(e["kind"], e["id"]) for e in entries}
+    check("selectable-sources",
+          ("document", imported_doc.id) in kinds_ids
+          and ("note", note_res.value.id) in kinds_ids,
+          f"(n={len(entries)})")
+    from app.gui.dialogs.source_select import SourceSelectDialog
+    sel_dlg = SourceSelectDialog(app, state)
+    app.update_idletasks(); app.update()
+    for e in sel_dlg._entries():
+        if not e["available"]:
+            continue
+        key = (e["kind"], e["id"])
+        var = sel_dlg._variables[key]
+        if not var.get():          # simulate a user click (var already False)
+            var.set(True)
+            sel_dlg._toggled(key, var)
+    check("source-select-dialog", len(sel_dlg._ordered_ids) >= 2,
+          f"(ordered={sel_dlg._ordered_ids})")
+    sel_result = list(sel_dlg._ordered_ids)
+    sel_dlg._confirm()
+    check("source-select-confirm", (sel_dlg.result or []) == sel_result,
+          f"(result={sel_dlg.result})")
+
+    # 15. Coach session container persists with selection snapshot (SEL-3).
+    refs = [state.source_ref_for(k, i) for k, i in sel_result]
+    coach_res = state.create_coach_session([r for r in refs if r])
+    check("coach-session-created", coach_res.ok, f"(msg={coach_res.message!r})")
+
+    # 16. Source pack builds within budget (SEL-2).
+    pack = state.build_pack_for_selection(sel_result)
+    check("source-pack-built", pack is not None and pack.total_chars > 0,
+          f"(chars={pack.total_chars if pack else 0})")
+
+    # 17. Stats screen renders its Review section (Phase 3.3).
+    try:
+        app.show_screen("stats")
+        app.update_idletasks()
+        app.update()
+        metrics = state.get_review_metrics()
+        check("stats-review-section",
+              hasattr(metrics, "weak_sources") and hasattr(metrics, "activity"),
+              f"(weak={len(metrics.weak_sources)}, "
+              f"activity={metrics.activity.sessions} sessions)")
+    except Exception as exc:  # noqa: BLE001
+        check("stats-review-section", False, repr(exc))
+
+    # 18. Delete document removes record + binary, keeps coach session (LIB-5).
+    del_res = state.delete_document(imported_doc.id)
+    stored = _data_dir / "library" / imported_doc.stored_name
+    check("delete-document", del_res.ok and state.document_by_id(imported_doc.id) is None
+          and not stored.exists())
+    check("coach-session-survives-deletion",
+          state.coach_session_by_id(coach_res.value.id) is not None)
+
+    # 19. v2 data round-trips through save/load (schema migration path).
+    app._on_close()
+    outcome2 = repository.validate_file_for_manual_load(
+        paths.get_default_save_path())
+    ds2, warns2 = outcome2.dataset, outcome2.warnings
+    check("v2-roundtrip-persist",
+          len(ds2.documents) == 0 and len(ds2.coach_sessions) == 1
+          and len(ds2.notes) == 1,
+          f"(docs={len(ds2.documents)}, coach={len(ds2.coach_sessions)}, "
+          f"notes={len(ds2.notes)}, warns={warns2})")
 
     if failures:
         print(f"SMOKE TEST: FAIL ({len(failures)}): {failures}")

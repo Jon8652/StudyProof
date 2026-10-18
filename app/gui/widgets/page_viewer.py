@@ -71,8 +71,8 @@ class PageViewer(ctk.CTkFrame):
         self.image_label = ctk.CTkLabel(self, text="", anchor="n")
         self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
 
-        self.text_scroll = ctk.CTkScrollableFrame(
-            self, fg_color="transparent", visible=False)
+        # Hidden by default: created but never packed until text mode is on.
+        self.text_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.text_box = ctk.CTkTextbox(
             self.text_scroll, wrap="word", font=ctk.CTkFont(size=13))
         self.text_box.pack(fill="both", expand=True, padx=4, pady=4)
@@ -157,8 +157,7 @@ class PageViewer(ctk.CTkFrame):
 
     def _request_render(self) -> None:
         self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_scroll.place_forget()
-        self.text_scroll.configure(visible=False)
+        self.text_scroll.pack_forget()
         key = (self._page_number, self.zoom)
         cached = self._cache.get(key)
         if cached is not None:
@@ -214,8 +213,7 @@ class PageViewer(ctk.CTkFrame):
     def _display_image(self, ctk_image) -> None:
         self._image_ref = ctk_image
         self.notice_label.pack_forget()
-        self.text_scroll.configure(visible=False)
-        self.text_scroll.place_forget()
+        self.text_scroll.pack_forget()
         self.image_label.configure(image=ctk_image, text="")
         self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
 
@@ -229,7 +227,6 @@ class PageViewer(ctk.CTkFrame):
         self.image_label.configure(image=None, text="")
         self.image_label.pack_forget()
         self.text_scroll.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_scroll.configure(visible=True)
         text = self._text_by_page.get(self._page_number, "")
         self.text_box.configure(state="normal")
         self.text_box.delete("1.0", "end")
