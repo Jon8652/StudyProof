@@ -11,6 +11,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.constants import (
+    CONFIDENCE_LEVELS,
+    DEFAULT_AI_MODEL,
     DEFAULT_THEME,
     DEFAULT_XP_PER_10_MINUTES,
     MAX_INPUT_HOURS,
@@ -21,6 +23,7 @@ from app.constants import (
     MIN_SESSION_MINUTES,
     SOURCE_CUSTOM,
     SOURCE_PRESET,
+    VALID_AI_MODES,
     VALID_THEMES,
 )
 
@@ -149,11 +152,46 @@ class Note:
 
 
 @dataclass
+class AISettings:
+    """Study Coach AI configuration persisted inside ``settings.ai`` (AIS-1).
+
+    The API key is local-only (A-28): masked in the UI, never logged.
+    """
+
+    mode: str = "mock"                       # "mock" | "live" (A-21 default)
+    base_url: str = ""                       # OpenAI-compatible endpoint (A-22)
+    model: str = DEFAULT_AI_MODEL            # default deepseek-chat
+    api_key: str = ""                        # local-only secret (A-28)
+
+    @classmethod
+    def sanitized(cls, raw: Any) -> "AISettings":
+        """Coerce a raw dict to safe values; never reject the file (AIS-5)."""
+        raw = raw if isinstance(raw, dict) else {}
+        mode = raw.get("mode", "mock")
+        if mode not in VALID_AI_MODES:
+            mode = "mock"
+        base_url = raw.get("base_url", "")
+        if not isinstance(base_url, str):
+            base_url = str(base_url or "")
+        base_url = base_url.strip()
+        model = raw.get("model", DEFAULT_AI_MODEL)
+        if not isinstance(model, str):
+            model = str(model or "")
+        model = model.strip() or DEFAULT_AI_MODEL
+        api_key = raw.get("api_key", "")
+        if not isinstance(api_key, str):
+            api_key = str(api_key or "")
+        return cls(mode=mode, base_url=base_url, model=model,
+                   api_key=api_key.strip())
+
+
+@dataclass
 class Settings:
-    """User settings persisted in the save file (FR-73)."""
+    """User settings persisted in the save file (FR-73 / DATA-12)."""
 
     theme: str = DEFAULT_THEME
     xp_per_10_minutes: int = DEFAULT_XP_PER_10_MINUTES
+    ai: AISettings = field(default_factory=AISettings)
 
     @classmethod
     def sanitized(cls, raw: dict[str, Any] | None) -> "Settings":
@@ -169,24 +207,200 @@ class Settings:
             xp_rate = DEFAULT_XP_PER_10_MINUTES
         if xp_rate < 0:
             xp_rate = DEFAULT_XP_PER_10_MINUTES
-        return cls(theme=theme, xp_per_10_minutes=xp_rate)
+        ai = AISettings.sanitized(raw.get("ai"))
+        return cls(theme=theme, xp_per_10_minutes=xp_rate, ai=ai)
+
+
+MAX_PAGE_TEXT_CHARS = 200_000   # §14.1 defensive per-page clamp
+
+
+@dataclass
+class Document:
+    """A PDF library record: metadata + extracted per-page text (§14).
+
+    The binary itself lives under ``<app-data>/library/<stored_name>``
+    (A-29/DATA-10); the record survives independently of the original path.
+    ``status`` is one of ready / textless / missing / extracting.
+    """
+
+    id: str
+    file_name: str
+    stored_name: str                         # "<uuid>.pdf" inside library/
+    original_path: str = ""
+    imported_at_local: datetime = field(default_factory=datetime.now)
+    page_count: int = 0
+    char_count: int = 0
+    status: str = "extracting"
+    text_pages: list[dict[str, Any]] = field(default_factory=list)  # {page,text}
+
+    @classmethod
+    def create(cls, file_name: str, stored_name: str, original_path: str = "",
+               now: datetime | None = None) -> "Document":
+        moment = now if now is not None else datetime.now()
+        return cls(
+            id=str(uuid.uuid4()),
+            file_name=file_name,
+            stored_name=stored_name,
+            original_path=original_path,
+            imported_at_local=moment,
+            status="extracting",
+        )
+
+    def set_extracted_text(self, pages: list[tuple[int, str]]) -> None:
+        """Store extraction results (1-based page numbers, verbatim text).
+
+        Individual oversized pages are clamped defensively (§14.1).
+        Zero-text documents become ``textless`` (PDF-6/ERR-31); otherwise the
+        document is ``ready`` for selection (PDF-4).
+        """
+        cleaned: list[dict[str, Any]] = []
+        total = 0
+        for page_no, text in pages:
+            if not isinstance(text, str):
+                text = str(text or "")
+            text = text[:MAX_PAGE_TEXT_CHARS]
+            cleaned.append({"page": int(page_no), "text": text})
+            total += len(text)
+        self.text_pages = cleaned
+        self.page_count = len(cleaned)
+        self.char_count = total
+        self.status = "ready" if total > 0 else "textless"
+
+    def display_label(self) -> str:
+        name = (self.file_name or "").strip()
+        return name if name else "Untitled document"
+
+
+SOURCE_KIND_NOTE = "note"
+SOURCE_KIND_DOCUMENT = "document"
+
+
+@dataclass
+class SourceRef:
+    """Selection snapshot entry (SEL-3): survives source deletion (ERR-33)."""
+
+    kind: str            # "note" | "document"
+    id: str
+    label: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "id": self.id, "label": self.label}
+
+
+@dataclass
+class QuestionRecord:
+    """One coached question inside a session (§14, COACH-*).
+
+    State machine (COACH-1): open → answered → confidence_set →
+    feedback_given → (revised | followup)* → closed — represented by the
+    combination of status + first_answer/confidence/feedback_given flags.
+    """
+
+    id: str
+    prompt: str = ""
+    parent_id: str | None = None
+    spans: list[dict[str, Any]] = field(default_factory=list)  # {source_id,page,text}
+    status: str = "open"                     # open | answered | closed
+    first_answer: str | None = None          # immutable once set (A-25)
+    first_answer_at: datetime | None = None
+    confidence: str | None = None            # low|medium|high|null (A-36)
+    confidence_at: datetime | None = None
+    revisions: list[dict[str, Any]] = field(default_factory=list)  # {text,at}
+    hints_seen: int = 0
+    feedback_given: bool = False
+    followup_ids: list[str] = field(default_factory=list)
+    answer_key: dict[str, Any] = field(default_factory=dict)  # mock cloze key
+
+    @classmethod
+    def create(cls, prompt: str, spans: list[dict[str, Any]] | None = None,
+               parent_id: str | None = None,
+               answer_key: dict[str, Any] | None = None) -> "QuestionRecord":
+        return cls(id=str(uuid.uuid4()), prompt=prompt,
+                   spans=list(spans or []), parent_id=parent_id,
+                   answer_key=dict(answer_key or {}))
+
+
+@dataclass
+class CoachTurn:
+    """One persisted conversation entry (coach or user) — §14 turns[]."""
+
+    id: str
+    at_local: datetime = field(default_factory=datetime.now)
+    role: str = "coach"                      # coach | user
+    kind: str = "notice"                     # question|answer|confidence|hint|
+                                             # feedback|revision|followup|notice
+    question_id: str | None = None
+    mode: str | None = None                  # effective mode per turn (AIS-2)
+    text: str = ""
+    confidence: str | None = None
+    quotes: list[dict[str, Any]] = field(default_factory=list)  # +verified flag
+    ungrounded_count: int = 0
+
+    @classmethod
+    def create(cls, role: str, kind: str, text: str,
+               question_id: str | None = None, mode: str | None = None,
+               confidence: str | None = None,
+               quotes: list[dict[str, Any]] | None = None,
+               ungrounded_count: int = 0,
+               at: datetime | None = None) -> "CoachTurn":
+        return cls(
+            id=str(uuid.uuid4()),
+            at_local=at if at is not None else datetime.now(),
+            role=role, kind=kind, text=text, question_id=question_id,
+            mode=mode, confidence=confidence,
+            quotes=list(quotes or []), ungrounded_count=ungrounded_count,
+        )
+
+
+TURN_KINDS = ("question", "answer", "confidence", "hint", "feedback",
+              "revision", "followup", "notice")
+
+
+@dataclass
+class CoachSession:
+    """A persisted coaching conversation container (§14 coach_sessions[])."""
+
+    id: str
+    created_at_local: datetime = field(default_factory=datetime.now)
+    updated_at_local: datetime = field(default_factory=datetime.now)
+    sources: list[SourceRef] = field(default_factory=list)
+    questions: list[QuestionRecord] = field(default_factory=list)
+    turns: list[CoachTurn] = field(default_factory=list)
+
+    @classmethod
+    def create(cls, sources: list[SourceRef],
+               now: datetime | None = None) -> "CoachSession":
+        moment = now if now is not None else datetime.now()
+        return cls(id=str(uuid.uuid4()), created_at_local=moment,
+                   updated_at_local=moment, sources=list(sources))
+
+    def question_by_id(self, question_id: str) -> QuestionRecord | None:
+        for question in self.questions:
+            if question.id == question_id:
+                return question
+        return None
+
+    def touch(self, now: datetime | None = None) -> None:
+        self.updated_at_local = now if now is not None else datetime.now()
 
 
 @dataclass
 class Dataset:
-    """The full in-memory dataset: settings + sessions + notes (single source of truth)."""
+    """The full in-memory dataset: settings + all collections (single source of truth)."""
 
     settings: Settings = field(default_factory=Settings)
     sessions: list[Session] = field(default_factory=list)
     notes: list[Note] = field(default_factory=list)
+    documents: list[Document] = field(default_factory=list)
+    coach_sessions: list[CoachSession] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
     @classmethod
     def empty(cls, now: datetime | None = None) -> "Dataset":
         moment = now if now is not None else datetime.now()
-        return cls(settings=Settings(), sessions=[], notes=[], created_at=moment,
-                   updated_at=moment)
+        return cls(settings=Settings(), sessions=[], notes=[], documents=[],
+                   coach_sessions=[], created_at=moment, updated_at=moment)
 
     def session_by_id(self, session_id: str) -> Session | None:
         """Look up a session by id (O(n) scan; AppState keeps an id map)."""
@@ -200,4 +414,16 @@ class Dataset:
         for note in self.notes:
             if note.id == note_id:
                 return note
+        return None
+
+    def document_by_id(self, document_id: str) -> Document | None:
+        for document in self.documents:
+            if document.id == document_id:
+                return document
+        return None
+
+    def coach_session_by_id(self, coach_id: str) -> CoachSession | None:
+        for coach in self.coach_sessions:
+            if coach.id == coach_id:
+                return coach
         return None

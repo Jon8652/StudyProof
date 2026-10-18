@@ -1,16 +1,40 @@
-"""Central constants and configuration for StudyProof v1."""
+"""Central constants and configuration for StudyProof."""
 
 # --- Application identity ---------------------------------------------------
 APP_NAME = "StudyProof"
 APP_SLUG = "StudyProof"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"            # v2 release train (req doc §4)
 
 # --- Persistence ------------------------------------------------------------
 SAVE_FILE_NAME = "studyproof_save.json"
 BACKUP_FILE_NAME = "studyproof_save.backup.json"
 QUARANTINE_SUFFIX = ".corrupt"
 
-SCHEMA_VERSION = 1               # current supported schema version (FR-70)
+SCHEMA_VERSION = 2               # current supported schema version (FR-70/DATA-7)
+
+# --- PDF Study Library (v2, non-AI) ------------------------------------------
+LIBRARY_DIR_NAME = "library"     # <app-data>/library/ binary copies (A-5/A-29)
+MAX_PDF_BYTES = 100 * 1024 * 1024    # PDF-2: import size cap (ERR-30)
+MAX_PDF_PAGES = 2000                  # PDF-2: page cap (ERR-30)
+MAX_PAGE_CHARS = 200_000              # §14.1: defensive per-page clamp
+PAGE_RENDER_CACHE_SIZE = 5            # A-30 / LIB-3: LRU page-image cache
+ZOOM_LEVELS = (1.0, 1.5, 2.0)         # UI-20 viewer zoom steps
+EXTRACTION_PROGRESS_HZ = 10           # NFR-12: at most ~10 progress updates/s
+
+# --- Study Coach context (v2) -------------------------------------------------
+MAX_SOURCES = 5                    # A-37 / SEL-1: sources per session
+MAX_PACK_CHARS = 6000              # A-37 / SEL-2: source-pack character budget
+MAX_MEMORY_TURNS = 10              # A-26: last N turns feed generation
+AI_TIMEOUT_S = 30                  # A-34 / PROV-2: live call timeout
+DEFAULT_AI_MODEL = "deepseek-chat" # A-22 default model name
+VALID_AI_MODES = ("mock", "live")  # AIS-5 mode keys
+CONFIDENCE_LEVELS = ("low", "medium", "high")   # A-36
+CONFIDENCE_LABELS = {"low": "Guessed", "medium": "Unsure",
+                     "high": "Confident"}       # A-36 display labels
+DOC_STATUSES = ("ready", "textless", "missing", "extracting")  # LIB-1 chips
+
+# --- Storage heads-up (NFR-17) --------------------------------------------------
+SAVE_SIZE_WARN_BYTES = 50 * 1024 * 1024   # one-time friendly notice > 50 MB
 
 # --- Defaults ---------------------------------------------------------------
 DEFAULT_THEME = "dark"           # A-10: dark mode on first run
