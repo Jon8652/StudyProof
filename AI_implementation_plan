@@ -14,6 +14,8 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 *   **1.2 Persistence & Migration:**
     *   Update `app/persistence/validation.py`: Add parsers for the new arrays. Implement skipping for invalid document/turn records (ERR-21 extension).
     *   Update `app/persistence/repository.py`: Implement in-memory v1 → v2 migration on load (inject empty `documents`/`coach_sessions` and default `settings.ai`). Update `dataset_to_payload` for schema v2 serialization. Ensure v1 builds still refuse to overwrite v2 files (`FutureSchemaError`).
+    *   Handle manual load of foreign v2 saves where library binaries are absent: load document records with `status='missing'` and surface a friendly count notice to the user (ERR-40 / DATA-11); re-linkable via the `library.py` re-link logic (LIB-6).
+    *   Implement a 50 MB save-size check in the persistence layer: after a successful save whose result exceeds 50 MB, trigger a one-time friendly heads-up notice ("Your library text is getting large") and continue normally (NFR-17).
 *   **1.3 Library Storage Infrastructure:**
     *   Create `app/persistence/library.py`: Implement binary copy, delete, and re-link logic for the `<app-data>/library/` folder.
 *   **1.4 AppState Extensions:**
@@ -35,6 +37,9 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 *   **2.4 Import & Edge Cases:**
     *   Wire the "Import PDF" button: File dialog → `library.py` copy → `pdfx.py` background extract → `AppState` mutation.
     *   Implement edge cases: Refuse >100MB/2000pg (ERR-30), handle encrypted files (ERR-29), mark zero-text PDFs as `textless` (ERR-31), and handle missing binaries on startup as `missing` (ERR-32).
+    *   Implement duplicate detection by `(file_name, file_size)`. Refuse the import with an "already in your library" message and offer a button to open the existing record (PDF-3).
+*   **2.5 Navigation Registration:**
+    *   Update `app/gui/main_window.py`: Register the `Library` nav item in `NAV_ITEMS` at the correct position (Home, Calendar, Notes, Library, ...) so the sidebar order matches the seven-destination spec (UI-1/UI-19) from this phase onward, rather than waiting for Phase 5. The `Coach` item stays registered in Phase 5.1 when its screen exists.
 *   **Phase 2 Exit Gate:** GUI smoke test can import a generated PDF, wait for background extraction, and navigate pages without UI freezing.
 
 ### Phase 3: Source Selection & Review Shell (Non-AI)
@@ -61,20 +66,22 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 *   **4.3 Mock Provider:**
     *   Create `app/core/agent/mock_engine.py`: Deterministic extractive generator. Seed based on session ID. Generate cloze questions from pack sentences, sentence hints, and keyword-overlap feedback (A-27, GEN-2..4).
 *   **4.4 State Machine & Prompts:**
-    *   Create `app/core/agent/prompt.py`: Centralize system prompts and per-kind templates (GEN-9/10).
-    *   Create `app/core/agent/coach_service.py`: Implement the turn state machine (COACH-1). Enforce unaided-first-answer immutability (COACH-3), single confidence rating (COACH-4), and hint/feedback gating (COACH-5/6). All methods return `ActionResult`.
+    *   Create `app/core/agent/prompt.py`: Centralize system prompts and per-kind templates (GEN-9/10). The system prompt must encode the GEN-9 rules: role (patient study coach), unaided-attempt rule (never answer before the user's first answer + confidence), grounding rule, schema rule, tone (brief, encouraging, non-verbatim answers to cloze), and refusal to discuss non-study topics.
+    *   Create `app/core/agent/coach_service.py`: Implement the turn state machine (COACH-1). Enforce unaided-first-answer immutability (COACH-3), single confidence rating (COACH-4), and hint/feedback gating (COACH-5/6). Implement `request_followup` as a child question record (`parent_id` set) targeting the weakest missing idea, running the same state machine inside the same session (COACH-8). All methods return `ActionResult`.
 *   **Phase 4 Exit Gate:** 100% headless unit test coverage of the state machine, mock generation determinism, and grounding validation.
 
 ### Phase 5: Coach UI & Settings (AI)
 **Goal:** Wire the Agent Core to the GUI and expose AI settings.
 *   **5.1 Navigation & Settings:**
-    *   Update `app/gui/main_window.py`: Add Library and Coach to `NAV_ITEMS`. Add a text-based "Mode Badge" to the Coach nav button.
+    *   Update `app/gui/main_window.py`: Add Coach to `NAV_ITEMS` (Library was already registered in Phase 2.5) and move the Mode Badge onto the Coach nav button so the final sidebar is Home, Calendar, Notes, Library, Coach, Statistics, Settings (UI-1/UI-19).
     *   Update `app/gui/screens/settings_screen.py`: Add the "Study Coach (AI)" card (UI-23) with Mock/Live toggle, Base URL, Model, and masked API Key. Update `Settings.sanitized()` for `settings.ai`.
 *   **5.2 Coach Screen UI:**
     *   Create `app/gui/screens/coach_screen.py`: Session header, scrollable thread, answer composer, and gated action row (UI-21).
-    *   Create widgets: `chat_bubble.py`, `citation_chip.py` (with click-to-navigate), `confidence_picker.py` (UI-22), and `sessions_dialog.py` (UI-26).
+    *   Create widgets: `chat_bubble.py`, `citation_chip.py` (with click-to-navigate), `confidence_picker.py` (UI-22), and `sessions_dialog.py` (UI-26): list sessions (created date, source labels, question count, mode) with Resume and Delete-with-confirm (COACH-14).
+    *   Implement accessibility and fallback UI details: role prefixes ("Coach:"/"You:") and textual verified ticks so bubbles/mode states are distinguishable by text as well as colour (ACC-4, preserving ACC-3), tooltips on gated buttons explaining *why* they are disabled (e.g. "Rate confidence to unlock feedback") (ACC-5), and the "General guidance" badge for feedback/hint turns with zero verified quotes while sources exist (GRD-5, surfaced via ERR-28's strip-and-count path).
 *   **5.3 Integration:**
     *   Wire the Coach screen to `CoachService`. Ensure every turn mutation triggers an autosave and listener broadcast to refresh Stats/Review.
+    *   Enforce session/source deletion semantics in the UI wiring: deleting a coach session requires confirmation; deleting a *source* (note/document) never deletes sessions — affected sessions mark that source missing (COACH-12, ERR-33).
 *   **Phase 5 Exit Gate:** A user can run a complete Mock coaching loop (Question → Answer → Confidence → Feedback → Revision) in the GUI, and see the weak-topic score update in Stats.
 
 ---
