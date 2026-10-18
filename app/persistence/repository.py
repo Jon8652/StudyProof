@@ -312,21 +312,22 @@ def load_startup() -> LoadOutcome:
     """
     ensure_app_data_dir()
     save_path = get_default_save_path()
+    outcome: LoadOutcome | None = None
 
     if not save_path.exists():
         dataset = Dataset.empty()
-        outcome = LoadOutcome(dataset=dataset)
+        first_run = LoadOutcome(dataset=dataset)
         try:
             save_dataset(dataset, save_path)
         except SaveError:
             # First-run save failure is non-fatal; app still works in memory.
             pass
-        return outcome
+        return first_run
 
     try:
         payload = _read_json(save_path)
         dataset, warnings = validate_payload(payload)
-        return outcome_from_payload(payload, dataset, warnings)
+        outcome = outcome_from_payload(payload, dataset, warnings)
     except FutureSchemaError:
         # Never overwrite a future-schema file (FR-72 / ERR-11).
         # Raise so the GUI can decide — but startup must still continue.
@@ -352,6 +353,11 @@ def load_startup() -> LoadOutcome:
         # Preserve the corrupt default instead of silently deleting (FR-69).
         backup_ops.quarantine_file(save_path)
         return backup_outcome
+
+    if outcome is not None:
+        # Default file parsed fine — unreachable in practice, but keeps the
+        # flow honest without ever touching a possibly-v2 save.
+        return outcome
 
     # --- both unusable: start empty, preserve corrupt files (FR-68/FR-69) -----
     backup_ops.quarantine_file(save_path)
