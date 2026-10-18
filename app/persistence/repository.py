@@ -41,11 +41,13 @@ class LoadOutcome:
     notice: str | None = None      # friendly message to show, if any
     recovered_from_backup: bool = False
     started_empty: bool = False
+    migrated_from_v1: bool = False   # DATA-7: v1 payload upgraded in memory
+    missing_binaries: int = 0        # ERR-40 / DATA-11: absent library files
     warnings: list[str] = field(default_factory=list)
 
 
 def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
-    """Serialize a Dataset into the v1 JSON structure (section 10)."""
+    """Serialize a Dataset into the schema-version-2 JSON structure (§14)."""
     return {
         "schema_version": SCHEMA_VERSION,
         "created_at": format_dt(dataset.created_at or datetime.now()),
@@ -53,6 +55,12 @@ def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
         "settings": {
             "theme": dataset.settings.theme,
             "xp_per_10_minutes": dataset.settings.xp_per_10_minutes,
+            "ai": {
+                "mode": dataset.settings.ai.mode,
+                "base_url": dataset.settings.ai.base_url,
+                "model": dataset.settings.ai.model,
+                "api_key": dataset.settings.ai.api_key,   # local-only (A-28)
+            },
         },
         "sessions": [
             {
@@ -76,7 +84,90 @@ def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
             }
             for n in dataset.notes
         ],
+        "documents": [
+            {
+                "id": d.id,
+                "file_name": d.file_name,
+                "stored_name": d.stored_name,
+                "original_path": d.original_path,
+                "imported_at_local": format_dt(d.imported_at_local),
+                "page_count": d.page_count,
+                "char_count": d.char_count,
+                "status": _persisted_doc_status(d),
+                "text_pages": [
+                    {"page": p["page"], "text": p["text"]} for p in d.text_pages
+                ],
+            }
+            for d in dataset.documents
+        ],
+        "coach_sessions": [
+            {
+                "id": c.id,
+                "created_at_local": format_dt(c.created_at_local),
+                "updated_at_local": format_dt(c.updated_at_local),
+                "sources": [s.as_dict() for s in c.sources],
+                "questions": [
+                    {
+                        "id": q.id,
+                        "parent_id": q.parent_id,
+                        "prompt": q.prompt,
+                        "spans": q.spans,
+                        "status": q.status,
+                        "first_answer": q.first_answer,
+                        "first_answer_at": (format_dt(q.first_answer_at)
+                                            if q.first_answer_at else None),
+                        "confidence": q.confidence,
+                        "confidence_at": (format_dt(q.confidence_at)
+                                          if q.confidence_at else None),
+                        "revisions": [
+                            {"text": r.get("text", ""),
+                             "at": _fmt_maybe(r.get("at"))}
+                            for r in q.revisions
+                        ],
+                        "hints_seen": q.hints_seen,
+                        "feedback_given": q.feedback_given,
+                        "followup_ids": q.followup_ids,
+                        "answer_key": q.answer_key,
+                    }
+                    for q in c.questions
+                ],
+                "turns": [
+                    {
+                        "id": t.id,
+                        "at_local": format_dt(t.at_local),
+                        "role": t.role,
+                        "kind": t.kind,
+                        "question_id": t.question_id,
+                        "mode": t.mode,
+                        "text": t.text,
+                        "confidence": t.confidence,
+                        "quotes": t.quotes,
+                        "ungrounded_count": t.ungrounded_count,
+                    }
+                    for t in c.turns
+                ],
+            }
+            for c in dataset.coach_sessions
+        ],
     }
+
+
+def _fmt_maybe(value: Any) -> str | None:
+    """Format a datetime if present; pass strings through untouched."""
+    if isinstance(value, datetime):
+        return format_dt(value)
+    return value if isinstance(value, str) else None
+
+
+def _persisted_doc_status(document) -> str:
+    """In-memory ``extracting`` is transient — never persisted (PDF-4).
+
+    A document that has not finished extracting keeps whatever text it has
+    but persists as ``textless`` until extraction completes on a later run.
+    """
+    if document.status == "extracting":
+        return "textless"
+    return document.status
 
 
 def _read_json(path: Path) -> Any:
@@ -90,6 +181,59 @@ def _read_json(path: Path) -> Any:
         raise UnreadableFileError(f"Could not read {path.name}")
     except json.JSONDecodeError:
         raise CorruptFileError(f"{path.name} is not valid.")
+
+
+# --- v2 post-load mechanics ----------------------------------------------------
+
+def _payload_declares_v1(payload: Any) -> bool:
+    """True when the raw payload is an explicit schema-version-1 save."""
+    if not isinstance(payload, dict):
+        return False
+    try:
+        return int(payload.get("schema_version", 1)) == 1
+    except (TypeError, ValueError):
+        return False
+
+
+def apply_missing_binary_status(dataset: Dataset) -> int:
+    """Mark documents whose library binary is absent as ``missing``.
+
+    Missing binaries are never corruption (DATA-10/LIB-6/ERR-40): stored
+    text remains usable for grounding; only the viewer is disabled.
+    Returns the number of records marked missing.
+    """
+    from app.persistence import library
+
+    count = 0
+    for document in dataset.documents:
+        if document.status == "extracting":
+            document.status = "textless"   # transient state never persisted
+        if not library.binary_exists(document.stored_name):
+            document.status = "missing"
+            count += 1
+    return count
+
+
+def outcome_from_payload(payload: Any, dataset: Dataset,
+                         warnings: list[str]) -> LoadOutcome:
+    """Build a LoadOutcome with v2 migration/binary checks applied."""
+    outcome = LoadOutcome(
+        dataset=dataset,
+        warnings=list(warnings),
+        migrated_from_v1=_payload_declares_v1(payload),
+        notice=warnings[0] if warnings else None,
+    )
+    missing = apply_missing_binary_status(dataset)
+    outcome.missing_binaries = missing
+    if missing:
+        # ERR-40 / DATA-11: friendly count notice on manual load & startup.
+        from app.persistence.schema import FRIENDLY_MESSAGES
+
+        notice = FRIENDLY_MESSAGES["missing_binaries"].format(count=missing)
+        outcome.warnings.append(notice)
+        if outcome.notice is None:
+            outcome.notice = notice
+    return outcome
 
 
 # --- Atomic save (FR-75) ------------------------------------------------------
