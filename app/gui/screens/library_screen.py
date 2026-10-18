@@ -89,8 +89,11 @@ class LibraryScreen(BaseScreen):
 
         body = ctk.CTkFrame(self.content, fg_color="transparent")
         body.pack(fill="both", expand=True)
-        body.grid_columnconfigure(0, weight=0, minsize=340)
-        body.grid_columnconfigure(1, weight=1)
+        # Pane ratio ≈ 1:2 — the list pane gets a fixed comfortable width
+        # (roomy enough for the empty-state text to wrap over a few relaxed
+        # lines) while the viewer takes the remaining ~2/3 of the screen.
+        body.grid_columnconfigure(0, weight=0, minsize=380)
+        body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(0, weight=1)
 
         # --- left: import button + document list -----------------------------
@@ -113,7 +116,8 @@ class LibraryScreen(BaseScreen):
                  "copies it into its own folder, then extracts the text "
                  "page by page in the background.",
             font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
-            wraplength=320, justify="left")
+            wraplength=340, justify="left")
+        self.empty_label.pack(fill="x", padx=4, pady=8)
 
         # --- right: viewer + per-document actions ------------------------------
         right = ctk.CTkFrame(body, fg_color="transparent")
@@ -188,7 +192,17 @@ class LibraryScreen(BaseScreen):
                          FRIENDLY_MESSAGES["pdf_too_large"])
             return False
 
-        result = self.state.import_document(path, file_size=size)
+        # Probe with PyMuPDF *before* copying so we can give an accurate,
+        # friendly reason for any refusal — and offer a password prompt for
+        # protected files instead of the generic "couldn't be opened".
+        decision = self._precheck_pdf(path)
+        if decision == "rejected":
+            return False        # message already shown by _precheck_pdf
+        if decision == "cancelled":
+            return False        # user backed out of the password dialog
+
+        result = self.state.import_document(path, file_size=size,
+                                            verified=True)
         if not result.ok:
             if result.message == FRIENDLY_MESSAGES["duplicate_import"]:
                 self._offer_open_existing(result.value, path.name)
@@ -202,6 +216,97 @@ class LibraryScreen(BaseScreen):
         self.refresh()
         self._start_extraction(document.id)
         return True
+
+    def _precheck_pdf(self, path: Path) -> str:
+        """Open ``path`` with PyMuPDF; returns accepted/rejected/cancelled.
+
+        Handles every ERR-29 kind explicitly (encrypted / unreadable /
+        missing) and retries once with a user-supplied password when the
+        file is owner-password protected.  A successfully opened document
+        is closed here; the caller re-verifies cheaply downstream.
+        """
+        from app.core import pdfx
+        from app.core.pdfx import PdfOpenError
+        try:
+            pymupdf = pdfx._load_pymupdf()
+        except ImportError:
+            show_message(self, "PDF engine missing",
+                         _IMPORT_ERROR_MESSAGES["dependency_missing"])
+            return "rejected"
+        try:
+            doc = pymupdf.open(str(path))
+        except Exception:
+            show_message(self, "Couldn't open PDF",
+                         _IMPORT_ERROR_MESSAGES["unreadable"])
+            return "rejected"
+        if doc.needs_pass:
+            # An empty password unlocks many "protected" PDFs (permissions-
+            # only encryption); only ask the user when that fails.
+            unlocked = False
+            try:
+                unlocked = bool(doc.authenticate(""))
+            except Exception:
+                unlocked = False
+            if not unlocked:
+                password = self._ask_password(path.name)
+                if password is None:               # dialog cancelled
+                    doc.close()
+                    return "cancelled"
+                try:
+                    unlocked = bool(doc.authenticate(password))
+                except Exception:
+                    unlocked = False
+                if not unlocked:
+                    doc.close()
+                    show_message(self, "Wrong password",
+                                 "StudyProof couldn't unlock that PDF with "
+                                 "the password you entered.")
+                    return "rejected"
+        try:
+            if doc.page_count <= 0:
+                show_message(self, "Couldn't open PDF",
+                             _IMPORT_ERROR_MESSAGES["unreadable"])
+                return "rejected"
+            return "accepted"
+        finally:
+            doc.close()
+
+    def _ask_password(self, file_name: str) -> "str | None":
+        """Small modal password prompt; returns None when cancelled."""
+        dialog = ctk.CTkToplevel(self.winfo_toplevel())
+        dialog.title("Protected PDF")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        frame = ctk.CTkFrame(dialog, corner_radius=12)
+        frame.pack(fill="both", expand=True, padx=16, pady=16)
+        ctk.CTkLabel(frame, text="Password required",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(
+            frame, wraplength=320, justify="left",
+            text=f'"{file_name}" is password-protected. Enter the password '
+                 "so StudyProof can read it.",
+            text_color=MUTED_TEXT).pack(anchor="w", pady=(6, 10))
+        entry = ctk.CTkEntry(frame, show="•", width=280)
+        entry.pack(anchor="w")
+        result: dict[str, "str | None"] = {"value": None}
+
+        def _ok():
+            result["value"] = entry.get()
+            dialog.destroy()
+
+        def _cancel():
+            result["value"] = None
+            dialog.destroy()
+
+        buttons = ctk.CTkFrame(frame, fg_color="transparent")
+        buttons.pack(anchor="e", pady=(10, 0))
+        neutral_button(buttons, text="Cancel", command=_cancel).pack(side="right",
+                                                                    padx=(8, 0))
+        ctk.CTkButton(buttons, text="Unlock", command=_ok).pack(side="right")
+        entry.bind("<Return>", lambda _e: _ok())
+        dialog.grab_set()
+        self.winfo_toplevel().wait_window(dialog)
+        return result["value"]
 
     def _offer_open_existing(self, existing_id: str | None,
                              file_name: str) -> None:
@@ -439,7 +544,7 @@ class LibraryScreen(BaseScreen):
                            border_color=("gray75", "gray28"))
         name = ctk.CTkLabel(row, text=document.display_label(),
                             font=ctk.CTkFont(size=13, weight="bold"),
-                            anchor="w", wraplength=220)
+                            anchor="w", wraplength=280)
         name.pack(fill="x", padx=10, pady=(8, 0))
         meta = ctk.CTkLabel(row, text="", font=ctk.CTkFont(size=11),
                             text_color=MUTED_TEXT, anchor="w")

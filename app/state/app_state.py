@@ -447,7 +447,8 @@ class AppState:
     # -- v2: PDF library mutations (Phase 1.4 / INT-2) --------------------------
 
     def import_document(self, source_path: "str | Path",
-                        file_size: int | None = None) -> ActionResult:
+                        file_size: int | None = None,
+                        verified: bool = False) -> ActionResult:
         """Import a PDF into the library (PDF-1..PDF-3, ERR-29/ERR-30).
 
         The binary is copied into ``<app-data>/library/<uuid>.pdf`` *before*
@@ -455,6 +456,11 @@ class AppState:
         (PDF-1).  Duplicates are detected by ``(file_name, file_size)`` and
         refused with an "already in your library" notice plus the existing
         record id so the GUI can offer to open it (PDF-3).
+
+        ``verified`` tells the GUI the file was already probed/opened with
+        PyMuPDF (the Library import pipeline does this before calling here);
+        when False (e.g. headless callers/tests), this method probes the
+        file itself so unreadable or encrypted PDFs never create a record.
         """
         path = Path(source_path)
         try:
@@ -473,6 +479,24 @@ class AppState:
                     message=FRIENDLY_MESSAGES["duplicate_import"],
                     value=existing.id,   # GUI offers "open existing record"
                 )
+
+        if not verified:
+            # Probe before copying: a broken/protected PDF must never leave a
+            # record behind (ERR-29 / PDF-5).
+            try:
+                from app.core import pdfx
+                pdfx.get_page_count(path)
+            except Exception as exc:
+                kind = getattr(exc, "kind", None)
+                if kind == "encrypted":
+                    message = ("This PDF is password-protected. Remove the "
+                               "password (or open it once in a PDF reader and "
+                               "save an unprotected copy) and import it again.")
+                elif kind == "missing":
+                    message = FRIENDLY_MESSAGES["unreadable"]
+                else:
+                    message = FRIENDLY_MESSAGES["unreadable"]
+                return ActionResult(ok=False, message=message)
 
         stored_name = library.new_stored_name()
         try:

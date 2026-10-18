@@ -54,8 +54,16 @@ def _open(path: "str | Path"):
     except Exception:
         raise PdfOpenError("unreadable")
     if doc.needs_pass:
-        doc.close()
-        raise PdfOpenError("encrypted")
+        # Many exports are permissions-only encrypted and unlock with an
+        # empty password — try that before refusing the file (ERR-29), so
+        # perfectly readable PDFs don't get a generic "couldn't be opened".
+        try:
+            ok = bool(doc.authenticate(""))
+        except Exception:
+            ok = False
+        if not ok:
+            doc.close()
+            raise PdfOpenError("encrypted")
     return doc
 
 
