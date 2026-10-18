@@ -22,6 +22,7 @@ from app.constants import (
 from app.gui.dialogs.message_dialog import show_message
 from app.gui.screens.calendar_screen import CalendarScreen
 from app.gui.screens.home_screen import HomeScreen
+from app.gui.screens.library_screen import LibraryScreen
 from app.gui.screens.notes_screen import NotesScreen
 from app.gui.screens.settings_screen import SettingsScreen
 from app.gui.screens.stats_screen import StatsScreen
@@ -42,6 +43,9 @@ NAV_ITEMS = (
     ("home", "Home", "home_icon"),
     ("calendar", "Calendar", "calendar_icon"),
     ("notes", "Notes", "notes_icon"),
+    # Phase 2.5: Library registers now so the sidebar matches the
+    # seven-destination spec order; Coach joins in Phase 5.1.
+    ("library", "Library", "library_icon"),
     ("stats", "Statistics", "stats_icon"),
     ("settings", "Settings", "settings_icon"),
 )
@@ -176,6 +180,7 @@ class MainWindow(ctk.CTk):
             "home": lambda: HomeScreen(self.content_area, self._app_state),
             "calendar": lambda: CalendarScreen(self.content_area, self._app_state),
             "notes": lambda: NotesScreen(self.content_area, self._app_state),
+            "library": lambda: LibraryScreen(self.content_area, self._app_state),
             "stats": lambda: StatsScreen(self.content_area, self._app_state),
             "settings": lambda: SettingsScreen(
                 self.content_area, self._app_state,
@@ -273,4 +278,12 @@ class MainWindow(ctk.CTk):
             result = self._app_state.autosave()
             if not result.ok:
                 show_message(self, "Couldn't save", result.message or "")
+        # Stop any background worker event pumps the screens own (A-30).
+        library_screen = self.screens.get("library")
+        shutdown = getattr(library_screen, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception:
+                pass
         self.destroy()
