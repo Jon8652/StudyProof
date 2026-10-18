@@ -155,6 +155,11 @@ class ExtractionWorker:
         except pdfx.PdfOpenError as exc:
             self._post_failure(document_id, exc.kind)
             return
+        except ImportError:
+            # PyMuPDF missing from this environment — report honestly
+            # instead of blaming the user's file (ERR-29 must not lie).
+            self._post_failure(document_id, "dependency_missing")
+            return
         except Exception:
             self._post_failure(document_id, "unreadable")
             return

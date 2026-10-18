@@ -22,10 +22,33 @@ from typing import Callable
 from app.constants import MAX_PAGE_CHARS, MAX_PDF_PAGES
 
 
+def _load_pymupdf():
+    """Import PyMuPDF across package namings, or raise ImportError.
+
+    The wheel has been published as ``PyMuPDF`` (import name ``fitz`` up to
+    ~1.23, ``pymupdf`` from 1.24 on) and newer releases also ship the
+    ``pymupdf4llm``/``pymupdf`` aliases — we try every spelling so one
+    missing name never breaks the whole pipeline.
+    """
+    for module_name in ("pymupdf", "fitz"):
+        try:
+            return __import__(module_name)
+        except ImportError:
+            continue
+    raise ImportError(
+        "PyMuPDF is not installed — run `pip install -r requirements.txt` "
+        "(the library needs it for PDF text extraction and page rendering).")
+
+
 def _open(path: "str | Path"):
     """Open a PDF for reading; raise PdfOpenError with an ERR-29 kind."""
-    import pymupdf  # local import: keeps headless tests free of GUI deps
-
+    try:
+        pymupdf = _load_pymupdf()  # local import: headless tests stay GUI-free
+    except ImportError:
+        raise  # dependency missing: must surface loudly, never mislabel a file
+    path = Path(path)
+    if not path.is_file():
+        raise PdfOpenError("missing")
     try:
         doc = pymupdf.open(str(path))
     except Exception:
@@ -73,8 +96,6 @@ def extract_pages(path: "str | Path",
                   on_progress: Callable[[int, int], None] | None = None,
                   should_cancel: Callable[[], bool] | None = None
                   ) -> ExtractResult:
-    import pymupdf  # noqa: F401  (kept for clarity; _open imports it)
-
     doc = _open(path)
     try:
         total = doc.page_count
@@ -110,8 +131,8 @@ def render_page_pixmap(path: "str | Path", page_number: int, zoom: float = 1.0):
     (LIB-3) and must never crash.
     """
     from PIL import Image
-    import pymupdf
 
+    pymupdf = _load_pymupdf()
     doc = _open(path)
     try:
         index = int(page_number) - 1
