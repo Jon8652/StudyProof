@@ -60,6 +60,12 @@ _IMPORT_ERROR_MESSAGES = {
     "unreadable": "This PDF couldn't be opened (it may be protected or "
                   "damaged).",
     "too_large": FRIENDLY_MESSAGES["pdf_too_large"],
+    "missing": "The stored copy of this PDF can't be found in the library "
+               "folder. Use \u201cRe-link file\u2026\u201d to point at it again.",
+    "dependency_missing":
+        "StudyProof's PDF engine (PyMuPDF) is not installed in this "
+        "environment, so no PDF can be opened. Run "
+        "\u201cpip install -r requirements.txt\u201d and restart the app.",
 }
 
 
@@ -83,7 +89,7 @@ class LibraryScreen(BaseScreen):
 
         body = ctk.CTkFrame(self.content, fg_color="transparent")
         body.pack(fill="both", expand=True)
-        body.grid_columnconfigure(0, weight=0, minsize=280)
+        body.grid_columnconfigure(0, weight=0, minsize=340)
         body.grid_columnconfigure(1, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
@@ -107,7 +113,7 @@ class LibraryScreen(BaseScreen):
                  "copies it into its own folder, then extracts the text "
                  "page by page in the background.",
             font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
-            wraplength=240, justify="left")
+            wraplength=320, justify="left")
 
         # --- right: viewer + per-document actions ------------------------------
         right = ctk.CTkFrame(body, fg_color="transparent")
