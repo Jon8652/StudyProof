@@ -21,7 +21,7 @@ if os.path.isfile(_app_icon_png):
     try:
         from PIL import Image
 
-        _ico_tmp = os.path.join(tempfile.gettempdir(), 'studiproof_app.ico')
+        _ico_tmp = os.path.join(tempfile.gettempdir(), 'studyproof_app.ico')
         with Image.open(_app_icon_png) as _img:
             _img.load()
             if _img.mode != 'RGBA':
