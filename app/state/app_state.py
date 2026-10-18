@@ -23,17 +23,19 @@ from app.core.medals import (
     medal_for_minutes,
 )
 from app.core.models import (
+    CoachSession,
     Dataset,
+    Document,
     MAX_NOTE_BODY_LENGTH,
     MAX_NOTE_TITLE_LENGTH,
     Note,
     Session,
     Settings,
 )
-from app.core.stats import StatsResult, compute_stats
+from app.core.stats import ReviewMetrics, StatsResult, compute_stats
 from app.core.streaks import current_streak, longest_streak
 from app.persistence import repository
-from app.persistence.schema import SaveError
+from app.persistence.schema import FRIENDLY_MESSAGES, SaveError
 
 
 @dataclass
@@ -53,6 +55,9 @@ class AppState:
     - ``_sessions_by_day``: day -> sessions attributed to that day
     - ``_session_by_id`` / ``_note_by_id``: id -> object O(1) lookups
     - ``_note_counts_by_day``: day -> number of attached notes
+    v2 (schema 2) indexes:
+    - ``_doc_by_id``: document id -> Document
+    - ``_coach_by_id``: coach session id -> CoachSession
     """
 
     def __init__(self, dataset: Dataset | None = None):
@@ -64,6 +69,8 @@ class AppState:
         self._session_by_id: dict[str, Session] = {}
         self._note_by_id: dict[str, Note] = {}
         self._note_counts_by_day: dict[date, int] = {}
+        self._doc_by_id: dict[str, Document] = {}
+        self._coach_by_id: dict[str, CoachSession] = {}
         self._listeners: list[Callable[[], None]] = []
         self.dirty: bool = False
         self.rebuild_index()
@@ -111,13 +118,18 @@ class AppState:
         return result
 
     def prepare_manual_load(self, path: Path) -> ActionResult:
-        """Validate a selected file WITHOUT changing current state (FR-61)."""
+        """Validate a selected file WITHOUT changing current state (FR-61).
+
+        Runs the full v2 post-load mechanics (v1→v2 migration, missing
+        binary detection with the ERR-40 friendly count notice).  The
+        resulting ``LoadOutcome`` is returned as ``value`` so the caller can
+        surface warnings before asking for confirmation.
+        """
         try:
-            dataset, warnings = repository.validate_file_for_manual_load(path)
+            outcome = repository.validate_file_for_manual_load(path)
         except SaveError as exc:
             return ActionResult(ok=False, message=str(exc))
-        return ActionResult(ok=True, value=dataset,
-                            message=warnings[0] if warnings else None)
+        return ActionResult(ok=True, value=outcome, message=outcome.notice)
 
     def commit_manual_load(self, dataset: Dataset) -> ActionResult:
         """Replace in-memory data after confirmation (FR-62/A-9/FR-65)."""
@@ -187,6 +199,14 @@ class AppState:
         self.dirty = True
         # Autosave after any data-changing action (FR-57).
         self.autosave()
+
+    def drain_persistence_notices(self) -> list[str]:
+        """Return one-time persistence heads-ups to surface in the GUI.
+
+        Currently used for the NFR-17 "library text is getting large" notice,
+        which ``repository.save_dataset`` queues exactly once per run.
+        """
+        return repository.drain_pending_notices()
 
     # -- note mutations ---------------------------------------------------------
 

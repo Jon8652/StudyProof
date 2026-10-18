@@ -164,11 +164,19 @@ class SettingsScreen(BaseScreen):
             return  # canceled: keep current data unchanged
 
         # Step 3: backup + replace + autosave as new default (Flow 4).
-        result = self.state.commit_manual_load(prepared.value)
+        # ``prepared.value`` is the validated LoadOutcome (v2 mechanics
+        # already applied: v1→v2 migration, missing-binary notice).
+        loaded = prepared.value
+        dataset = getattr(loaded, "dataset", loaded)
+        result = self.state.commit_manual_load(dataset)
         if result.ok:
+            extra = ""
+            if getattr(loaded, "missing_binaries", 0):
+                extra = ("\n\n" + (loaded.notice or ""))
             show_message(self.winfo_toplevel(), "Data loaded",
                          "Your study data has been replaced with the selected "
-                         "file. A backup of the previous data was kept.")
+                         "file. A backup of the previous data was kept."
+                         + extra)
         else:
             show_message(
                 self.winfo_toplevel(), "Couldn't finish loading",

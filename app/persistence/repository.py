@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.constants import SCHEMA_VERSION
+from app.constants import SAVE_SIZE_WARN_BYTES, SCHEMA_VERSION
 from app.core.models import Dataset, Note, Session
 from app.persistence import backup as backup_ops
 from app.persistence.schema import (
@@ -44,6 +44,21 @@ class LoadOutcome:
     migrated_from_v1: bool = False   # DATA-7: v1 payload upgraded in memory
     missing_binaries: int = 0        # ERR-40 / DATA-11: absent library files
     warnings: list[str] = field(default_factory=list)
+
+
+# --- one-time storage heads-up (NFR-17) ---------------------------------------
+# ``save_dataset`` pushes the "library text is getting large" notice here the
+# first time a save exceeds 50 MB; the GUI drains it after any mutation that
+# triggers an autosave.  The flag guarantees at most one notice per run.
+PENDING_NOTICES: list[str] = []
+_size_notice_shown: bool = False
+
+
+def drain_pending_notices() -> list[str]:
+    """Return and clear any queued persistence notices (GUI-safe polling)."""
+    notices = list(PENDING_NOTICES)
+    PENDING_NOTICES.clear()
+    return notices
 
 
 def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
@@ -269,6 +284,16 @@ def save_dataset(dataset: Dataset, path: Path | None = None) -> Path:
         raise SaveError(FRIENDLY_MESSAGES["write_failed"]) from exc
 
     dataset.updated_at = datetime.now()
+
+    # NFR-17: one-time friendly heads-up when the save grows past 50 MB.
+    global _size_notice_shown
+    if not _size_notice_shown:
+        try:
+            if target.stat().st_size > SAVE_SIZE_WARN_BYTES:
+                _size_notice_shown = True
+                PENDING_NOTICES.append(FRIENDLY_MESSAGES["save_size_large"])
+        except OSError:
+            pass
     return target
 
 
@@ -301,8 +326,7 @@ def load_startup() -> LoadOutcome:
     try:
         payload = _read_json(save_path)
         dataset, warnings = validate_payload(payload)
-        return LoadOutcome(dataset=dataset, warnings=warnings,
-                           notice=warnings[0] if warnings else None)
+        return outcome_from_payload(payload, dataset, warnings)
     except FutureSchemaError:
         # Never overwrite a future-schema file (FR-72 / ERR-11).
         # Raise so the GUI can decide — but startup must still continue.
@@ -317,12 +341,10 @@ def load_startup() -> LoadOutcome:
         try:
             payload = _read_json(backup_path)
             dataset, warnings = validate_payload(payload)
-            backup_outcome = LoadOutcome(
-                dataset=dataset,
-                notice=FRIENDLY_MESSAGES["recovered_from_backup"],
-                recovered_from_backup=True,
-                warnings=warnings,
-            )
+            backup_outcome = outcome_from_payload(payload, dataset, warnings)
+            # The recovery notice takes priority over load warnings.
+            backup_outcome.notice = FRIENDLY_MESSAGES["recovered_from_backup"]
+            backup_outcome.recovered_from_backup = True
         except (SaveError, ValueError):
             backup_outcome = None
 
@@ -343,14 +365,18 @@ def load_startup() -> LoadOutcome:
 
 # --- Manual load support (used by Settings screen) ----------------------------
 
-def validate_file_for_manual_load(path: Path) -> tuple[Dataset, list[str]]:
+def validate_file_for_manual_load(path: Path) -> LoadOutcome:
     """Parse + validate a user-selected file without touching current data.
 
-    Raises SaveError subclasses with friendly messages when invalid; the
-    caller keeps current data unchanged in that case (FR-61/FR-63).
+    Applies the v2 post-load mechanics (v1→v2 migration flag, missing-binary
+    detection with the ERR-40 friendly count notice) so manual loads behave
+    exactly like startup loads.  Raises SaveError subclasses with friendly
+    messages when invalid; the caller keeps current data unchanged in that
+    case (FR-61/FR-63).
     """
     payload = _read_json(Path(path))
-    return validate_payload(payload)
+    dataset, warnings = validate_payload(payload)
+    return outcome_from_payload(payload, dataset, warnings)
 
 
 def apply_manual_load(dataset: Dataset) -> None:
