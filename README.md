@@ -1,4 +1,4 @@
-# Study Tracker Desktop
+# StudyProof
 
 A cross-platform desktop app for tracking daily study sessions with XP,
 medals (Bronze / Silver / Gold), streaks, a calendar view, and statistics —
@@ -37,7 +37,7 @@ executable with PyInstaller.
 - **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs keep their reading so you can resume, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.
 - **Resilient persistence** — atomic JSON writes, corrupt-file backup +
   quarantine recovery, schema-version protection, close-flush of unsaved
-  changes. Data lives in the OS app-data folder (`%APPDATA%\StudyTracker`
+  changes. Data lives in the OS app-data folder (`%APPDATA%\StudyProof`
   on Windows). Notes are stored in a `notes` array inside `study_data.json`
   alongside sessions; invalid note entries are skipped during validation so
   a damaged record never blocks loading.
@@ -69,10 +69,10 @@ test suite and the performance gate, then builds with
 console window). Output:
 
 ```
-dist\StudyTracker\StudyTracker.exe   ← working executable
+dist\StudyProof\StudyProof.exe   ← working executable
 ```
 
-Distribute the entire `dist\StudyTracker` folder (it contains the bundled
+Distribute the entire `dist\StudyProof` folder (it contains the bundled
 `assets` folder and all runtime dependencies; no Python installation is
 required on the target machine). The exe can also be built manually with:
 
@@ -122,7 +122,7 @@ scripts/perf_check.py   Part L performance validation
 
 | OS | Path |
 |----|------|
-| Windows | `%APPDATA%\StudyTracker\study_data.json` |
+| Windows | `%APPDATA%\StudyProof\study_data.json` |
 | macOS/Linux | platform-standard user config dir |
 
 A `.bak` backup and a quarantine copy of corrupt files are kept alongside.

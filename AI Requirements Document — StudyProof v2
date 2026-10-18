@@ -1,16 +1,16 @@
-# AI Requirements Document — Study Tracker Desktop v2 (Study Coach & PDF Library)
+# AI Requirements Document — StudyProof v2 (Study Coach & PDF Library)
 
-**Document status:** Expansion requirements — plans the Study Coach (AI) subsystem and the PDF Study Library subsystem on top of the consolidated v1 requirements (`new_requirements_document`) and the current repository (`github.com/Jon8652/Study-Tracker`). It introduces new requirement IDs, re-splits the agreed task list into **AI features** and **non-AI features**, and explicitly **corrects** the small number of v1 clauses that the new features invalidate (§4). Where this document is silent, the consolidated v1 document remains authoritative.
-**Target product:** Study Tracker Desktop v1 plus: (a) a local PDF study library (import, view, extract, ground citations) and (b) a Study Coach that generates questions, hints, feedback and follow-ups from the user's own notes/PDFs — **offline-first with a deterministic mock engine, optionally live through a user-configured OpenAI-compatible endpoint (DeepSeek/ELM)**.
+**Document status:** Expansion requirements — plans the Study Coach (AI) subsystem and the PDF Study Library subsystem on top of the consolidated v1 requirements (`new_requirements_document`) and the current repository (`github.com/Jon8652/StudyProof`). It introduces new requirement IDs, re-splits the agreed task list into **AI features** and **non-AI features**, and explicitly **corrects** the small number of v1 clauses that the new features invalidate (§4). Where this document is silent, the consolidated v1 document remains authoritative.
+**Target product:** StudyProof v1 plus: (a) a local PDF study library (import, view, extract, ground citations) and (b) a Study Coach that generates questions, hints, feedback and follow-ups from the user's own notes/PDFs — **offline-first with a deterministic mock engine, optionally live through a user-configured OpenAI-compatible endpoint (DeepSeek/ELM)**.
 **Primary technology additions:** PyMuPDF (fitz) for extraction/page rendering; Python stdlib `urllib.request` for optional live calls (no new network dependency); all v1 technologies unchanged.
-**Distribution target:** unchanged (PyInstaller one-folder windowed Windows exe; source cross-platform). The frozen build must bundle PyMuPDF and keep extraction/rendering working from `dist\StudyTracker\`.
+**Distribution target:** unchanged (PyInstaller one-folder windowed Windows exe; source cross-platform). The frozen build must bundle PyMuPDF and keep extraction/rendering working from `dist\StudyProof\`.
 **Assumptions:** All v1 decisions A-1…A-20 remain in force except where corrected in §4; new decisions A-21…A-37 are added below.
 
 ---
 
 ## 1. Introduction and Scope Changes
 
-The v1 product is a fully offline study tracker. v2 adds two subsystems and one cross-cutting rule change:
+The v1 product is a fully offline StudyProof app. v2 adds two subsystems and one cross-cutting rule change:
 
 | Change | Description |
 |---|---|
@@ -364,7 +364,7 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | NFR-15 | Live payload minimality: system prompt + source pack + ≤ 10 turns + question state only; no settings, paths, telemetry or metadata; key only in the Authorization header (NFR-3 reinforced). |
 | NFR-16 | Key hygiene is testable: with a fake key configured, no test-visible log/exception/message string contains it (A-28). |
 | NFR-17 | Storage caps per PDF-2; if a successful save exceeds 50 MB the app shows a one-time friendly heads-up ("Your library text is getting large") and continues normally. |
-| NFR-18 | The frozen one-folder build shall include PyMuPDF and keep import/extract/render working from `dist\StudyTracker\` (spec hidden imports updated; perf/smoke gates run against the frozen layout where practical). |
+| NFR-18 | The frozen one-folder build shall include PyMuPDF and keep import/extract/render working from `dist\StudyProof\` (spec hidden imports updated; perf/smoke gates run against the frozen layout where practical). |
 
 ---
 
