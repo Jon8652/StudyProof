@@ -89,11 +89,15 @@ class LibraryScreen(BaseScreen):
 
         body = ctk.CTkFrame(self.content, fg_color="transparent")
         body.pack(fill="both", expand=True)
-        # Pane ratio ≈ 1:2 — the list pane gets a fixed comfortable width
-        # (roomy enough for the empty-state text to wrap over a few relaxed
-        # lines) while the viewer takes the remaining ~2/3 of the screen.
-        body.grid_columnconfigure(0, weight=0, minsize=380)
-        body.grid_columnconfigure(1, weight=2)
+        # Pane ratio ≈ 1:2 by *weight* so the left list grows with the
+        # window instead of staying pinned at a fixed pixel width (the old
+        # minsize-only column collapsed to ~40 px on wide screens, which is
+        # why the text still looked cramped).  The labels below use modest
+        # wraplengths so they break into more, shorter lines that always
+        # fit inside the list column.
+        body.grid_columnconfigure(0, weight=1, uniform="library_panes",
+                                  minsize=300)
+        body.grid_columnconfigure(1, weight=2, uniform="library_panes")
         body.grid_rowconfigure(0, weight=1)
 
         # --- left: import button + document list -----------------------------
@@ -116,7 +120,7 @@ class LibraryScreen(BaseScreen):
                  "copies it into its own folder, then extracts the text "
                  "page by page in the background.",
             font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
-            wraplength=340, justify="left")
+            wraplength=240, justify="left")
         self.empty_label.pack(fill="x", padx=4, pady=8)
 
         # --- right: viewer + per-document actions ------------------------------
@@ -544,7 +548,7 @@ class LibraryScreen(BaseScreen):
                            border_color=("gray75", "gray28"))
         name = ctk.CTkLabel(row, text=document.display_label(),
                             font=ctk.CTkFont(size=13, weight="bold"),
-                            anchor="w", wraplength=280)
+                            anchor="w", wraplength=220)
         name.pack(fill="x", padx=10, pady=(8, 0))
         meta = ctk.CTkLabel(row, text="", font=ctk.CTkFont(size=11),
                             text_color=MUTED_TEXT, anchor="w")

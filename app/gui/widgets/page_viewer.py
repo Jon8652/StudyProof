@@ -2,24 +2,35 @@
 
 Displays one PDF page at a time: rendered pixmap (zoom 1.0 / 1.5 / 2.0),
 prev/next navigation with "Page i of n", and a toggle to the stored text
-pane.  Rendering goes through ``app.core.pdfx`` off the main thread when a
-worker is available; results come back via the shared ``UIEventQueue``.
-Rendered images are kept in a strict 5-page LRU cache (A-30/LIB-3).
+pane.  Rendering goes through ``app.core.pdfx`` off the main thread;
+results come back via the shared ``UIEventQueue`` so the Tk thread is the
+only one touching widgets (A-30).  Rendered pages are kept in a strict
+5-entry LRU cache (LIB-3).
 
 Fallback rule (LIB-3): if rendering fails for any reason, the viewer
 switches to the text pane with a friendly notice — it never crashes.
+
+Image lifetime (the "pyimageN doesn't exist" family of bugs): page images
+are shown by :class:`app.gui.widgets.page_image.PageImageLabel`, a plain
+tkinter label that keeps its own strong references to every PhotoImage it
+creates and clears the label with an empty string (never ``None``) before
+swapping.  CTkImage objects are no longer handed to a CTkLabel whose async
+redraws used to hit dead image names during document switches, zoom
+changes, and page navigation.
 """
 
 from __future__ import annotations
 
 import threading
+import tkinter as tk
 from collections import OrderedDict
 from pathlib import Path
 
 import customtkinter as ctk
 
 from app.constants import PAGE_RENDER_CACHE_SIZE, ZOOM_LEVELS
-from app.gui.theme import ACCENT, MUTED_TEXT
+from app.gui.theme import MUTED_TEXT
+from app.gui.widgets.page_image import PageImageLabel, theme_is_dark
 from app.gui.workers import UIEventQueue
 
 
@@ -36,16 +47,10 @@ class PageViewer(ctk.CTkFrame):
         self._text_by_page: dict[int, str] = {}
         self._show_text = False
         self._render_seq = 0            # drop stale async render results
+        # Cache holds PIL images; everything evicted or retired moves to
+        # _retired_images so nothing Tk may still reference is ever freed
+        # before this widget dies.
         self._cache: "OrderedDict[tuple[int, float], object]" = OrderedDict()
-        self._image_ref = None          # keep the on-screen CTkImage alive
-        # Strong references to every CTkImage this widget has ever produced.
-        # Tkinter PhotoImages are reference-counted: if a CTkImage is garbage
-        # collected while its label still points at the underlying pyimageN,
-        # any later redraw of that label raises
-        # ``TclError: image "pyimageN" doesn't exist`` (this crashed the
-        # placeholder/zoom/document-switch paths).  We therefore never let an
-        # image die while Tk may still reference it — evicted cache entries
-        # move here instead of being dropped.
         self._retired_images: list = []
 
         # --- toolbar ---------------------------------------------------------
@@ -77,18 +82,48 @@ class PageViewer(ctk.CTkFrame):
         self.text_toggle.pack(side="right")
 
         # --- stage ------------------------------------------------------------
-        self.image_label = ctk.CTkLabel(self, text="", anchor="n")
-        self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
+        # Image stage: a plain tk canvas + label.  We deliberately avoid
+        # CTkScrollableFrame here: its canvas redraw re-configures every
+        # child widget, which is exactly what made Tk try to re-resolve a
+        # stale pyimage name ("image 'pyimageN' doesn't exist") during page
+        # switches and zoom changes.  The canvas gives us native scrolling
+        # for tall/zoomed pages without any of that redraw coupling.
+        self.image_canvas = tk.Canvas(self, highlightthickness=0, bd=0,
+                                      bg="#1c1c26")
+        self._image_vbar = ctk.CTkScrollbar(self, command=self.image_canvas.yview)
+        self.image_canvas.configure(yscrollcommand=self._image_vbar.set)
+        self.image_label = PageImageLabel(self.image_canvas)
+        self._image_window = self.image_canvas.create_window(
+            (0, 0), window=self.image_label, anchor="nw")
 
-        # Hidden by default: created but never packed until text mode is on.
+        def _sync_scrollregion(_event=None):
+            self.image_canvas.configure(
+                scrollregion=self.image_canvas.bbox("all") or (0, 0, 0, 0))
+
+        def _fit_width(event):
+            # Keep the label as wide as the canvas so text placeholders wrap
+            # sensibly, while taller images drive the scroll region.
+            self.image_canvas.itemconfigure(self._image_window,
+                                            width=max(event.width - 4, 1))
+
+        self.image_label.bind("<Configure>", _sync_scrollregion)
+        self.image_canvas.bind("<Configure>", _fit_width)
+        # Scroll wheel support for Windows/macOS (delta) and Linux (button-4/5).
+        self.image_canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: self.image_canvas.yview_scroll_units(
+                -1 if getattr(e, "delta", 0) > 0 else 1, "units"))
+        self.image_canvas.bind_all("<Button-4>",
+                                   lambda e: self.image_canvas.yview_scroll_units(-1, "units"))
+        self.image_canvas.bind_all("<Button-5>",
+                                   lambda e: self.image_canvas.yview_scroll_units(1, "units"))
+        self.apply_appearance(theme_is_dark(self))
+
+        # Text stage: also created up-front but only packed in text mode.
         self.text_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.text_box = ctk.CTkTextbox(
             self.text_scroll, wrap="word", font=ctk.CTkFont(size=13))
         self.text_box.pack(fill="both", expand=True, padx=4, pady=4)
-
-        self.notice_label = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12), text_color=MUTED_TEXT,
-            wraplength=420)
 
     # ------------------------------------------------------------------------
     # Public API (main thread only)
@@ -167,8 +202,7 @@ class PageViewer(ctk.CTkFrame):
     # Rendering (background thread + LRU cache, A-30/LIB-3)
 
     def _request_render(self) -> None:
-        self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
-        self.text_scroll.pack_forget()
+        self._show_stage("image")
         key = (self._page_number, self.zoom)
         cached = self._cache.get(key)
         if cached is not None:
@@ -204,15 +238,14 @@ class PageViewer(ctk.CTkFrame):
         self._set_placeholder(f"Rendering page {page_no}…")
 
     def _retire_cache(self) -> None:
-        """Move all cached CTkImages to the retire list (never free them).
+        """Move all cached images to the retire list (never free them).
 
-        Dropping a CTkImage while Tk still holds its pyimageN causes
+        Dropping an image while Tk still holds its pyimageN causes
         ``TclError: image "pyimageN" doesn't exist`` on the next label
         redraw, which is what made zoom/document-switch go blank.
         """
         for image in self._cache.values():
-            if image is not self._image_ref:
-                self._retired_images.append(image)
+            self._retired_images.append(image)
         self._cache.clear()
 
     def _on_rendered(self, seq: int, pil_image, page_no: int,
@@ -221,18 +254,14 @@ class PageViewer(ctk.CTkFrame):
             return  # stale result from a superseded request
         if doc_id is not None and doc_id != self._document_id:
             return  # document was switched while the render was in flight
-        size = (pil_image.width, pil_image.height)
-        ctk_image = ctk.CTkImage(light_image=pil_image,
-                                 dark_image=pil_image, size=size)
         key = (page_no, zoom)
-        self._cache[key] = ctk_image
+        self._cache[key] = pil_image
         while len(self._cache) > PAGE_RENDER_CACHE_SIZE:
-            evicted_key, evicted = self._cache.popitem(last=False)
+            _evicted_key, evicted = self._cache.popitem(last=False)
             # Keep the evicted image alive until the widget dies; freeing it
             # early is exactly what triggers the pyimage TclError.
-            if evicted is not self._image_ref:
-                self._retired_images.append(evicted)
-        self._display_image(ctk_image)
+            self._retired_images.append(evicted)
+        self._display_image(pil_image)
 
     def _on_render_failed(self, seq: int) -> None:
         if seq != self._render_seq:
@@ -240,12 +269,9 @@ class PageViewer(ctk.CTkFrame):
         self._fallback_to_text("This page couldn't be rendered — showing its "
                                "stored text instead.")
 
-    def _display_image(self, ctk_image) -> None:
-        self._image_ref = ctk_image
-        self.notice_label.pack_forget()
-        self.text_scroll.pack_forget()
-        self.image_label.configure(image=ctk_image, text="")
-        self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
+    def _display_image(self, pil_image) -> None:
+        self._show_stage("image")
+        self.image_label.set_image(pil_image)
 
     def _fallback_to_text(self, notice: str) -> None:
         self._show_text = True
@@ -254,9 +280,7 @@ class PageViewer(ctk.CTkFrame):
         self._render_text_pane()
 
     def _render_text_pane(self) -> None:
-        self.image_label.configure(image=None, text="")
-        self.image_label.pack_forget()
-        self.text_scroll.pack(fill="both", expand=True, padx=8, pady=8)
+        self._show_stage("text")
         text = self._text_by_page.get(self._page_number, "")
         self.text_box.configure(state="normal")
         self.text_box.delete("1.0", "end")
@@ -271,11 +295,35 @@ class PageViewer(ctk.CTkFrame):
 
     # ------------------------------------------------------------------------
 
+    def _show_stage(self, stage: str) -> None:
+        """Pack exactly one of the two stages (image / text)."""
+        if stage == "image":
+            self.text_scroll.pack_forget()
+            if not self._is_packed(self.image_canvas):
+                self.image_canvas.pack(side="left", fill="both", expand=True,
+                                       padx=(8, 0), pady=8)
+                self._image_vbar.pack(side="right", fill="y", padx=(2, 8),
+                                      pady=8)
+        else:
+            self.image_canvas.pack_forget()
+            self._image_vbar.pack_forget()
+            if not self._is_packed(self.text_scroll):
+                self.text_scroll.pack(fill="both", expand=True,
+                                      padx=8, pady=8)
+
+    @staticmethod
+    def _is_packed(widget) -> bool:
+        try:
+            return bool(widget.winfo_manager())
+        except Exception:
+            return False
+
     def _set_placeholder(self, message: str) -> None:
-        self._image_ref = None
-        self.image_label.configure(image=None, text=message,
-                                   text_color=MUTED_TEXT)
-        self.image_label.pack(fill="both", expand=True, padx=8, pady=8)
+        self._show_stage("image")
+        self.image_label.set_message(message)
+
+    def apply_appearance(self, is_dark: bool) -> None:
+        self.image_label.apply_appearance(is_dark)
 
     def _update_nav(self) -> None:
         self.page_label.configure(
