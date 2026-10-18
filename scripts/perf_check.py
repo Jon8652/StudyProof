@@ -72,7 +72,7 @@ def generate_sessions(count: int, seed: int = 42) -> list[Session]:
 
 
 def main() -> int:
-    tmp = tempfile.mkdtemp(prefix="studytracker-perf-")
+    tmp = tempfile.mkdtemp(prefix="studiproof-perf-")
     paths.set_override_data_dir(tmp)
 
     print(f"Generating up to {TARGET_SESSIONS}-session history...")

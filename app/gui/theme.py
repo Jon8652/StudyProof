@@ -1,4 +1,4 @@
-"""Centralised visual theme tokens for the Study Tracker UI.
+"""Centralised visual theme tokens for the StudyProof UI.
 
 Every colour used by the GUI lives here so screens/dialogs/widgets stay
 visually consistent across light *and* dark mode.  Previously several

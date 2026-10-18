@@ -65,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\run_build.ps1
 
 The script creates a virtual environment, installs dependencies, runs the
 test suite and the performance gate, then builds with
-`study_tracker.spec` (PyInstaller **one-folder, windowed** build — no
+`StudyProof.spec` (PyInstaller **one-folder, windowed** build — no
 console window). Output:
 
 ```
@@ -77,7 +77,7 @@ Distribute the entire `dist\StudyProof` folder (it contains the bundled
 required on the target machine). The exe can also be built manually with:
 
 ```bash
-pyinstaller --noconfirm study_tracker.spec
+pyinstaller --noconfirm StudyProof.spec
 ```
 
 Assets resolve correctly both from source and in the frozen build via
@@ -101,7 +101,7 @@ delete+save ≈60 ms).
 
 ```
 main.py                 entry point
-study_tracker.spec      PyInstaller build configuration (Part M)
+StudyProof.spec      PyInstaller build configuration (Part M)
 run_build.ps1           Windows release build script
 app/constants.py        gameplay rules (XP, medals, streaks, limits)
 app/core/               pure logic: models (incl. Note), xp, medals, streaks,
