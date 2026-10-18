@@ -53,4 +53,18 @@ FRIENDLY_MESSAGES = {
         "Some study sessions could not be loaded and were skipped. The rest "
         "of your data is fine."
     ),
+    # --- v2 (schema 2) additions ---------------------------------------------
+    "missing_binaries": (
+        "{count} PDF file(s) in your library could not be found on this "
+        "computer, so they are marked as missing. Their saved text still "
+        "works — you can re-link the files from the Library screen."
+    ),
+    "save_size_large": (
+        "Heads up: your library text is getting large (over 50 MB). Study "
+        "Proof still works fine, but consider removing documents you no "
+        "longer need to keep things speedy."
+    ),
+    "duplicate_import": (
+        "That PDF is already in your library."
+    ),
 }
