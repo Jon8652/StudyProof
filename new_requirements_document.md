@@ -1,4 +1,4 @@
-# Requirements Document — Study Tracker Desktop v1 (Consolidated / Fully Updated)
+# Requirements Document — StudyProof v1 (Consolidated / Fully Updated)
 
 **Document status:** Consolidated requirements — merges the initial confirmed requirements (`Initial_Requirements_document`) with the as-built updates (`Updated_Requirements_document`) and the current repository. Where the two documents conflicted, this document follows the updated document and the implemented code. This is the single authoritative requirements source going forward.
 **Target product:** Personal study-tracking desktop application with XP, medals, notes, and a study stopwatch
@@ -42,7 +42,7 @@
 
 ## 1. Introduction and Scope Changes
 
-This document defines the confirmed requirements for **Study Tracker Desktop**, a personal, offline, single-user desktop application that gamifies studying: users log study sessions, earn XP for completed 10-minute blocks, win daily Bronze/Silver/Gold medals, maintain streaks, keep free-text notes, and review statistics — all stored locally in JSON. The application shall not depend on any external server, network service, telemetry system, cloud storage, or remote authentication mechanism.
+This document defines the confirmed requirements for **StudyProof**, a personal, offline, single-user desktop application that gamifies studying: users log study sessions, earn XP for completed 10-minute blocks, win daily Bronze/Silver/Gold medals, maintain streaks, keep free-text notes, and review statistics — all stored locally in JSON. The application shall not depend on any external server, network service, telemetry system, cloud storage, or remote authentication mechanism.
 
 The application implements every core rule confirmed in the original requirements (XP rate, medal thresholds, day attribution, week definition, streak rules, save/backup/versioning behavior, asset fallbacks, packaging). During implementation the following scope changes were made and are now part of the confirmed requirements:
 
@@ -53,7 +53,7 @@ The application implements every core rule confirmed in the original requirement
 | **[NEW] Study stopwatch** | A real-time digital stopwatch in the sidebar that can automatically log a completed run as a custom session. This was listed as out of scope in the initial document (FUT-3 "Real-time study timer") and is now an implemented, required feature. |
 | **[UPDATED] Platform target** | Primary distribution remains a standalone Windows executable, but the app is explicitly **cross-platform at source level** (macOS/Linux supported via `platformdirs`); the README documents running from source on any OS. NFR-1 is relaxed accordingly. |
 | **[UPDATED] Editing policy** | Session editing remains out of scope (A-8 holds). However, **note editing is fully supported** (create/edit/delete notes), so the blanket "no editing" phrasing applies only to sessions. |
-| **[UPDATED] Persistence naming** | Concrete save-file names: `study_tracker_save.json` with backup `study_tracker_save.backup.json` and `.corrupt[.N]` quarantine suffixes, located in the per-user app-data directory (`APP_SLUG = "StudyTrackerDesktop"`). |
+| **[UPDATED] Persistence naming** | Concrete save-file names: `study_tracker_save.json` with backup `study_tracker_save.backup.json` and `.corrupt[.N]` quarantine suffixes, located in the per-user app-data directory (`APP_SLUG = "StudyProof"`). |
 | **[NEW] Performance engineering layer** | An incremental daily-aggregate index and lazy screen construction were added specifically to satisfy the ≥10,000-session responsiveness requirement (NFR-9), with an automated budget gate (`scripts/perf_check.py`). |
 | **[NEW] Build pipeline** | A scripted Windows release pipeline (`run_build.ps1` + `study_tracker.spec`) that gates shipping on the test suite and the performance check. |
 
@@ -127,14 +127,14 @@ New/updated decisions **[NEW]/[UPDATED]**:
 | A-16 | A stopwatch stop logs a session only when elapsed time ≥ 10 minutes (±0.25 s floating-point slack), rounded **down** to whole 10-minute steps. | Shorter stops preserve the reading so the run can be resumed; Reset always returns the display to zero without logging. Logged runs use the normal custom-session validation path. |
 | A-17 | Stopwatch timing uses a monotonic clock, not wall-clock deltas. | Display accuracy survives delayed Tk callbacks; system clock changes do not distort a running measurement. |
 | A-18 | Derived views are backed by an incrementally maintained daily index. | Adding/deleting a session updates only the affected day's aggregate; stats/calendar/home read the index. Deletion recomputes day XP from remaining sessions (partial-block rounding makes XP non-additive). |
-| A-19 | Cross-platform data location *(updates A-5/A-13/NFR-1)*. | Default save directory resolves via `platformdirs.user_data_dir`: `%APPDATA%\StudyTrackerDesktop`-style per-user location on Windows and platform-standard locations on macOS/Linux. Windows remains the packaging/distribution target. |
+| A-19 | Cross-platform data location *(updates A-5/A-13/NFR-1)*. | Default save directory resolves via `platformdirs.user_data_dir`: `%APPDATA%\StudyProof`-style per-user location on Windows and platform-standard locations on macOS/Linux. Windows remains the packaging/distribution target. |
 | A-20 | Screens are constructed lazily on first visit. | Startup does not build the calendar grid, notes list, or stats cards until navigated to; unvisited screens are skipped by global refresh broadcasts. |
 
 ---
 
 ## 4. Product Overview
 
-Study Tracker Desktop is a personal productivity and gamification application. The user logs completed study sessions, receives XP for completed 10-minute blocks, and earns medals based on total study time per calendar day. The application provides:
+StudyProof is a personal productivity and gamification application. The user logs completed study sessions, receives XP for completed 10-minute blocks, and earns medals based on total study time per calendar day. The application provides:
 
 - Quick study logging using preset durations (30 min / 1 h / 2 h) — one tap from Home.
 - Custom study logging via a modal hours-and-minutes dialog with friendly inline validation (5 min – 12 h).
@@ -363,7 +363,7 @@ FR-53 … FR-75 are confirmed requirements, implemented by `app/persistence` + `
 
 | ID | Requirement (as built) |
 |---|---|
-| FR-53/FR-54 | User data is saved locally as UTF-8 JSON (`indent=2`, `ensure_ascii=False`) in `platformdirs.user_data_dir("StudyTrackerDesktop")`; file names `study_tracker_save.json` / `study_tracker_save.backup.json`; quarantine suffix `.corrupt` (numbered `.corrupt.N` on collision). |
+| FR-53/FR-54 | User data is saved locally as UTF-8 JSON (`indent=2`, `ensure_ascii=False`) in `platformdirs.user_data_dir("StudyProof")`; file names `study_tracker_save.json` / `study_tracker_save.backup.json`; quarantine suffix `.corrupt` (numbered `.corrupt.N` on collision). |
 | FR-55/FR-56 | First run creates the directory and an empty-default save silently; startup loads automatically (`AppState.load_startup` invoked by `MainWindow.run_startup_load`). No user action required for normal use. |
 | FR-57 | Autosave fires inside every mutating operation (session add/delete, note create/update/delete, theme change, manual load commit) via `_mark_dirty_and_save()`. |
 | FR-58 | The `WM_DELETE_WINDOW` handler flushes when `dirty` is set; a failed final save shows a friendly error before quitting. |
@@ -396,7 +396,7 @@ FR-76 … FR-85 are confirmed requirements, implemented and refined as follows:
 | FR-82 | The packaged executable runs without requiring a Python installation on the user's machine. |
 | FR-83 | The packaged application does not open a console window (windowed GUI-mode build). |
 | FR-84 | Packaging includes all required assets — `study_tracker.spec` bundles the `assets/` folder directly into the distribution. |
-| FR-85 | A PyInstaller **one-folder** build is the shipped configuration: `dist\StudyTracker\StudyTracker.exe` with bundled assets; the spec derives a multi-size `.ico` from `app_icon.png` at build time (best-effort) and declares hidden imports (`customtkinter`, `platformdirs`, `PIL.ImageTk`, `PIL._imagingtk`, `PIL._tkinter_finder`, `PIL.ImageDraw`, `PIL.ImageFont`). No console window; no Python installation needed on the target machine. |
+| FR-85 | A PyInstaller **one-folder** build is the shipped configuration: `dist\StudyProof\StudyProof.exe` with bundled assets; the spec derives a multi-size `.ico` from `app_icon.png` at build time (best-effort) and declares hidden imports (`customtkinter`, `platformdirs`, `PIL.ImageTk`, `PIL._imagingtk`, `PIL._tkinter_finder`, `PIL.ImageDraw`, `PIL.ImageFont`). No console window; no Python installation needed on the target machine. |
 
 ## 6.7 Notes **[NEW]**
 
@@ -685,7 +685,7 @@ Python requirement: **3.10+** with Tk/Tcl (bundled with python.org Windows insta
 | QA-4 | Stopwatch formatting/auto-log logic shall be tested headlessly. | 12 tests in `test_stopwatch`. |
 | QA-5 | An end-to-end GUI smoke test shall exercise navigation, logging, dialogs, calendar navigation, theme switching, and disk round-trip. | `tests/smoke_gui.py` (run under xvfb on Linux CI). |
 | QA-6 | A performance validator shall assert the NFR-7/NFR-9 budgets against ~10,000 sessions. | `scripts/perf_check.py`; exit code gates builds. Latest recorded run: PASS (startup ≈35 ms, stats ≈3 ms, delete+save ≈60 ms). |
-| QA-7 | Release builds shall be reproducible and gated. | `run_build.ps1`: creates venv → installs pinned deps → runs full pytest suite (abort on red) → runs perf gate (abort on breach) → PyInstaller build → output-layout sanity checks (`dist\StudyTracker\StudyTracker.exe` + bundled assets). |
+| QA-7 | Release builds shall be reproducible and gated. | `run_build.ps1`: creates venv → installs pinned deps → runs full pytest suite (abort on red) → runs perf gate (abort on breach) → PyInstaller build → output-layout sanity checks (`dist\StudyProof\StudyProof.exe` + bundled assets). |
 
 ---
 
