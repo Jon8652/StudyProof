@@ -43,7 +43,10 @@ class PageViewer(ctk.CTkFrame):
         self._path: Path | None = None
         self._page_number = 1
         self._page_count = 0
-        self._zoom_index = 0            # index into ZOOM_LEVELS
+        try:                            # default view is 1.0×, not the first entry
+            self._zoom_index = ZOOM_LEVELS.index(1.0)
+        except ValueError:
+            self._zoom_index = 0
         self._text_by_page: dict[int, str] = {}
         self._show_text = False
         self._render_seq = 0            # drop stale async render results
@@ -109,14 +112,21 @@ class PageViewer(ctk.CTkFrame):
         self.image_label.bind("<Configure>", _sync_scrollregion)
         self.image_canvas.bind("<Configure>", _fit_width)
         # Scroll wheel support for Windows/macOS (delta) and Linux (button-4/5).
+        # NOTE: plain tk.Canvas has no yview_scroll_units (that is a
+        # CTkScrollableFrame API); use the native yview("scroll", n, "units").
+        def _wheel_scroll(delta):
+            try:
+                self.image_canvas.yview("scroll", delta, "units")
+            except tk.TclError:
+                pass
+
         self.image_canvas.bind_all(
             "<MouseWheel>",
-            lambda e: self.image_canvas.yview_scroll_units(
-                -1 if getattr(e, "delta", 0) > 0 else 1, "units"))
+            lambda e: _wheel_scroll(-3 if getattr(e, "delta", 0) > 0 else 3))
         self.image_canvas.bind_all("<Button-4>",
-                                   lambda e: self.image_canvas.yview_scroll_units(-1, "units"))
+                                   lambda e: _wheel_scroll(-3))
         self.image_canvas.bind_all("<Button-5>",
-                                   lambda e: self.image_canvas.yview_scroll_units(1, "units"))
+                                   lambda e: _wheel_scroll(3))
         self.apply_appearance(theme_is_dark(self))
 
         # Text stage: also created up-front but only packed in text mode.
@@ -238,14 +248,15 @@ class PageViewer(ctk.CTkFrame):
         self._set_placeholder(f"Rendering page {page_no}…")
 
     def _retire_cache(self) -> None:
-        """Move all cached images to the retire list (never free them).
+        """Drop cached PIL images for this widget only.
 
-        Dropping an image while Tk still holds its pyimageN causes
-        ``TclError: image "pyimageN" doesn't exist`` on the next label
-        redraw, which is what made zoom/document-switch go blank.
+        The page images live in :class:`PageImageLabel`, which keeps strong
+        references to every ``ImageTk.PhotoImage`` it has created until the
+        widget itself is destroyed — that is what prevents the
+        ``TclError: image "pyimageN" doesn't exist`` family of crashes.  This
+        method therefore only clears our own PIL LRU; nothing Tk-visible is
+        ever freed here.
         """
-        for image in self._cache.values():
-            self._retired_images.append(image)
         self._cache.clear()
 
     def _on_rendered(self, seq: int, pil_image, page_no: int,
@@ -257,10 +268,10 @@ class PageViewer(ctk.CTkFrame):
         key = (page_no, zoom)
         self._cache[key] = pil_image
         while len(self._cache) > PAGE_RENDER_CACHE_SIZE:
-            _evicted_key, evicted = self._cache.popitem(last=False)
-            # Keep the evicted image alive until the widget dies; freeing it
-            # early is exactly what triggers the pyimage TclError.
-            self._retired_images.append(evicted)
+            _evicted_key, _evicted = self._cache.popitem(last=False)
+            # Safe to drop here: PageImageLabel still holds a strong reference
+            # to any PhotoImage built from the evicted PIL image until the
+            # widget dies, so Tk can never be stranded on a dead pyimageN.
         self._display_image(pil_image)
 
     def _on_render_failed(self, seq: int) -> None:

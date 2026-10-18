@@ -18,7 +18,7 @@ MAX_PDF_BYTES = 100 * 1024 * 1024    # PDF-2: import size cap (ERR-30)
 MAX_PDF_PAGES = 2000                  # PDF-2: page cap (ERR-30)
 MAX_PAGE_CHARS = 200_000              # §14.1: defensive per-page clamp
 PAGE_RENDER_CACHE_SIZE = 5            # A-30 / LIB-3: LRU page-image cache
-ZOOM_LEVELS = (1.0, 1.5, 2.0)         # UI-20 viewer zoom steps
+ZOOM_LEVELS = (0.5, 1.0, 1.5, 2.0)    # UI-20 viewer zoom steps (start at 1.0×)
 EXTRACTION_PROGRESS_HZ = 10           # NFR-12: at most ~10 progress updates/s
 
 # --- Study Coach context (v2) -------------------------------------------------
