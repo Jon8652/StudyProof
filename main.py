@@ -1,7 +1,7 @@
-"""Study Tracker Desktop — application entry point (Part M).
+"""StudyProof — application entry point (Part M).
 
 Run from source:   python main.py
-Packaged exe:      built by study_tracker.spec via PyInstaller (run_build.ps1)
+Packaged exe:      built by StudyProof.spec via PyInstaller (run_build.ps1)
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ def main() -> int:
     try:
         import customtkinter  # noqa: F401
     except ImportError:
-        print("Study Tracker requires CustomTkinter. Install dependencies "
+        print("StudyProof requires CustomTkinter. Install dependencies "
               "with: pip install -r requirements.txt")
         return 1
 

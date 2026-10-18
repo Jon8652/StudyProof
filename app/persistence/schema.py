@@ -37,7 +37,7 @@ FRIENDLY_MESSAGES = {
         "empty tracker. Your original files were preserved for safekeeping."
     ),
     "future_schema": (
-        "This save file was created by a newer version of Study Tracker and "
+        "This save file was created by a newer version of StudyProof and "
         "can't be opened here. Your current data has not been changed."
     ),
     "unreadable": (

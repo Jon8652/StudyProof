@@ -136,7 +136,7 @@ class SettingsScreen(BaseScreen):
     def _manual_load(self) -> None:
         path = filedialog.askopenfilename(
             parent=self.winfo_toplevel(),
-            title="Choose a Study Tracker save file",
+            title="Choose a StudyProof save file",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if not path:
@@ -148,7 +148,7 @@ class SettingsScreen(BaseScreen):
             show_message(
                 self.winfo_toplevel(), "Couldn't open that file",
                 prepared.message or "That file could not be read as a valid "
-                                    "Study Tracker save. Your current data was "
+                                    "StudyProof save. Your current data was "
                                     "not changed.",
             )
             return

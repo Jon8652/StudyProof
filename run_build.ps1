@@ -1,14 +1,14 @@
-# Study Tracker Desktop — Windows release build script (Part M).
+# StudyProof — Windows release build script (Part M).
 #
 # Usage (from an elevated PowerShell prompt on Windows):
 #   powershell -ExecutionPolicy Bypass -File .\run_build.ps1
 #
-# Output: dist\StudyTracker\StudyTracker.exe  (one-folder distribution —
-# copy the whole dist\StudyTracker folder to distribute).
+# Output: dist\StudyProof\StudyProof.exe  (one-folder distribution —
+# copy the whole dist\StudyProof folder to distribute).
 
 $ErrorActionPreference = 'Stop'
 
-Write-Host '== Study Tracker build ==' -ForegroundColor Cyan
+Write-Host '== StudyProof build ==' -ForegroundColor Cyan
 
 # 1. Virtual environment + pinned dependencies
 if (-not (Test-Path .venv)) {
@@ -30,16 +30,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Performance budget exceeded — aborting build
 
 # 4. PyInstaller one-folder windowed build
 Write-Host 'Building executable (PyInstaller)...'
-& .\.venv\Scripts\pyinstaller.exe --noconfirm --clean study_tracker.spec
+& .\.venv\Scripts\pyinstaller.exe --noconfirm --clean StudyProof.spec
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 
 # 5. Sanity check output layout
-$exe = 'dist\StudyTracker\StudyTracker.exe'
-$assets = 'dist\StudyTracker\_internal\assets'
+$exe = 'dist\StudyProof\StudyProof.exe'
+$assets = 'dist\StudyProof\_internal\assets'
 if (-not (Test-Path $exe)) { throw "Missing $exe" }
-if (-not ((Test-Path $assets) -or (Test-Path 'dist\StudyTracker\assets'))) {
+if (-not ((Test-Path $assets) -or (Test-Path 'dist\StudyProof\assets'))) {
     throw 'Bundled assets folder not found in build output.'
 }
 
 Write-Host "OK -> $exe" -ForegroundColor Green
-Write-Host 'Distribute the entire dist\StudyTracker folder.'
+Write-Host 'Distribute the entire dist\StudyProof folder.'

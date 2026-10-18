@@ -1,13 +1,13 @@
-"""Central constants and configuration for Study Tracker Desktop v1."""
+"""Central constants and configuration for StudyProof v1."""
 
 # --- Application identity ---------------------------------------------------
-APP_NAME = "Study Tracker Desktop"
-APP_SLUG = "StudyTrackerDesktop"
+APP_NAME = "StudyProof"
+APP_SLUG = "StudyProof"
 APP_VERSION = "1.0.0"
 
 # --- Persistence ------------------------------------------------------------
-SAVE_FILE_NAME = "study_tracker_save.json"
-BACKUP_FILE_NAME = "study_tracker_save.backup.json"
+SAVE_FILE_NAME = "studyproof_save.json"
+BACKUP_FILE_NAME = "studyproof_save.backup.json"
 QUARANTINE_SUFFIX = ".corrupt"
 
 SCHEMA_VERSION = 1               # current supported schema version (FR-70)

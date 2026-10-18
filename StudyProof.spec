@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller build configuration for Study Tracker Desktop (Part M).
+# PyInstaller build configuration for StudyProof (Part M).
 #
 # One-folder, windowed (no console) build — per the plan's v1 guidance.
 # Assets are bundled into an "assets" folder next to the executable;
 # app/utils/paths.get_resource_dir() resolves them in frozen mode.
 #
-# Build on Windows:  pyinstaller --noconfirm study_tracker.spec
+# Build on Windows:  pyinstaller --noconfirm StudyProof.spec
 #              or:   .\run_build.ps1
 
 import os
@@ -21,7 +21,7 @@ if os.path.isfile(_app_icon_png):
     try:
         from PIL import Image
 
-        _ico_tmp = os.path.join(tempfile.gettempdir(), 'studytracker_app.ico')
+        _ico_tmp = os.path.join(tempfile.gettempdir(), 'studiproof_app.ico')
         with Image.open(_app_icon_png) as _img:
             _img.load()
             if _img.mode != 'RGBA':
@@ -65,7 +65,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='StudyTracker',
+    name='StudyProof',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -86,5 +86,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='StudyTracker',
+    name='StudyProof',
 )

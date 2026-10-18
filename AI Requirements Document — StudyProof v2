@@ -515,7 +515,7 @@ app/gui/widgets/chat_bubble.py, citation_chip.py,
 app/constants.py           EXTENDED (schema 2, caps, AI_TIMEOUT_S, APP_VERSION 1.1.0, nav/icons)
 tests/                     EXTENDED (see §17)
 scripts/perf_check.py      EXTENDED (NFR-12..NFR-14 budgets)
-study_tracker.spec         EXTENDED (PyMuPDF hidden imports; assets unchanged + 2 icons)
+StudyProof.spec         EXTENDED (PyMuPDF hidden imports; assets unchanged + 2 icons)
 ```
 
 ---

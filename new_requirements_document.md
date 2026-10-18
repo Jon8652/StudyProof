@@ -53,9 +53,9 @@ The application implements every core rule confirmed in the original requirement
 | **[NEW] Study stopwatch** | A real-time digital stopwatch in the sidebar that can automatically log a completed run as a custom session. This was listed as out of scope in the initial document (FUT-3 "Real-time study timer") and is now an implemented, required feature. |
 | **[UPDATED] Platform target** | Primary distribution remains a standalone Windows executable, but the app is explicitly **cross-platform at source level** (macOS/Linux supported via `platformdirs`); the README documents running from source on any OS. NFR-1 is relaxed accordingly. |
 | **[UPDATED] Editing policy** | Session editing remains out of scope (A-8 holds). However, **note editing is fully supported** (create/edit/delete notes), so the blanket "no editing" phrasing applies only to sessions. |
-| **[UPDATED] Persistence naming** | Concrete save-file names: `study_tracker_save.json` with backup `study_tracker_save.backup.json` and `.corrupt[.N]` quarantine suffixes, located in the per-user app-data directory (`APP_SLUG = "StudyProof"`). |
+| **[UPDATED] Persistence naming** | Concrete save-file names: `studyproof_save.json` with backup `studyproof_save.backup.json` and `.corrupt[.N]` quarantine suffixes, located in the per-user app-data directory (`APP_SLUG = "StudyProof"`). |
 | **[NEW] Performance engineering layer** | An incremental daily-aggregate index and lazy screen construction were added specifically to satisfy the ≥10,000-session responsiveness requirement (NFR-9), with an automated budget gate (`scripts/perf_check.py`). |
-| **[NEW] Build pipeline** | A scripted Windows release pipeline (`run_build.ps1` + `study_tracker.spec`) that gates shipping on the test suite and the performance check. |
+| **[NEW] Build pipeline** | A scripted Windows release pipeline (`run_build.ps1` + `StudyProof.spec`) that gates shipping on the test suite and the performance check. |
 
 All requirement IDs from the initial document (FR-, UI-, DATA-, ERR-, ACC-, NFR-, ARCH-) remain valid unless explicitly revised here; new or changed requirements are marked **[UPDATED]** or **[NEW]**.
 
@@ -363,7 +363,7 @@ FR-53 … FR-75 are confirmed requirements, implemented by `app/persistence` + `
 
 | ID | Requirement (as built) |
 |---|---|
-| FR-53/FR-54 | User data is saved locally as UTF-8 JSON (`indent=2`, `ensure_ascii=False`) in `platformdirs.user_data_dir("StudyProof")`; file names `study_tracker_save.json` / `study_tracker_save.backup.json`; quarantine suffix `.corrupt` (numbered `.corrupt.N` on collision). |
+| FR-53/FR-54 | User data is saved locally as UTF-8 JSON (`indent=2`, `ensure_ascii=False`) in `platformdirs.user_data_dir("StudyProof")`; file names `studyproof_save.json` / `studyproof_save.backup.json`; quarantine suffix `.corrupt` (numbered `.corrupt.N` on collision). |
 | FR-55/FR-56 | First run creates the directory and an empty-default save silently; startup loads automatically (`AppState.load_startup` invoked by `MainWindow.run_startup_load`). No user action required for normal use. |
 | FR-57 | Autosave fires inside every mutating operation (session add/delete, note create/update/delete, theme change, manual load commit) via `_mark_dirty_and_save()`. |
 | FR-58 | The `WM_DELETE_WINDOW` handler flushes when `dirty` is set; a failed final save shows a friendly error before quitting. |
@@ -371,7 +371,7 @@ FR-53 … FR-75 are confirmed requirements, implemented by `app/persistence` + `
 | FR-61 | Manual load validates the selected file before replacing current data (step 1 of the three-step flow: parse+validate **without touching current data**; failure → friendly message, data unchanged). Invalid files must not corrupt current state. |
 | FR-62 | Manual load asks for confirmation before replacing current data (step 2: explicit "Replace current data?" confirmation noting a backup will be made; cancel → unchanged). Confirmed behavior (A-9). |
 | FR-63 | If manual load is canceled or fails, current data remains unchanged (step 3 executes only after confirmation: backup current default save, then atomically replace with loaded dataset; success/failure reported with friendly messages). |
-| FR-64 | The application maintains one last-known-good backup (`study_tracker_save.backup.json`) beside the default save file. |
+| FR-64 | The application maintains one last-known-good backup (`studyproof_save.backup.json`) beside the default save file. |
 | FR-65 | A backup is created before overwriting the default save file during risky operations (manual load; schema migration would also qualify). Backup failures never block normal saving (atomic write alone protects the main file). |
 | FR-66 | If the default save file is missing, the application starts with empty default data (normal first-run behavior — silent). |
 | FR-67 | If the default save file is corrupt, the application attempts to load the most recent backup; on success it recovers with a friendly notice and quarantines the bad default. |
@@ -395,7 +395,7 @@ FR-76 … FR-85 are confirmed requirements, implemented and refined as follows:
 | FR-81 | The application is packageable into a standalone Windows executable via PyInstaller. |
 | FR-82 | The packaged executable runs without requiring a Python installation on the user's machine. |
 | FR-83 | The packaged application does not open a console window (windowed GUI-mode build). |
-| FR-84 | Packaging includes all required assets — `study_tracker.spec` bundles the `assets/` folder directly into the distribution. |
+| FR-84 | Packaging includes all required assets — `StudyProof.spec` bundles the `assets/` folder directly into the distribution. |
 | FR-85 | A PyInstaller **one-folder** build is the shipped configuration: `dist\StudyProof\StudyProof.exe` with bundled assets; the spec derives a multi-size `.ico` from `app_icon.png` at build time (best-effort) and declares hidden imports (`customtkinter`, `platformdirs`, `PIL.ImageTk`, `PIL._imagingtk`, `PIL._tkinter_finder`, `PIL.ImageDraw`, `PIL.ImageFont`). No console window; no Python installation needed on the target machine. |
 
 ## 6.7 Notes **[NEW]**
@@ -619,7 +619,7 @@ Actual layout (as implemented):
 
 ```
 main.py                      entry point (dependency fail-fast, MainWindow bootstrap)
-study_tracker.spec           PyInstaller one-folder windowed config (exe .ico derived at build)
+StudyProof.spec           PyInstaller one-folder windowed config (exe .ico derived at build)
 run_build.ps1                Windows release pipeline: venv → deps → pytest gate → perf gate → build → sanity checks
 requirements.txt             pinned dependency floors incl. pytest
 app/constants.py             gameplay rules, limits, presets, window metrics, file names, APP_VERSION
@@ -667,7 +667,7 @@ Module responsibilities (from the initial plan, still accurate): session logic (
 | Pillow ≥10 | PNG loading/scaling for icons and medals; ImageTk bridge; build-time .ico generation. |
 | platformdirs ≥3.10 | Per-user app-data directory resolution across Windows/macOS/Linux. |
 | python-dateutil ≥2.9 | Lenient datetime parsing helpers. |
-| PyInstaller ≥6.0 | One-folder, windowed Windows executable via `study_tracker.spec`. |
+| PyInstaller ≥6.0 | One-folder, windowed Windows executable via `StudyProof.spec`. |
 | pytest ≥8.0 | Unit-test runner for the core/persistence/widget-logic suites. |
 | Tkinter (stdlib) | Underlying toolkit; `filedialog` for manual load. |
 
