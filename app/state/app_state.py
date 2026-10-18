@@ -528,8 +528,8 @@ class AppState:
             return ActionResult(ok=False,
                                 message="That document could not be found.")
         if pages is not None:
-            document.set_extracted_text(pages)
-        if status in DOC_STATUSES:
+            document.set_extracted_text(pages)   # derives ready/textless
+        if status in DOC_STATUSES:               # "" keeps the derived state
             document.status = status
         if save:
             self._mark_dirty_and_save()
@@ -566,6 +566,18 @@ class AppState:
         """All documents, newest import first."""
         return sorted(self.dataset.documents,
                       key=lambda d: d.imported_at_local, reverse=True)
+
+    def pending_extraction_ids(self) -> list[str]:
+        """Documents still marked ``extracting`` after a load (PDF-4).
+
+        ``extracting`` is transient and never persisted, so a save written
+        mid-extraction comes back as ``textless``; both cases mean "the
+        stored text may be incomplete — re-run extraction in the background"
+        (the Library screen starts an ExtractionWorker for these ids).
+        """
+        return [d.id for d in self.dataset.documents
+                if d.status in ("extracting", "textless")
+                and library.binary_exists(d.stored_name)]
 
     def document_by_id(self, document_id: str) -> Document | None:
         return self._doc_by_id.get(document_id) \
@@ -672,6 +684,19 @@ class AppState:
             return SourceRef(kind=kind, id=document.id,
                              label=document.display_label())
         return None
+
+    def build_pack_for_selection(self, selections: list[tuple[str, str]]):
+        """Assemble the SEL-2 source pack for ``(kind, id)`` selections.
+
+        Thin wrapper over ``app.core.agent.context.build_source_pack`` so
+        the dialog (and later the Coach screen) never reach into raw model
+        maps themselves.  Pure derivation — no AI, no file access.
+        """
+        from app.core.agent.context import build_source_pack
+        notes_by_id = {n.id: n for n in self.dataset.notes}
+        documents_by_id = {d.id: d for d in self.dataset.documents}
+        return build_source_pack(selections, notes_by_id=notes_by_id,
+                                 documents_by_id=documents_by_id)
 
     # -- v2: review metrics (REV-1..REV-3) ---------------------------------------
 
