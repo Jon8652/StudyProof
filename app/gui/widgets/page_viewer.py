@@ -37,7 +37,16 @@ class PageViewer(ctk.CTkFrame):
         self._show_text = False
         self._render_seq = 0            # drop stale async render results
         self._cache: "OrderedDict[tuple[int, float], object]" = OrderedDict()
-        self._image_ref = None          # keep CTkImage alive
+        self._image_ref = None          # keep the on-screen CTkImage alive
+        # Strong references to every CTkImage this widget has ever produced.
+        # Tkinter PhotoImages are reference-counted: if a CTkImage is garbage
+        # collected while its label still points at the underlying pyimageN,
+        # any later redraw of that label raises
+        # ``TclError: image "pyimageN" doesn't exist`` (this crashed the
+        # placeholder/zoom/document-switch paths).  We therefore never let an
+        # image die while Tk may still reference it — evicted cache entries
+        # move here instead of being dropped.
+        self._retired_images: list = []
 
         # --- toolbar ---------------------------------------------------------
         bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -93,7 +102,9 @@ class PageViewer(ctk.CTkFrame):
         self._page_count = max(0, int(page_count))
         self._text_by_page = dict(text_pages or {})
         if changed:
-            self._cache.clear()
+            # Retire (never drop) cached images so Tk keeps valid pyimage
+            # references; see _retired_images.
+            self._retire_cache()
             self._page_number = 1
             self._render_seq += 1
         self._page_number = min(max(1, self._page_number),
@@ -136,7 +147,7 @@ class PageViewer(ctk.CTkFrame):
     def _cycle_zoom(self) -> None:
         self._zoom_index = (self._zoom_index + 1) % len(ZOOM_LEVELS)
         self.zoom_button.configure(text=self._zoom_text())
-        self._cache.clear()          # cached images are per-zoom
+        self._retire_cache()         # cached images are per-zoom
         self.show_current()
 
     def _toggle_text(self) -> None:
@@ -181,27 +192,46 @@ class PageViewer(ctk.CTkFrame):
             except Exception:
                 self._events.post(lambda: self._on_render_failed(seq))
                 return
+            # doc_id is captured only to detect documents that were swapped
+            # out while this render was in flight (belt-and-braces alongside
+            # the seq guard); it must never be deleted afterwards.
             self._events.post(
                 lambda img=image, p=page_no, z=zoom, d=doc_id:
-                self._on_rendered(seq, img, p, z))
-            # Touch doc-id reference so linters keep the closure honest.
-            del d
+                self._on_rendered(seq, img, p, z, d))
 
         threading.Thread(target=worker, daemon=True,
                          name="pdf-render").start()
         self._set_placeholder(f"Rendering page {page_no}…")
 
+    def _retire_cache(self) -> None:
+        """Move all cached CTkImages to the retire list (never free them).
+
+        Dropping a CTkImage while Tk still holds its pyimageN causes
+        ``TclError: image "pyimageN" doesn't exist`` on the next label
+        redraw, which is what made zoom/document-switch go blank.
+        """
+        for image in self._cache.values():
+            if image is not self._image_ref:
+                self._retired_images.append(image)
+        self._cache.clear()
+
     def _on_rendered(self, seq: int, pil_image, page_no: int,
-                     zoom: float) -> None:
+                     zoom: float, doc_id: str | None = None) -> None:
         if seq != self._render_seq or page_no != self._page_number:
             return  # stale result from a superseded request
+        if doc_id is not None and doc_id != self._document_id:
+            return  # document was switched while the render was in flight
         size = (pil_image.width, pil_image.height)
         ctk_image = ctk.CTkImage(light_image=pil_image,
                                  dark_image=pil_image, size=size)
         key = (page_no, zoom)
         self._cache[key] = ctk_image
         while len(self._cache) > PAGE_RENDER_CACHE_SIZE:
-            self._cache.popitem(last=False)   # evict least-recently-used
+            evicted_key, evicted = self._cache.popitem(last=False)
+            # Keep the evicted image alive until the widget dies; freeing it
+            # early is exactly what triggers the pyimage TclError.
+            if evicted is not self._image_ref:
+                self._retired_images.append(evicted)
         self._display_image(ctk_image)
 
     def _on_render_failed(self, seq: int) -> None:
