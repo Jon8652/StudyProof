@@ -21,6 +21,7 @@ ASSET_FILENAMES = {
     "stats_icon": "stats_icon.png",
     "settings_icon": "settings_icon.png",
     "notes_icon": "notes_icon.png",
+    "library_icon": "library_icon.png",
     "bronze_medal": "bronze_medal.png",
     "silver_medal": "silver_medal.png",
     "gold_medal": "gold_medal.png",
