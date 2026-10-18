@@ -553,6 +553,18 @@ class AppState:
                                 message="That document could not be found.")
         if pages is not None:
             document.set_extracted_text(pages)   # derives ready/textless
+            # ``set_extracted_text`` replaces text_pages with a brand-new list
+            # object.  If the id-map and the dataset hold *different* Document
+            # instances (a legacy index quirk), autosave would serialise the
+            # stale dataset record — an empty text_pages list — so every
+            # restart showed blank "Show text" even though extraction worked.
+            # Mirror the freshly derived fields onto the saved record too.
+            stored = self.dataset.document_by_id(document.id)
+            if stored is not None and stored is not document:
+                stored.text_pages = document.text_pages
+                stored.page_count = document.page_count
+                stored.char_count = document.char_count
+                stored.status = document.status
         if status in DOC_STATUSES:               # "" keeps the derived state
             document.status = status
         if save:
