@@ -1,16 +1,19 @@
 """Statistics screen (Part H).
 
 Sections: period totals (today/week/month/lifetime XP + time), streaks,
-medal counts, and general activity. All values come from the stats engine
-so they always match calendar/home derivations, and refresh on any change.
-Cards are colour-coded per metric family (time = blue, XP = gold, streaks
-= accent blue, medals = bronze/silver/gold) for quick visual scanning.
+medal counts, general activity, and — since v2 — a Review section (UI-24)
+showing coach activity (REV-3) and the weakest topics per source (REV-1 /
+REV-2). All values come from the stats engine so they always match
+calendar/home derivations, and refresh on any change. Cards are
+colour-coded per metric family (time = blue, XP = gold, streaks = accent
+blue, medals = bronze/silver/gold) for quick visual scanning.
 """
 
 from __future__ import annotations
 
 import customtkinter as ctk
 
+from app.core.stats import WEAK_SCORE_THRESHOLD
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.theme import CARD_PAD_X, MUTED_TEXT
 from app.gui.widgets.summary_card import SummaryCard
@@ -91,6 +94,41 @@ class StatsScreen(BaseScreen):
             for col in range(4):
                 row_frame.grid_columnconfigure(col, weight=1)
 
+        # --- Review (v2, UI-24) -------------------------------------------------
+        # Coach activity cards (REV-3) plus a weak-topic list (REV-1/REV-2).
+        # The weak-topic rows are rebuilt on refresh because their count
+        # varies with the data; the coach cards are fixed.
+        coach_row = section("Coach activity")
+        add_card(coach_row, "coach_sessions", "Coach sessions", color="accent")
+        add_card(coach_row, "coach_answered", "Questions answered", color="accent")
+        add_card(coach_row, "coach_hints", "Hints used", color="accent")
+        add_card(coach_row, "coach_revisions", "Revisions requested", color="accent")
+        for col in range(4):
+            coach_row.grid_columnconfigure(col, weight=1)
+
+        # Rebuildable container: destroying its children on refresh removes
+        # the old weak-topic rows (and its own header), then we re-add them.
+        self._weak_container = ctk.CTkFrame(self.scroll, fg_color="transparent")
+        self._weak_container.pack(fill="x")
+        self._weak_header_row = ctk.CTkFrame(
+            self._weak_container, fg_color="transparent")
+        self._weak_header_row.pack(fill="x", pady=(14, 6))
+        ctk.CTkFrame(self._weak_header_row, width=4, height=16, corner_radius=2,
+                     fg_color="#2b6cb0").pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            self._weak_header_row, text="Weak topics",
+            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+        ).pack(side="left")
+        self._weak_empty = ctk.CTkLabel(
+            self._weak_container,
+            text="No weak topics flagged yet \u2014 work through the Study Coach "
+                 f"and sources scoring {WEAK_SCORE_THRESHOLD}+ weak points "
+                 "will appear here.",
+            font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
+            wraplength=520, justify="left",
+        )
+        self._weak_empty.pack(anchor="w", pady=(2, 6))
+
         self.empty_label = ctk.CTkLabel(
             self.scroll,
             text="No study data yet \u2014 log your first session on the Home "
@@ -143,3 +181,69 @@ class StatsScreen(BaseScreen):
             self.empty_label.pack(fill="x", pady=(8, 4))
         else:
             self.empty_label.pack_forget()
+
+        self._refresh_review()
+
+    # --- Review section (v2, UI-24) ------------------------------------------
+
+    def _refresh_review(self) -> None:
+        """Update coach activity cards and rebuild the weak-topic rows."""
+        metrics = self.state.get_review_metrics()
+        activity = metrics.activity
+        cards = self._cards
+
+        cards["coach_sessions"].set_value(str(activity.sessions),
+                                         "Coach sessions")
+        cards["coach_answered"].set_value(
+            f"{activity.questions_answered}/{activity.questions_asked}",
+            "Questions answered")
+        cards["coach_hints"].set_value(str(activity.hints_used), "Hints used")
+        cards["coach_revisions"].set_value(str(activity.revisions),
+                                           "Revisions requested")
+
+        # Drop everything inside the container except the header row, then
+        # re-add the empty-state label / weak-topic rows.
+        for child in list(self._weak_container.winfo_children()):
+            if child is not self._weak_header_row:
+                child.destroy()
+
+        weak = metrics.weak_sources
+        if not weak:
+            self._weak_empty = ctk.CTkLabel(
+                self._weak_container,
+                text=("No weak topics flagged yet \u2014 work through the Study "
+                      f"Coach and sources scoring {WEAK_SCORE_THRESHOLD}+ weak "
+                      "points will appear here."
+                      if metrics.has_coach_data else
+                      "No coaching sessions yet \u2014 start the Study Coach "
+                      "from the Library or Notes screen and weak topics will "
+                      "appear here."),
+                font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
+                wraplength=520, justify="left",
+            )
+            self._weak_empty.pack(anchor="w", pady=(2, 6))
+            return
+
+        for entry in weak:
+            row = ctk.CTkFrame(self._weak_container, corner_radius=8,
+                               fg_color=("gray85", "gray17"))
+            row.pack(fill="x", pady=3)
+            kind_tag = "\U0001F4C4" if entry.kind == "document" else "\U0001F4DD"
+            ctk.CTkLabel(
+                row, text=f"{kind_tag}  {entry.label}",
+                font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
+            ).pack(side="left", padx=(12, 6), pady=8)
+
+            conf_text = ""
+            if entry.average_confidence is not None:
+                conf_text = f"avg confidence {entry.average_confidence:.1f}/2 \u00b7 "
+            ctk.CTkLabel(
+                row,
+                text=f"{conf_text}{entry.question_count} question"
+                     f"{'s' if entry.question_count != 1 else ''}",
+                font=ctk.CTkFont(size=12), text_color=MUTED_TEXT, anchor="e",
+            ).pack(side="right", padx=(6, 4), pady=8)
+            ctk.CTkLabel(
+                row, text=f"weak points: {entry.score}",
+                font=ctk.CTkFont(size=12, weight="bold"), anchor="e",
+            ).pack(side="right", padx=(6, 12), pady=8)
