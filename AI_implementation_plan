@@ -22,10 +22,13 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 
 ### Phase 2: PDF Pipeline & Library UI (Non-AI)
 **Goal:** Users can import PDFs, extract text in the background, and view pages in-app.
-*   **2.1 Dependencies:** Add `PyMuPDF` (fitz) to `requirements.txt`.
-*   **2.2 Extraction Engine:**
+*   **2.1 Dependencies & Build Verification:** 
+    *   Add `PyMuPDF` (fitz) to `requirements.txt`.
+    *   Verify that `run_build.ps1` correctly installs this new dependency in the virtual environment *before* it attempts to run the test suite.
+*   **2.2 Thread Safety Strategy & Extraction Engine:**
+    *   **Thread Safety Pattern:** Define a standard `UIEventQueue` (or similar dispatcher wrapping `queue.Queue` and polled via Tkinter's `after()` method) to standardize how background workers communicate with the CustomTkinter main loop. This prevents cross-thread UI crashes.
     *   Create `app/core/pdfx.py`: Implement text extraction per page and page-to-pixmap rendering.
-    *   Implement a background worker queue (A-30) so extraction and rendering never block the Tkinter main thread.
+    *   Implement a background worker queue (A-30) utilizing the new thread-safe dispatcher so extraction and rendering never block the Tkinter main thread.
 *   **2.3 Library Screen UI:**
     *   Create `app/gui/screens/library_screen.py`: Split pane with Document List (left) and Page Viewer (right).
     *   Create `app/gui/widgets/page_viewer.py`: Pixmap display with zoom (1.0/1.5/2.0), prev/next, text-toggle, and a 5-page LRU cache.
@@ -92,13 +95,13 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 ### Phase 7: Gates, Packaging & Polish
 **Goal:** Ensure the frozen executable works and performance budgets are met.
 *   **7.1 Packaging:**
-    *   Update `study_tracker.spec`: Add `fitz` (PyMuPDF) to hidden imports. Verify `assets/` bundling still works.
+    *   Update `StudyProof.spec`: Add `fitz` (PyMuPDF) to hidden imports. Verify `assets/` bundling still works.
 *   **7.2 Performance Gate:**
     *   Update `scripts/perf_check.py`: Add NFR-12 (200-page extraction ≤ 15s), NFR-13 (Mock turn ≤ 200ms), and NFR-14 (Page render ≤ 300ms) budgets.
 *   **7.3 Final Testing:**
     *   Update `tests/smoke_gui.py` (QA-16): Add a flow that imports a fixture PDF, selects it, runs a full mock coach loop, and verifies the Review screen updates.
     *   Update `README.md` with v1.1.0 features, PyMuPDF dependency, and AI privacy guarantees.
-*   **Phase 7 Exit Gate:** `run_build.ps1` completes successfully, producing a standalone `dist\StudyTracker\StudyTracker.exe` that passes all gates.
+*   **Phase 7 Exit Gate:** `run_build.ps1` completes successfully, producing a standalone `dist\StudyProof\StudyProof.exe` that passes all gates.
 
 ---
 
@@ -114,5 +117,7 @@ This implementation plan is structured to strictly follow the **"Non-AI first"**
 | **6** | Live Provider | `urllib` (stdlib) | Medium (2-3 days) |
 | **7** | Packaging & QA | None | Low (1-2 days) |
 
+**Total Estimated Effort:** ~16-22 working days for a single developer.
 
 **Critical Path Note:** Phase 2 (PyMuPDF extraction) and Phase 4 (Agent Core state machine) are the most complex technical challenges. Because they are completely decoupled, they can be worked on in parallel if multiple developers are available, or sequentially as planned above to ensure the data layer is rock-solid before the AI logic is layered on top.
+
