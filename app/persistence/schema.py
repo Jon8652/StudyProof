@@ -67,4 +67,8 @@ FRIENDLY_MESSAGES = {
     "duplicate_import": (
         "That PDF is already in your library."
     ),
+    "pdf_too_large": (
+        "That PDF is too big to import — StudyProof handles files up to "
+        "100 MB and 2,000 pages. Please split it or pick a smaller file."
+    ),
 }

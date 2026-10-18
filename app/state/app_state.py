@@ -23,6 +23,8 @@ from app.core.medals import (
     medal_for_minutes,
 )
 from app.core.models import (
+    SOURCE_KIND_DOCUMENT,
+    SOURCE_KIND_NOTE,
     CoachSession,
     Dataset,
     Document,
@@ -31,11 +33,24 @@ from app.core.models import (
     Note,
     Session,
     Settings,
+    SourceRef,
 )
-from app.core.stats import ReviewMetrics, StatsResult, compute_stats
+from app.core.stats import (
+    ReviewMetrics,
+    StatsResult,
+    compute_review_metrics,
+    compute_stats,
+)
 from app.core.streaks import current_streak, longest_streak
-from app.persistence import repository
+from app.persistence import library, repository
 from app.persistence.schema import FRIENDLY_MESSAGES, SaveError
+
+from app.constants import (   # noqa: E402  (v2 library + coach limits)
+    DOC_STATUSES,
+    MAX_PDF_BYTES,
+    MAX_PDF_PAGES,
+    MAX_SOURCES,
+)
 
 
 @dataclass
@@ -71,6 +86,10 @@ class AppState:
         self._note_counts_by_day: dict[date, int] = {}
         self._doc_by_id: dict[str, Document] = {}
         self._coach_by_id: dict[str, CoachSession] = {}
+        # In-memory import-size map for duplicate detection (PDF-3): the save
+        # file has no size field, so freshly imported files carry their byte
+        # size here for the lifetime of the run.
+        self._document_sizes: dict[str, int] = {}
         self._listeners: list[Callable[[], None]] = []
         self.dirty: bool = False
         self.rebuild_index()
@@ -285,6 +304,23 @@ class AppState:
         self._note_by_id = notes_by_id
         self._note_counts_by_day = note_counts
 
+        # v2 collections (INT-2): id indexes rebuilt from the dataset.
+        docs_by_id: dict[str, Document] = {}
+        for document in self.dataset.documents:
+            docs_by_id[document.id] = document
+            # Rebuild duplicate-detection sizes from the stored binary.
+            try:
+                self._document_sizes[document.id] = library.binary_path(
+                    document.stored_name).stat().st_size
+            except OSError:
+                self._document_sizes.pop(document.id, None)
+        self._doc_by_id = docs_by_id
+
+        coach_by_id: dict[str, CoachSession] = {}
+        for coach in self.dataset.coach_sessions:
+            coach_by_id[coach.id] = coach
+        self._coach_by_id = coach_by_id
+
     def _index_add(self, session: Session) -> None:
         day = session.day
         rate = self.dataset.settings.xp_per_10_minutes
@@ -407,6 +443,243 @@ class AppState:
         """All notes, most recently updated first."""
         return sorted(self.dataset.notes,
                       key=lambda n: n.updated_at_local, reverse=True)
+
+    # -- v2: PDF library mutations (Phase 1.4 / INT-2) --------------------------
+
+    def import_document(self, source_path: "str | Path",
+                        file_size: int | None = None) -> ActionResult:
+        """Import a PDF into the library (PDF-1..PDF-3, ERR-29/ERR-30).
+
+        The binary is copied into ``<app-data>/library/<uuid>.pdf`` *before*
+        any record exists; a record is created only after a successful copy
+        (PDF-1).  Duplicates are detected by ``(file_name, file_size)`` and
+        refused with an "already in your library" notice plus the existing
+        record id so the GUI can offer to open it (PDF-3).
+        """
+        path = Path(source_path)
+        try:
+            size = path.stat().st_size if file_size is None else int(file_size)
+        except OSError:
+            return ActionResult(ok=False, message=FRIENDLY_MESSAGES["unreadable"])
+
+        if size > MAX_PDF_BYTES:
+            return ActionResult(ok=False, message=FRIENDLY_MESSAGES["pdf_too_large"])
+
+        for existing in self.dataset.documents:
+            if (existing.file_name.lower() == path.name.lower()
+                    and self._document_sizes.get(existing.id) == size):
+                return ActionResult(
+                    ok=False,
+                    message=FRIENDLY_MESSAGES["duplicate_import"],
+                    value=existing.id,   # GUI offers "open existing record"
+                )
+
+        stored_name = library.new_stored_name()
+        try:
+            library.copy_in(path, stored_name)
+        except OSError:
+            # Copy failed — no record is created (PDF-1/PDF-5).
+            return ActionResult(
+                ok=False,
+                message="This PDF couldn't be opened (it may be protected "
+                        "or damaged).")
+
+        document = Document.create(file_name=path.name,
+                                   stored_name=stored_name,
+                                   original_path=str(path))
+        self.dataset.documents.append(document)
+        self._doc_by_id[document.id] = document
+        self._document_sizes[document.id] = size
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True, value=document)
+
+    def delete_document(self, document_id: str) -> ActionResult:
+        """Delete a document record + its stored binary (LIB-5).
+
+        Coach sessions are never deleted here (COACH-12/ERR-33): affected
+        sessions simply mark that source removed when they render.
+        """
+        document = self._doc_by_id.get(document_id) \
+            or self.dataset.document_by_id(document_id)
+        if document is None:
+            return ActionResult(ok=False,
+                                message="That document could not be found.")
+        self.dataset.documents.remove(document)
+        self._doc_by_id.pop(document.id, None)
+        self._document_sizes.pop(document.id, None)
+        library.remove_binary(document.stored_name)
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True)
+
+    def update_document_status(self, document_id: str, status: str,
+                               pages: list[tuple[int, str]] | None = None,
+                               save: bool = True) -> ActionResult:
+        """Apply extraction results / status transitions to a document.
+
+        ``pages`` (when given) replaces ``text_pages`` via the model helper,
+        which also derives ready/textless (PDF-4/PDF-6).  Status values are
+        validated against DOC_STATUSES; unknown ones are ignored.
+        """
+        document = self._doc_by_id.get(document_id) \
+            or self.dataset.document_by_id(document_id)
+        if document is None:
+            return ActionResult(ok=False,
+                                message="That document could not be found.")
+        if pages is not None:
+            document.set_extracted_text(pages)
+        if status in DOC_STATUSES:
+            document.status = status
+        if save:
+            self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True, value=document)
+
+    def relink_document(self, document_id: str,
+                        source_path: "str | Path") -> ActionResult:
+        """Re-link a missing binary from a user-chosen file (LIB-6).
+
+        The caller (GUI) verifies page-count match before invoking this;
+        storage adopts the file under the original ``stored_name``.
+        """
+        document = self._doc_by_id.get(document_id) \
+            or self.dataset.document_by_id(document_id)
+        if document is None:
+            return ActionResult(ok=False,
+                                message="That document could not be found.")
+        try:
+            library.adopt_binary(source_path, document.stored_name)
+        except OSError:
+            return ActionResult(
+                ok=False,
+                message="That file couldn't be used — please pick the same "
+                        "PDF again.")
+        document.original_path = str(Path(source_path))
+        # Stored text decides usability again; keep 'missing' out of the way.
+        document.status = "ready" if document.char_count > 0 else "textless"
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True, value=document)
+
+    def get_documents(self) -> list[Document]:
+        """All documents, newest import first."""
+        return sorted(self.dataset.documents,
+                      key=lambda d: d.imported_at_local, reverse=True)
+
+    def document_by_id(self, document_id: str) -> Document | None:
+        return self._doc_by_id.get(document_id) \
+            or self.dataset.document_by_id(document_id)
+
+    # -- v2: coach session containers (schema level; UI arrives in Phase 5) ----
+
+    def create_coach_session(self, sources: list[SourceRef]) -> ActionResult:
+        """Persist a new coaching container with its selection snapshot."""
+        if not sources:
+            return ActionResult(ok=False,
+                                message="Pick at least one source first.")
+        if len(sources) > MAX_SOURCES:
+            return ActionResult(
+                ok=False,
+                message=f"A session can use up to {MAX_SOURCES} sources.")
+        session = CoachSession.create(sources=sources)
+        self.dataset.coach_sessions.append(session)
+        self._coach_by_id[session.id] = session
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True, value=session)
+
+    def delete_coach_session(self, coach_id: str) -> ActionResult:
+        """Delete a coaching session (the GUI confirms first, COACH-14)."""
+        session = self._coach_by_id.get(coach_id) \
+            or self.dataset.coach_session_by_id(coach_id)
+        if session is None:
+            return ActionResult(ok=False,
+                                message="That coach session could not be found.")
+        self.dataset.coach_sessions.remove(session)
+        self._coach_by_id.pop(session.id, None)
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True)
+
+    def coach_session_by_id(self, coach_id: str) -> CoachSession | None:
+        return self._coach_by_id.get(coach_id) \
+            or self.dataset.coach_session_by_id(coach_id)
+
+    def persist_coach_session(self, session: CoachSession) -> ActionResult:
+        """Autosave after an in-place mutation of a coach session."""
+        session.touch()
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(ok=True)
+
+    # -- v2: source selection views (SEL-1) -------------------------------------
+
+    def selectable_sources(self) -> list[dict]:
+        """Candidate sources for the selection dialog (SEL-1/UI-25).
+
+        Notes must be non-empty; documents must be ``ready`` (PDF-6/ERR-31 —
+        textless/missing records stay listed as unavailable so the dialog can
+        explain why they cannot be picked).
+        """
+        entries: list[dict] = []
+        for note in sorted(self.dataset.notes,
+                           key=lambda n: n.updated_at_local, reverse=True):
+            body = (note.body or "").strip()
+            if not body:
+                continue
+            entries.append({
+                "kind": SOURCE_KIND_NOTE,
+                "id": note.id,
+                "label": note.display_title(),
+                "chars": len(note.body),
+                "available": True,
+                "reason": "",
+                "meta": note.day.isoformat() if note.day else "undated",
+            })
+        for document in self.get_documents():
+            available = document.status == "ready"
+            reason = ""
+            if document.status == "textless":
+                reason = "No selectable text (viewer still works)."
+            elif document.status == "extracting":
+                reason = "Still extracting — check back in a moment."
+            elif document.status == "missing":
+                reason = "File missing — re-link it in the Library."
+            entries.append({
+                "kind": SOURCE_KIND_DOCUMENT,
+                "id": document.id,
+                "label": document.display_label(),
+                "chars": document.char_count,
+                "available": available,
+                "reason": reason,
+                "meta": f"{document.page_count} pages",
+            })
+        return entries
+
+    def source_ref_for(self, kind: str, item_id: str) -> SourceRef | None:
+        """Build a selection-snapshot entry (SEL-3) for a chosen source."""
+        if kind == SOURCE_KIND_NOTE:
+            note = self._note_by_id.get(item_id) \
+                or self.dataset.note_by_id(item_id)
+            if note is None:
+                return None
+            return SourceRef(kind=kind, id=note.id, label=note.display_title())
+        if kind == SOURCE_KIND_DOCUMENT:
+            document = self.document_by_id(item_id)
+            if document is None:
+                return None
+            return SourceRef(kind=kind, id=document.id,
+                             label=document.display_label())
+        return None
+
+    # -- v2: review metrics (REV-1..REV-3) ---------------------------------------
+
+    def get_review_metrics(self) -> ReviewMetrics:
+        """Weak-topic + coach-activity derivation over the coaching log."""
+        return compute_review_metrics(self.dataset.coach_sessions)
+
+    # -- derived views --------------------------------------------------------------
 
     def get_notes_for_day(self, day: date) -> list[Note]:
         """Notes attached to ``day``, newest first."""
