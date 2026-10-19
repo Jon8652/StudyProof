@@ -19,21 +19,23 @@ from __future__ import annotations
 
 import os
 import queue
-import sys
 import threading
 import time
 import weakref
 from pathlib import Path
 from typing import Any, Callable
 
-# ``event_generate`` from a non-main thread is unreliable on Windows: Tk may
-# defer or drop the wake-up, leaving posted callbacks stranded until the slow
-# safety-net poll happens to fire (which can be seconds under load).  On those
-# platforms we deliver through a self-pipe instead: the worker writes one byte
-# and the main loop drains it via a file event, which is fully thread-safe.
-# ``STUDYPROOF_UIQ_PIPE`` forces the pipe backend on any OS (used by tests).
-_PIPE_BACKEND = (sys.platform.startswith('win')
-                 or os.environ.get('STUDYPROOF_UIQ_PIPE') == '1')
+# ``event_generate`` from a non-main thread used to be suspected of being
+# unreliable on Windows, so a self-pipe + ``createfilehandler`` backend was
+# tried as a workaround.  That experiment is over: ``createfilehandler`` does
+# not exist in the standard Windows Tcl/Tk build, so the pipe setup silently
+# failed there anyway — and merely *constructing* the queue with
+# ``STUDYPROOF_UIQ_PIPE=1`` raised TclError in every environment (including
+# headless CI runs of unrelated tests such as test_stopwatch.py).  Delivery is
+# now handled entirely by thread-marshalled ``after_idle`` wakes plus a slow
+# ``after()`` safety-net poll (see ``UIEventQueue._wake``), both of which are
+# available on every platform.
+_PIPE_BACKEND = os.environ.get('STUDYPROOF_UIQ_PIPE') == '1'
 
 
 def _drain_fd(fd: int) -> None:
