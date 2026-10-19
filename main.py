@@ -1,8 +1,4 @@
-"""StudyProof — application entry point (Part M).
-
-Run from source:   python main.py
-Packaged exe:      built by StudyProof.spec via PyInstaller (run_build.ps1)
-"""
+"""StudyProof development entry point. Run with: python main.py."""
 
 from __future__ import annotations
 
@@ -10,9 +6,6 @@ import sys
 
 
 def main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == '--verify-release':
-        from app.release_check import run
-        return run(sys.argv[2])
     # Fail fast with an honest message if the GUI toolkit is unavailable,
     # instead of a confusing traceback (non-goal: no silent degradation).
     try:
@@ -32,6 +25,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    from multiprocessing import freeze_support
-    freeze_support()
     sys.exit(main())

@@ -78,27 +78,10 @@ def get_quarantine_path(original: Path) -> Path:
         counter += 1
 
 
-# --- Resource paths (source vs frozen executable) ----------------------------
+# --- Source resource paths --------------------------------------------------
 
 def get_resource_dir() -> Path:
-    """Return the base directory containing bundled resources.
-
-    When running from source this is the project root; when running as a
-    PyInstaller-frozen executable it is ``sys._MEIPASS`` (FR-78).
-
-    For one-folder builds PyInstaller 6.x extracts data into
-    ``<exe dir>/_internal`` and sets ``_MEIPASS`` there. If that layout is
-    detected but the assets folder lives next to the executable instead
-    (e.g. copied there), prefer the exe-adjacent copy so both work.
-    """
-    import sys
-
-    if getattr(sys, "frozen", False):
-        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-        exe_dir = Path(sys.executable).parent
-        if not (meipass / "assets").exists() and (exe_dir / "assets").exists():
-            return exe_dir
-        return meipass
+    """Return the project root containing the app's assets folder."""
     # .../app/utils/paths.py -> project root is three levels up
     return Path(__file__).resolve().parent.parent.parent
 

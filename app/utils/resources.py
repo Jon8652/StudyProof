@@ -38,30 +38,6 @@ def asset_exists(key: str) -> bool:
     return get_asset_path(filename).is_file()
 
 
-def export_ico(png_filename: str, ico_path) -> bool:
-    """Convert a bundled PNG into a multi-size .ico (used at build time).
-
-    User artwork may be any size/mode; Pillow derives all standard icon
-    sizes from the source image. Returns True on success.
-    """
-    from pathlib import Path as _Path
-
-    from PIL import Image
-
-    src = get_asset_path(png_filename)
-    if not src.is_file():
-        return False
-    try:
-        with Image.open(src) as img:
-            img.load()
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
-            img.save(_Path(ico_path), format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-        return True
-    except Exception:
-        return False
-
-
 def load_photo(key: str, size: int | None = None):
     """Load an asset as a customtkinter-compatible CTkImage, or return None.
 

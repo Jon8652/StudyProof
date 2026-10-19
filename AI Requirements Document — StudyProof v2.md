@@ -1,3 +1,5 @@
+**Development update (19 October 2026):** Executable packaging is intentionally removed while the app is being updated. Run from source using the README. Historical executable/build requirements below are deferred; the build scripts, release-only diagnostic and packaged output are no longer part of the current development workflow.
+
 **Updated coaching behaviour (19 October 2026):** These changes supersede the original manual-confidence and 6,000-character clauses below. Confidence is assessed by the coach from the immutable first answer during feedback; no confidence picker is shown. Hints and feedback unlock after the first answer. The combined session source budget is 1,000,000 characters. Quote previews appear only while hovering over their citation. Settings can load exact model IDs from the configured service's `/models` endpoint into a selectable Model list; manual entry remains available for services without model discovery.
 
 # AI Requirements Document — StudyProof v2 (Study Coach & PDF Library)

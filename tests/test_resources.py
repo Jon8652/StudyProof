@@ -8,7 +8,6 @@ The app ships with user-provided PNGs of arbitrary size and color mode
   * cap unscaled loads at a sane display size,
   * never return None for a valid file, and return None gracefully for
     unknown keys / missing files (text-fallback contract FR-79/ERR-12),
-  * derive a multi-size .ico from the PNG for the Windows exe icon.
 
 CTkImage creation requires a Tk interpreter, so these tests run only when
 a display is available; otherwise they skip (the GUI smoke test covers
@@ -19,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.utils.resources import ASSET_FILENAMES, asset_exists, export_ico
+from app.utils.resources import ASSET_FILENAMES, asset_exists
 
 
 def _tk_available() -> bool:
@@ -96,15 +95,3 @@ def test_unknown_key_and_missing_file_return_none():
 
     assert load_photo("no_such_asset") is None
     assert load_photo("") is None
-
-
-def test_export_ico_from_user_png(tmp_path):
-    ico = tmp_path / "icon.ico"
-    assert export_ico("app_icon.png", ico) is True
-    data = ico.read_bytes()
-    assert data[:4] == b"\x00\x00\x01\x00"  # ICO magic header
-    assert len(data) > 100
-
-
-def test_export_ico_missing_source(tmp_path):
-    assert export_ico("does_not_exist.png", tmp_path / "x.ico") is False

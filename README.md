@@ -2,8 +2,8 @@
 
 A cross-platform desktop app for tracking daily study sessions with XP,
 medals (Bronze / Silver / Gold), streaks, a calendar view, and statistics —
-built with Python + CustomTkinter and packaged as a standalone Windows
-executable with PyInstaller.
+built with Python + CustomTkinter. During active development, run it directly
+from source; executable packaging is disabled.
 
 ## Features
 
@@ -55,8 +55,8 @@ executable with PyInstaller.
 ## Study Coach
 
 Open **Coach → New session**, choose up to five notes or PDFs, and request a
-question. Submit your first answer, then choose Guessed, Unsure, or Confident
-to unlock hints and feedback. Revisions keep your first answer intact;
+question. Submit your first answer to unlock hints and feedback. The coach
+automatically assesses your first answer during feedback. Revisions keep your first answer intact;
 follow-ups start a new question in the same saved conversation. Statistics
 shows weak topics and can reopen their latest coaching session.
 
@@ -84,45 +84,27 @@ and per-turn Mock fallback when Live credentials are missing (PROV-3).
 - Python 3.10+ with Tk/Tkinter (bundled with python.org installers on
   Windows)
 - Dependencies: `pip install -r requirements.txt`
-  (customtkinter, Pillow, PyMuPDF, platformdirs, python-dateutil, pyinstaller, pytest)
+  (customtkinter, Pillow, PyMuPDF, platformdirs, python-dateutil, pytest)
 
 ## Run from source
 
-```bash
-python main.py
-```
-
-## Build the Windows executable
-
-Run on Windows from the repository root:
+From the project folder in PowerShell, set up the environment once:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run_build.ps1
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-The script creates a virtual environment, installs dependencies (including
-PyMuPDF before any tests), runs the test suite, performance gates and full
-GUI smoke test, then builds with
-`StudyProof.spec` (PyInstaller **one-folder, windowed** build — no
-console window). It then runs the packaged executable against temporary
-data to verify bundled assets, PDF extraction/rendering, the Mock coaching
-loop, Review, settings and save/reload. A failed gate stops the build. Output:
+Then start the app with:
 
-```
-dist\StudyProof\StudyProof.exe   ← working executable
+```powershell
+.\.venv\Scripts\python.exe main.py
 ```
 
-Distribute the entire `dist\StudyProof` folder (it contains the bundled
-`assets` folder and all runtime dependencies; no Python installation is
-required on the target machine). The exe can also be built manually with:
-
-```bash
-pyinstaller --noconfirm StudyProof.spec
-```
-
-Assets resolve correctly both from source and in the frozen build via
-`app/utils/paths.get_resource_dir()`; missing assets never crash the app
-(medal images fall back to “Bronze” / “Silver” / “Gold” text).
+If your environment already exists, only the final command is needed.
+Executable builds, distribution folders and release-only checks have been
+removed while development continues. Local environments, caches, temporary
+files and generated build output are excluded from Git.
 
 ## Tests & performance validation
 
@@ -139,29 +121,16 @@ extraction ≤15 seconds, page rendering at zoom 1.0 ≤300 ms, Mock generation
 a 50-document × 50-page index and derive Review over 5,000 attempts, each
 within one second. Fixture generation is outside the measured operations.
 
-The frozen verification report is written to `_tmp/frozen-verification.json`.
-Release validation on 19 October 2026 passed **122 automated tests**, the
-complete GUI smoke test, every performance gate and **32 frozen-app checks**.
-To rerun that check independently (without accessing your normal study data):
-
-```powershell
-Start-Process -FilePath .\dist\StudyProof\StudyProof.exe -ArgumentList '--verify-release', 'release-report.json' -Wait
-Get-Content release-report.json
-```
-
 ## Project layout
 
 ```
 main.py                 entry point
-StudyProof.spec      PyInstaller build configuration (Part M)
-run_build.ps1           Windows release build script
 app/constants.py        gameplay rules (XP, medals, streaks, limits)
 app/core/               models, study metrics, PDF extraction/rendering
 app/core/agent/         coach state machine, grounding, Mock/Live providers
                         (schema, parser, prompt, context pack builder,
                         mock_engine, coach_service, provider_base,
                         provider_openai)
-app/release_check.py    isolated diagnostic used by the frozen build gate
 app/persistence/        JSON repository, schema, atomic save, backup/recovery,
                         library binary storage (import/delete/re-link)
 app/state/              AppState: single source of truth + incremental index
@@ -171,7 +140,7 @@ app/gui/                seven screens (Home, Calendar, Notes, Library, Coach,
                         Stats, Settings), dialogs (source selection, saved
                         sessions) and widgets (page viewer, chat bubbles,
                         citation chips, stopwatch)
-app/utils/              paths (source vs frozen resources), asset loader
+app/utils/              local data/resource paths and asset loader
 assets/               PNG icons & medal images (user artwork, any size/mode)
 tests/                  unit tests + GUI smoke test
 scripts/perf_check.py   Part L performance validation

@@ -1,3 +1,5 @@
+**Development update (19 October 2026):** Executable packaging is intentionally removed while the app is being updated. Run from source using the README. Historical executable/build requirements below are deferred; the build scripts, release-only diagnostic and packaged output are no longer part of the current development workflow.
+
 # Requirements Document — StudyProof v1 (Consolidated / Fully Updated)
 
 **Document status:** Consolidated requirements — merges the initial confirmed requirements (`Initial_Requirements_document`) with the as-built updates (`Updated_Requirements_document`) and the current repository. Where the two documents conflicted, this document follows the updated document and the implemented code. This is the single authoritative requirements source going forward.

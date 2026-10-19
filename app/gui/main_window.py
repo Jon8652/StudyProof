@@ -84,17 +84,7 @@ class MainWindow(ctk.CTk):
             try:
                 # CTkImage exposes the underlying PIL image; tkinter needs a
                 # PhotoImage for iconphoto. Keep a reference so it survives GC.
-                # Import the Tkinter compat modules explicitly: PyInstaller's
-                # analysis sometimes misses these lazy Pillow imports, which
-                # makes PhotoImage raise in frozen builds.
                 from PIL import ImageTk
-                import PIL.ImageDraw  # noqa: F401  (ImageTk dependency)
-
-                try:
-                    import PIL._imagingtk  # noqa: F401
-                    import PIL._tkinter_finder  # noqa: F401
-                except ImportError:
-                    pass
 
                 self._icon_ref = ImageTk.PhotoImage(icon.pil_image)
                 self.iconphoto(True, self._icon_ref)
