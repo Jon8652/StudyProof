@@ -161,7 +161,7 @@ class AISettings:
     mode: str = "mock"                       # "mock" | "live" (A-21 default)
     base_url: str = ""                       # OpenAI-compatible endpoint (A-22)
     model: str = DEFAULT_AI_MODEL            # default deepseek-chat
-    api_key: str = ""                        # local-only secret (A-28)
+    api_key: str = field(default="", repr=False)  # local-only secret (A-28)
 
     @classmethod
     def sanitized(cls, raw: Any) -> "AISettings":

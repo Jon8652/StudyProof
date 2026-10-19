@@ -1,5 +1,34 @@
 This implementation plan is structured to strictly follow the **"Non-AI first"** constraint. It is divided into 7 incremental phases. 
 
+**Implementation update (19 October 2026):** Phases 4–7 are implemented.
+The agent core has deterministic Mock generation, bounded JSON parsing with
+repair/fallback, quotation grounding, and the guarded coaching state machine.
+The Coach screen, saved-session management, confidence picker, citation
+navigation, review links, and AI settings are wired to autosave/listeners.
+The opt-in Live client supports configurable endpoints, timeouts, one retry
+for busy services, redacted errors, connection testing, and cancellation
+that discards late results. Missing Live credentials require an explicit
+per-turn Mock fallback (PROV-3).
+
+Validation includes headless provider/state-machine tests, native Tk tests
+for the full Mock loop and cancellation within one second, and the extended
+GUI smoke flow through PDF import, coaching, Review and save/reload.
+Real Live endpoints were not contacted.
+
+Phase 7 release validation passed through `run_build.ps1`: 122 automated
+tests, the complete GUI smoke flow, every source performance budget, and
+32 checks inside the frozen Windows executable. The one-folder release is
+`dist/StudyProof/StudyProof.exe`; distribute the entire containing folder.
+PyMuPDF hidden imports and package resources (including layout resources
+required by version 2), CustomTkinter data and all app artwork are bundled.
+The build now fails on dependency-install, GUI-smoke or frozen-verification
+errors as well as test/performance failures. Frozen diagnostics use temporary
+study data and write `_tmp/frozen-verification.json`.
+
+Performance gates cover exactly 10,000 study sessions, 200-page extraction,
+Mock question/hint/feedback/follow-up generation, page rendering at zoom 1.0,
+five-source packing, 50 documents × 50 indexed pages, and 5,000 review attempts.
+
 **Phases 1, 2, and 3** build the entire PDF infrastructure, storage schema, and UI shells. At the end of Phase 3, the application will be fully capable of importing, extracting, and browsing a local PDF library and calculating review metrics, with **zero AI dependencies or network code**. 
 
 **Phases 4, 5, and 6** introduce the Agent Core, the Coach UI, and the Live Provider.

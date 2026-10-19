@@ -31,7 +31,7 @@ class SourceSelectDialog(ctk.CTkToplevel):
 
     def __init__(self, master, state):
         super().__init__(master)
-        self.state = state
+        self._app_state = state
         self.result: list[tuple[str, str]] | None = None
         # Selection order matters for the pack builder (leading pages of
         # earlier sources win budget).  Click order is preserved here.
@@ -93,7 +93,7 @@ class SourceSelectDialog(ctk.CTkToplevel):
     # ------------------------------------------------------------------------
 
     def _entries(self) -> list[dict]:
-        return self.state.selectable_sources()
+        return self._app_state.selectable_sources()
 
     def _pack_text(self) -> str:
         selected = [self._entry_by_key(key) for key in self._ordered_ids]

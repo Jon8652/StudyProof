@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 _tmp/
+.venv/
+.pytest_cache/
+build/
+dist/

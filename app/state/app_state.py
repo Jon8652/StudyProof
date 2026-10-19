@@ -11,7 +11,7 @@ sessions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
@@ -53,13 +53,7 @@ from app.constants import (   # noqa: E402  (v2 library + coach limits)
 )
 
 
-@dataclass
-class ActionResult:
-    """Uniform friendly result for GUI-facing operations."""
-
-    ok: bool
-    message: str | None = None      # friendly error/notice when relevant
-    value: object | None = None     # payload such as created session
+from app.core.result import ActionResult
 
 
 class AppState:
@@ -663,6 +657,13 @@ class AppState:
         self._mark_dirty_and_save()
         self._notify()
         return ActionResult(ok=True)
+
+    def set_ai_settings(self, raw) -> ActionResult:
+        from app.core.models import AISettings
+        self.dataset.settings.ai = AISettings.sanitized(raw)
+        self._mark_dirty_and_save()
+        self._notify()
+        return ActionResult(True)
 
     # -- v2: source selection views (SEL-1) -------------------------------------
 

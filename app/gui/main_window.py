@@ -21,6 +21,9 @@ from app.constants import (
 )
 from app.gui.dialogs.message_dialog import show_message
 from app.gui.screens.calendar_screen import CalendarScreen
+from app.gui.screens.coach_screen import CoachScreen
+from app.core.agent.provider_openai import sanitize_base_url
+from app.core.agent.provider_base import ProviderError
 from app.gui.screens.home_screen import HomeScreen
 from app.gui.screens.library_screen import LibraryScreen
 from app.gui.screens.notes_screen import NotesScreen
@@ -46,6 +49,7 @@ NAV_ITEMS = (
     # Phase 2.5: Library registers now so the sidebar matches the
     # seven-destination spec order; Coach joins in Phase 5.1.
     ("library", "Library", "library_icon"),
+    ("coach", "Coach · Mock", "coach_icon"),
     ("stats", "Statistics", "stats_icon"),
     ("settings", "Settings", "settings_icon"),
 )
@@ -181,6 +185,7 @@ class MainWindow(ctk.CTk):
             "calendar": lambda: CalendarScreen(self.content_area, self._app_state),
             "notes": lambda: NotesScreen(self.content_area, self._app_state),
             "library": lambda: LibraryScreen(self.content_area, self._app_state),
+            "coach": lambda: CoachScreen(self.content_area, self._app_state),
             "stats": lambda: StatsScreen(self.content_area, self._app_state),
             "settings": lambda: SettingsScreen(
                 self.content_area, self._app_state,
@@ -226,6 +231,18 @@ class MainWindow(ctk.CTk):
             )
 
     def refresh_all(self) -> None:
+        ai = self._app_state.settings.ai
+        mode = 'Live' if ai.mode == 'live' and ai.api_key and ai.base_url else 'Mock'
+        if mode == 'Live':
+            try:
+                sanitize_base_url(ai.base_url)
+            except ProviderError:
+                mode = 'Mock'
+        coach = self.screens.get('coach')
+        session = self._app_state.coach_session_by_id(coach.session_id) if coach else None
+        if session:
+            mode = next((t.mode.title() for t in reversed(session.turns) if t.mode), mode)
+        self._nav_buttons['coach'].configure(text=f'  Coach · {mode}')
         # PERFORMANCE: only refresh screens that have actually been built.
         # Unvisited (lazily-created) screens render fresh on first visit, so
         # refreshing them here would both crash on None and waste time.
@@ -280,6 +297,12 @@ class MainWindow(ctk.CTk):
                 show_message(self, "Couldn't save", result.message or "")
         # Stop any background worker event pumps the screens own (A-30).
         library_screen = self.screens.get("library")
+        coach_screen = self.screens.get('coach')
+        if coach_screen:
+            coach_screen.shutdown()
+        settings_screen = self.screens.get('settings')
+        if settings_screen:
+            settings_screen._ai_events.stop()
         shutdown = getattr(library_screen, "shutdown", None)
         if callable(shutdown):
             try:

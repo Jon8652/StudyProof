@@ -142,7 +142,7 @@ def build_source_pack(selected: list[tuple[str, str]],
                 chunks.append((1, body))     # pseudo-page 1 (SEL-2)
         elif kind == SOURCE_KIND_DOCUMENT and documents_by_id is not None:
             document = documents_by_id.get(item_id)
-            if document is not None and document.status == "ready":
+            if document is not None and document.status in ("ready", "missing"):
                 # Leading pages, in page order.
                 ordered = sorted(document.text_pages,
                                  key=lambda p: int(p.get("page", 0)))

@@ -184,7 +184,7 @@ def main() -> int:
     for _ in range(100):
         app.update()
         __import__("time").sleep(0.02)
-    check("page-viewer-renders", True)
+    check("page-viewer-renders", lib.viewer.image_label.has_image)
 
     # 14. Selection dialog lists sources; confirm returns selection.
     note_res = state.create_note("Biology recap",
@@ -219,6 +219,19 @@ def main() -> int:
     coach_res = state.create_coach_session([r for r in refs if r])
     check("coach-session-created", coach_res.ok, f"(msg={coach_res.message!r})")
 
+    # Phases 4–6: a complete offline coaching loop through the real service.
+    app.show_screen('coach')
+    coach = app.screens['coach']
+    coach.resume_session(coach_res.value.id)
+    sid = coach_res.value.id
+    check('coach-question', coach.service.request_question(sid).ok)
+    check('coach-answer', coach.service.submit_answer(sid, 'My unaided explanation').ok)
+    check('coach-confidence', coach.service.rate_confidence(sid, 'low').ok)
+    check('coach-feedback', coach.service.request_feedback(sid).ok)
+    check('coach-revision', coach.service.submit_revision(sid, 'My revised explanation').ok)
+    check('coach-followup', coach.service.request_followup(sid).ok)
+    check('coach-review-updates', bool(state.get_review_metrics().weak_sources))
+
     # 16. Source pack builds within budget (SEL-2).
     pack = state.build_pack_for_selection(sel_result)
     check("source-pack-built", pack is not None and pack.total_chars > 0,
@@ -250,6 +263,8 @@ def main() -> int:
     outcome2 = repository.validate_file_for_manual_load(
         paths.get_default_save_path())
     ds2, warns2 = outcome2.dataset, outcome2.warnings
+    check('coach-first-answer-roundtrip',
+          ds2.coach_sessions[0].questions[0].first_answer == 'My unaided explanation')
     check("v2-roundtrip-persist",
           len(ds2.documents) == 0 and len(ds2.coach_sessions) == 1
           and len(ds2.notes) == 1,

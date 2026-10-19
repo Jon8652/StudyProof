@@ -6,6 +6,15 @@
 **Distribution target:** unchanged (PyInstaller one-folder windowed Windows exe; source cross-platform). The frozen build must bundle PyMuPDF and keep extraction/rendering working from `dist\StudyProof\`.
 **Assumptions:** All v1 decisions A-1…A-20 remain in force except where corrected in §4; new decisions A-21…A-37 are added below.
 
+**Implementation status (19 October 2026):** The seven implementation phases
+are delivered for v1.1.0. `run_build.ps1` passed 122 automated tests, the full
+PDF/coaching/Review GUI smoke flow, the performance gates and 32 diagnostic
+checks in the actual frozen Windows executable. PyMuPDF code and required
+package resources are bundled. Output: `dist/StudyProof/StudyProof.exe`
+(distribute the entire `StudyProof` folder). Live-provider behaviour was
+verified with fake transports; no real Live endpoint was contacted.
+The original requirements below remain the acceptance contract.
+
 ---
 
 ## 1. Introduction and Scope Changes

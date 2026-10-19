@@ -226,6 +226,10 @@ class PageViewer(ctk.CTkFrame):
             self._page_number -= 1
             self.show_current()
 
+    def go_to_page(self, page: int) -> None:
+        self._page_number = max(1, min(int(page), self._page_count))
+        self.show_current()
+
     def _go_next(self) -> None:
         if self._page_number < self._page_count:
             self._page_number += 1

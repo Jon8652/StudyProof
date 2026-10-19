@@ -1,5 +1,7 @@
 # StudyProof
 
+Version **1.1.0** — PDF Library and Study Coach.
+
 A cross-platform desktop app for tracking daily study sessions with XP,
 medals (Bronze / Silver / Gold), streaks, a calendar view, and statistics —
 built with Python + CustomTkinter and packaged as a standalone Windows
@@ -32,22 +34,45 @@ executable with PyInstaller.
   friendly message. Every create/edit/delete autosaves immediately.
 - **Stats** — weekly / monthly / lifetime totals, active days, averages,
   medal counts, and a total-notes count.
+- **PDF Library** — import local PDFs, extract page text in the background,
+  and browse pages with zoom and a text view. Files are copied into the local
+  library. Protected, oversized and textless files receive friendly guidance.
+- **Study Coach** — offline Mock questions, confidence ratings, grounded hints
+  and feedback, immutable first answers, revisions, follow-ups and saved
+  conversations. Review highlights weak sources and links back to coaching.
 - **Settings** — dark/light theme (persisted), manual save, and a safe
   "Load from file" flow (validate → confirm → backup → replace).
 - **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs keep their reading so you can resume, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.
 - **Resilient persistence** — atomic JSON writes, corrupt-file backup +
   quarantine recovery, schema-version protection, close-flush of unsaved
   changes. Data lives in the OS app-data folder (`%APPDATA%\StudyProof`
-  on Windows). Notes are stored in a `notes` array inside `study_data.json`
+  on Windows). Notes are stored in a `notes` array inside `studyproof_save.json`
   alongside sessions; invalid note entries are skipped during validation so
   a damaged record never blocks loading.
+
+## Study Coach
+
+Open **Coach → New session**, choose up to five notes or PDFs, and request a
+question. Submit your first answer, then choose Guessed, Unsure, or Confident
+to unlock hints and feedback. Revisions keep your first answer intact;
+follow-ups start a new question in the same saved conversation. Statistics
+shows weak topics and can reopen their latest coaching session.
+
+Mock mode works offline without a key. For optional Live mode, open
+**Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
+model and key. The URL should include the API prefix (for example `/v1`),
+without `/chat/completions`. Live requests send only the bounded source pack,
+question state and last ten turns. Keys are stored locally in the save file,
+masked in Settings and excluded from prompts and error messages. There is
+no telemetry. Failed turns offer a one-click Mock fallback; Cancel immediately
+restores the composer and discards late responses.
 
 ## Requirements
 
 - Python 3.10+ with Tk/Tkinter (bundled with python.org installers on
   Windows)
 - Dependencies: `pip install -r requirements.txt`
-  (customtkinter, Pillow, platformdirs, python-dateutil, pyinstaller)
+  (customtkinter, Pillow, PyMuPDF, platformdirs, python-dateutil, pyinstaller, pytest)
 
 ## Run from source
 
@@ -63,10 +88,13 @@ Run on Windows from the repository root:
 powershell -ExecutionPolicy Bypass -File .\run_build.ps1
 ```
 
-The script creates a virtual environment, installs dependencies, runs the
-test suite and the performance gate, then builds with
+The script creates a virtual environment, installs dependencies (including
+PyMuPDF before any tests), runs the test suite, performance gates and full
+GUI smoke test, then builds with
 `StudyProof.spec` (PyInstaller **one-folder, windowed** build — no
-console window). Output:
+console window). It then runs the packaged executable against temporary
+data to verify bundled assets, PDF extraction/rendering, the Mock coaching
+loop, Review, settings and save/reload. A failed gate stops the build. Output:
 
 ```
 dist\StudyProof\StudyProof.exe   ← working executable
@@ -87,15 +115,27 @@ Assets resolve correctly both from source and in the frozen build via
 ## Tests & performance validation
 
 ```bash
-python -m pytest tests -q          # 57 unit tests (core engines + persistence)
+python -m pytest tests -q          # unit and native GUI integration tests
 xvfb-run -a python tests/smoke_gui.py   # end-to-end GUI smoke test (Linux CI)
-python scripts/perf_check.py       # Part L budgets @ ~10k sessions
+python scripts/perf_check.py       # 10k sessions plus v2 performance budgets
 ```
 
-`scripts/perf_check.py` generates a realistic multi-year history and asserts
-responsiveness budgets (startup load, home/calendar/stats refresh, session
-delete + autosave). Latest run: **PASS** (startup ≈35 ms, stats ≈3 ms,
-delete+save ≈60 ms).
+`scripts/perf_check.py` generates exactly 10,000 study sessions and asserts
+startup, refresh, index and autosave budgets. It also checks 200-page PDF
+extraction ≤15 seconds, page rendering at zoom 1.0 ≤300 ms, Mock generation
+≤200 ms, and a five-document pack ≤100 ms. The scalability checks materialise
+a 50-document × 50-page index and derive Review over 5,000 attempts, each
+within one second. Fixture generation is outside the measured operations.
+
+The frozen verification report is written to `_tmp/frozen-verification.json`.
+Release validation on 19 October 2026 passed **122 automated tests**, the
+complete GUI smoke test, every performance gate and **32 frozen-app checks**.
+To rerun that check independently (without accessing your normal study data):
+
+```powershell
+Start-Process -FilePath .\dist\StudyProof\StudyProof.exe -ArgumentList '--verify-release', 'release-report.json' -Wait
+Get-Content release-report.json
+```
 
 ## Project layout
 
@@ -104,14 +144,13 @@ main.py                 entry point
 StudyProof.spec      PyInstaller build configuration (Part M)
 run_build.ps1           Windows release build script
 app/constants.py        gameplay rules (XP, medals, streaks, limits)
-app/core/               pure logic: models (incl. Note), xp, medals, streaks,
-                        stats, dates
+app/core/               models, study metrics, PDF extraction/rendering
+app/core/agent/         coach state machine, grounding, Mock/Live providers
+app/release_check.py    isolated diagnostic used by the frozen build gate
 app/persistence/        JSON repository, schema, atomic save, backup/recovery
 app/state/              AppState: single source of truth + incremental index
                         (session and note mutations/views, total-notes stat)
-app/gui/                MainWindow, screens (home/calendar/notes/stats/
-                        settings), dialogs (incl. note editor & day details),
-                        widgets (medal badge, summary card)
+app/gui/                seven screens, dialogs, PDF viewer and coach widgets
 app/utils/              paths (source vs frozen resources), asset loader
 assets/               PNG icons & medal images (user artwork, any size/mode)
 tests/                  unit tests + GUI smoke test
@@ -122,7 +161,12 @@ scripts/perf_check.py   Part L performance validation
 
 | OS | Path |
 |----|------|
-| Windows | `%APPDATA%\StudyProof\study_data.json` |
-| macOS/Linux | platform-standard user config dir |
+| Windows | `%LOCALAPPDATA%\StudyProof\studyproof_save.json` |
+| macOS/Linux | platform-standard user data dir |
 
-A `.bak` backup and a quarantine copy of corrupt files are kept alongside.
+A `studyproof_save.backup.json` backup and quarantine copies of corrupt files
+are kept alongside.
+PDF binaries live in the adjacent `library` folder. Schema 1 saves migrate
+to schema 2 on load; coaching history and extracted page text share the same
+autosave and backup flow. Copy the library folder along with the JSON when
+moving to another device, or re-link missing PDFs in the Library screen.

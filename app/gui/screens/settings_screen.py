@@ -12,6 +12,11 @@ heading; the active theme button is highlighted with the accent colour.
 from __future__ import annotations
 
 import customtkinter as ctk
+import threading
+from dataclasses import asdict
+from app.core.agent.provider_openai import OpenAICompatProvider
+from app.core.agent.provider_base import ProviderError
+from app.gui.workers import UIEventQueue
 from tkinter import filedialog
 
 from app.gui.dialogs.confirm_dialog import ask_yes_no
@@ -58,7 +63,13 @@ def _section_card(parent, icon: str, title: str, subtitle: str) -> ctk.CTkFrame:
 class SettingsScreen(BaseScreen):
     def __init__(self, master, state, on_theme_change=None):
         super().__init__(master, state, title="Settings")
+        body = ctk.CTkScrollableFrame(self.content, fg_color='transparent')
+        body.pack(fill='both', expand=True)
+        self.content = body
         self._on_theme_change = on_theme_change
+        self._ai_snapshot = None
+        self._ai_events = UIEventQueue(self)
+        self._ai_events.start()
 
         # --- Appearance ---------------------------------------------------------
         section = _section_card(
@@ -76,6 +87,31 @@ class SettingsScreen(BaseScreen):
             command=lambda: self._set_theme("light"))
         self.dark_button.pack(side="left", padx=(0, 8))
         self.light_button.pack(side="left")
+
+        ai_card = _section_card(self.content, 'AI', 'Study Coach (AI)',
+            'Your key stays on this device and is sent only to the base URL above.')
+        self.ai_mode = ctk.CTkSegmentedButton(ai_card, values=['Mock', 'Live'],
+                                             command=lambda _: self._save_ai())
+        self.ai_mode.pack(anchor='w', padx=CARD_PAD_X, pady=4)
+        self.ai_entries = {}
+        for key, label in [('base_url', 'Base URL'), ('model', 'Model'), ('api_key', 'API key')]:
+            row = ctk.CTkFrame(ai_card, fg_color='transparent')
+            row.pack(fill='x', padx=CARD_PAD_X, pady=3)
+            ctk.CTkLabel(row, text=label, width=80, anchor='w').pack(side='left')
+            entry = ctk.CTkEntry(row, show='*' if key == 'api_key' else '')
+            entry.pack(side='left', fill='x', expand=True)
+            entry.bind('<FocusOut>', lambda _: self._save_ai())
+            entry.bind('<Return>', lambda _: self._save_ai())
+            self.ai_entries[key] = entry
+        controls = ctk.CTkFrame(ai_card, fg_color='transparent')
+        controls.pack(fill='x', padx=CARD_PAD_X, pady=4)
+        ctk.CTkCheckBox(controls, text='Show key', command=self._toggle_key).pack(side='left')
+        ctk.CTkButton(controls, text='Clear key', width=90, command=self._clear_key).pack(side='left', padx=4)
+        self.test_button = ctk.CTkButton(controls, text='Test connection', command=self._test_ai)
+        self.test_button.pack(side='left', padx=4)
+        ctk.CTkButton(controls, text='Save AI settings', command=self._save_ai).pack(side='left')
+        self.ai_result = ctk.CTkLabel(ai_card, text='', wraplength=650)
+        self.ai_result.pack(fill='x', padx=CARD_PAD_X)
 
         # --- Data management ------------------------------------------------------
         data = _section_card(
@@ -121,6 +157,38 @@ class SettingsScreen(BaseScreen):
         if self._on_theme_change:
             self._on_theme_change(theme)
         self.refresh()
+
+    def _save_ai(self):
+        raw = {key: entry.get() for key, entry in self.ai_entries.items()}
+        raw['mode'] = self.ai_mode.get().lower()
+        self.state.set_ai_settings(raw)
+
+    def _toggle_key(self):
+        entry = self.ai_entries['api_key']
+        entry.configure(show='' if entry.cget('show') else '*')
+
+    def _clear_key(self):
+        self.ai_entries['api_key'].delete(0, 'end')
+        self._save_ai()
+
+    def _test_ai(self):
+        self._save_ai()
+        provider = OpenAICompatProvider(self.state.settings.ai)
+        self.test_button.configure(state='disabled')
+        self.ai_result.configure(text='Testing connection…')
+        def run():
+            try:
+                text = provider.test_connection()
+            except ProviderError as exc:
+                text = str(exc)
+            except Exception:
+                text = 'The AI service returned an unreadable reply.'
+            self._ai_events.post(lambda: self._test_done(text))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _test_done(self, text):
+        self.ai_result.configure(text=text)
+        self.test_button.configure(state='normal')
 
     def _manual_save(self) -> None:
         result = self.state.manual_save()
@@ -186,6 +254,13 @@ class SettingsScreen(BaseScreen):
         self.refresh()
 
     def refresh(self) -> None:
+        raw = asdict(self.state.settings.ai)
+        if raw != self._ai_snapshot:
+            self._ai_snapshot = raw
+            self.ai_mode.set(raw['mode'].title())
+            for key, entry in self.ai_entries.items():
+                entry.delete(0, 'end')
+                entry.insert(0, raw[key])
         theme = self.state.settings.theme
         if theme == "dark":
             self.dark_button.configure(fg_color=ACCENT, hover_color=ACCENT_HOVER,

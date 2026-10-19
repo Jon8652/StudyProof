@@ -10,6 +10,7 @@
 
 import os
 import tempfile
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -36,10 +37,13 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    datas=([('assets', 'assets')] + collect_data_files('customtkinter')
+           + collect_data_files('pymupdf')),
     hiddenimports=[
         'customtkinter',
         'platformdirs',
+        'fitz',
+        'pymupdf',
         # Pillow <-> Tkinter bridge. PyInstaller's analysis misses these lazy
         # imports, which crashes iconphoto() in the frozen build.
         'PIL.ImageTk',

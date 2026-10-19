@@ -200,6 +200,12 @@ class StatsScreen(BaseScreen):
         cards["coach_hints"].set_value(str(activity.hints_used), "Hints used")
         cards["coach_revisions"].set_value(str(activity.revisions),
                                            "Revisions requested")
+        if not hasattr(self, '_confidence_summary'):
+            self._confidence_summary = ctk.CTkLabel(self.scroll, text='', text_color=MUTED_TEXT)
+            self._confidence_summary.pack(fill='x')
+        counts = activity.confidence_counts
+        self._confidence_summary.configure(text=(f"Confidence: Guessed {counts['low']} · "
+            f"Unsure {counts['medium']} · Confident {counts['high']}"))
 
         # Drop everything inside the container except the header row, then
         # re-add the empty-state label / weak-topic rows.
@@ -228,6 +234,12 @@ class StatsScreen(BaseScreen):
             row = ctk.CTkFrame(self._weak_container, corner_radius=8,
                                fg_color=("gray85", "gray17"))
             row.pack(fill="x", pady=3)
+            matching = [s for s in self.state.dataset.coach_sessions
+                        if any(r.id == entry.source_id for r in s.sources)]
+            if matching:
+                latest = max(matching, key=lambda s: s.updated_at_local)
+                ctk.CTkButton(row, text='Resume', width=70,
+                             command=lambda sid=latest.id: self._resume_coach(sid)).pack(side='right', padx=4)
             kind_tag = "\U0001F4C4" if entry.kind == "document" else "\U0001F4DD"
             ctk.CTkLabel(
                 row, text=f"{kind_tag}  {entry.label}",
@@ -247,3 +259,8 @@ class StatsScreen(BaseScreen):
                 row, text=f"weak points: {entry.score}",
                 font=ctk.CTkFont(size=12, weight="bold"), anchor="e",
             ).pack(side="right", padx=(6, 12), pady=8)
+
+    def _resume_coach(self, session_id):
+        root = self.winfo_toplevel()
+        root.show_screen('coach')
+        root.screens['coach'].resume_session(session_id)

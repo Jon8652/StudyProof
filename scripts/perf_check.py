@@ -26,7 +26,13 @@ from pathlib import Path
 # Ensure project root is importable when run as `python scripts/perf_check.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.models import Dataset, Session, Settings  # noqa: E402
+from app.core.models import (Dataset, Session, Settings, Document, CoachSession,
+                             QuestionRecord, SourceRef)  # noqa: E402
+from app.core.agent.context import build_source_pack  # noqa: E402
+from app.core.agent.grounding import PageIndex  # noqa: E402
+from app.core.agent.mock_engine import MockProvider  # noqa: E402
+from app.core.stats import compute_review_metrics  # noqa: E402
+from app.core import pdfx  # noqa: E402
 from app.persistence import repository  # noqa: E402
 from app.state.app_state import AppState  # noqa: E402
 from app.utils import paths  # noqa: E402
@@ -42,6 +48,12 @@ BUDGETS = {
     "stats_refresh": 1.0,
     "session_delete": 1.5,       # includes JSON autosave of full dataset
     "index_rebuild": 3.0,
+    "pdf_extract_200_pages": 15.0,   # NFR-12
+    "mock_turn": 0.2,               # NFR-13 (worst of question/hint/feedback/followup)
+    "page_render": 0.3,             # NFR-14 at zoom 1.0
+    "source_pack_5_documents": 0.1, # NFR-13
+    "page_index_50x50": 1.0,        # QA-17: materialise all 2,500 pages
+    "review_5000_attempts": 1.0,    # QA-17
 }
 
 
@@ -59,7 +71,10 @@ def generate_sessions(count: int, seed: int = 42) -> list[Session]:
     sessions: list[Session] = []
     cursor = datetime.combine(start_day, datetime.min.time()).replace(hour=9)
     now = datetime.now()
-    while len(sessions) < count and cursor <= now:
+    # Spread exactly the requested count over three years, rather than
+    # stopping early at ~4,800 records and under-testing the 10,000 target.
+    interval = (now - cursor) / max(1, count)
+    while len(sessions) < count:
         duration = rng.choice(durations)
         sessions.append(Session.create(
             duration_minutes=duration,
@@ -67,8 +82,81 @@ def generate_sessions(count: int, seed: int = 42) -> list[Session]:
             now=cursor,
         ))
         # advance 2-8 hours (≈ several sessions per day)
-        cursor += timedelta(hours=rng.randint(2, 8), minutes=rng.randint(0, 59))
+        cursor += interval
     return sessions
+
+
+def check_v2(check, work_dir):
+    """Real PDF operations and deterministic, realistically sized v2 data."""
+    pymupdf = pdfx._load_pymupdf()
+    pdf_path = Path(work_dir) / 'performance-200-pages.pdf'
+    sentence = ('Photosynthesis converts sunlight into chemical energy stored in glucose, '
+                'while chlorophyll absorbs the light needed for this process. ')
+    with pymupdf.open() as pdf:
+        for page in range(200):
+            pdf.new_page().insert_textbox((50, 50, 550, 780),
+                                          f'Biology page {page + 1}\n' + sentence * 18,
+                                          fontsize=10)
+        pdf.save(str(pdf_path))
+    extracted, seconds = timed(lambda: pdfx.extract_document(pdf_path))
+    assert extracted.page_count == 200 and all(text for _, text in extracted.pages)
+    check('pdf_extract_200_pages', seconds)
+    image, seconds = timed(lambda: pdfx.render_page_pixmap(pdf_path, 100, 1.0))
+    assert image.width > 0 and image.height > 0
+    image.close()
+    check('page_render', seconds)
+
+    documents = {}
+    for index in range(50):
+        document = Document.create(f'Biology {index}.pdf', f'{index}.pdf')
+        document.set_extracted_text([(page, sentence * 18) for page in range(1, 51)])
+        documents[document.id] = document
+    refs = [SourceRef('document', d.id, d.file_name) for d in documents.values()]
+    pack, seconds = timed(lambda: build_source_pack(
+        [('document', ref.id) for ref in refs[:5]], {}, documents))
+    assert pack.total_chars <= 6000 and pack.spans
+    check('source_pack_5_documents', seconds)
+
+    def build_index():
+        index = PageIndex(refs, {}, documents)
+        for ref in refs:
+            for page in range(1, 51):
+                assert index.page(ref.id, page)
+        return index
+    index, seconds = timed(build_index)
+    assert len(index.cache) == 2500
+    check('page_index_50x50', seconds)
+
+    provider = MockProvider()
+    context = {'session_id': 'performance-session', 'counter': 0,
+               'kind': 'question', 'pack': pack}
+    timings = []
+    reply, seconds = timed(lambda: provider.generate(context))
+    timings.append(seconds)
+    q = QuestionRecord.create(reply.text, pack.as_spans_payload(),
+                              answer_key=reply.meta['answer_key'])
+    q.first_answer, q.confidence = 'Sunlight supplies energy.', 'low'
+    context['question'] = q
+    for kind in ('hint', 'feedback', 'followup'):
+        context['kind'] = kind
+        _, seconds = timed(lambda: provider.generate(context))
+        timings.append(seconds)
+    check('mock_turn', max(timings))
+
+    sessions = []
+    for number in range(100):
+        session = CoachSession.create(refs[number % 50:number % 50 + 1])
+        for _ in range(50):
+            question = QuestionRecord.create('Explain photosynthesis.')
+            question.first_answer, question.confidence = 'Sunlight.', 'low'
+            question.hints_seen = 2
+            question.revisions = [{'text': 'A revised answer', 'at': '2026-01-01T12:00:00'}]
+            session.questions.append(question)
+        sessions.append(session)
+    metrics, seconds = timed(lambda: compute_review_metrics(sessions))
+    assert metrics.activity.questions_answered == 5000
+    assert len(metrics.all_sources) == 50
+    check('review_5000_attempts', seconds)
 
 
 def main() -> int:
@@ -140,6 +228,8 @@ def main() -> int:
     print(f"sanity OK — lifetime: {stats.lifetime.minutes} min, "
           f"{stats.lifetime.xp} XP, streak {stats.current_streak_days}, "
           f"longest {stats.longest_streak_days}")
+
+    check_v2(check, tmp)
 
     paths.set_override_data_dir(None)
     if failures:
