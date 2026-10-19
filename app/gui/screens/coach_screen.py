@@ -9,6 +9,7 @@ from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.widgets.chat_bubble import ChatBubble
 from app.gui.widgets.citation_chip import Tooltip
 from app.gui.workers import UIEventQueue
+from app.gui.theme import CARD_FG, PRIMARY_TEXT, ACCENT, MUTED_TEXT
 
 
 class CoachScreen(BaseScreen):
@@ -28,8 +29,15 @@ class CoachScreen(BaseScreen):
         self.header.pack(fill='x')
         self.thread = ctk.CTkScrollableFrame(self.content)
         self.thread.pack(fill='both', expand=True)
-        self.composer = ctk.CTkTextbox(self.content, height=85)
-        self.composer.pack(fill='x')
+        ctk.CTkLabel(self.content, text='Your answer', anchor='w',
+                     font=ctk.CTkFont(size=14, weight='bold')).pack(fill='x', pady=(10, 3))
+        ctk.CTkLabel(self.content, text='Type your answer or revision below.',
+                     text_color=MUTED_TEXT, anchor='w').pack(fill='x', pady=(0, 5))
+        self.composer = ctk.CTkTextbox(
+            self.content, height=110, border_width=2, border_color=ACCENT,
+            fg_color=CARD_FG, text_color=PRIMARY_TEXT, corner_radius=8,
+            font=ctk.CTkFont(size=14))
+        self.composer.pack(fill='x', pady=(0, 4))
         row = ctk.CTkFrame(self.content, fg_color='transparent')
         row.pack(fill='x', pady=5)
         self.buttons = {}

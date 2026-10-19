@@ -104,12 +104,17 @@ class SettingsScreen(BaseScreen):
             entry.bind('<FocusOut>', lambda _: self._save_ai())
             entry.bind('<Return>', lambda _: self._save_ai())
             self.ai_entries[key] = entry
-        self.models_button = ctk.CTkButton(ai_card, text='Load available models', command=self._load_models)
-        self.models_button.pack(anchor='w', padx=CARD_PAD_X, pady=4)
+            if key == 'model':
+                self.models_button = ctk.CTkButton(
+                    row, text='Load available models', width=175, command=self._load_models)
+                self.models_button.pack(side='left', padx=(8, 0))
+            elif key == 'api_key':
+                ctk.CTkCheckBox(row, text='Show key', width=100,
+                               command=self._toggle_key).pack(side='left', padx=(8, 0))
+                ctk.CTkButton(row, text='Clear key', width=85,
+                              command=self._clear_key).pack(side='left', padx=(6, 0))
         controls = ctk.CTkFrame(ai_card, fg_color='transparent')
         controls.pack(fill='x', padx=CARD_PAD_X, pady=4)
-        ctk.CTkCheckBox(controls, text='Show key', command=self._toggle_key).pack(side='left')
-        ctk.CTkButton(controls, text='Clear key', width=90, command=self._clear_key).pack(side='left', padx=4)
         self.test_button = ctk.CTkButton(controls, text='Test connection', command=self._test_ai)
         self.test_button.pack(side='left', padx=4)
         ctk.CTkButton(controls, text='Save AI settings', command=self._save_ai).pack(side='left')
