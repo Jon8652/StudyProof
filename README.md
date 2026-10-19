@@ -1,18 +1,5 @@
 # StudyProof
 
-Version **1.1.0** — PDF Library and Study Coach.
-
-**Project status: Complete.** All requirements from both specification sets —
-the consolidated v1 document (`new_requirements_document.md`) and the v2 AI
-requirements (`AI Requirements Document — StudyProof v2.md`, covering the
-COACH-, GEN-, GRD-, PROV-, AIS-, PDF-, LIB-, SEL-, REV- and DATA- families) —
-have been implemented and validated. The seven-phase plan in
-`AI_implementation_plan.md` is finished through Phase 7 (Gates, Packaging &
-Polish); the release build passed 122 automated tests, the full GUI smoke
-flow, every performance budget, and 32 frozen-app checks on 19 October 2026.
-No known open items remain; real Live endpoints were never contacted during
-validation (Live mode is opt-in and user-configured).
-
 A cross-platform desktop app for tracking daily study sessions with XP,
 medals (Bronze / Silver / Gold), streaks, a calendar view, and statistics —
 built with Python + CustomTkinter and packaged as a standalone Windows
