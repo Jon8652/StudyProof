@@ -7,9 +7,9 @@ from app.gui.screens.base_screen import BaseScreen
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.widgets.chat_bubble import ChatBubble
-from app.gui.widgets.confidence_picker import ConfidencePicker
 from app.gui.widgets.citation_chip import Tooltip
 from app.gui.workers import UIEventQueue
+from app.gui.theme import CARD_FG, PRIMARY_TEXT, ACCENT, MUTED_TEXT
 
 
 class CoachScreen(BaseScreen):
@@ -29,10 +29,15 @@ class CoachScreen(BaseScreen):
         self.header.pack(fill='x')
         self.thread = ctk.CTkScrollableFrame(self.content)
         self.thread.pack(fill='both', expand=True)
-        self.confidence = ConfidencePicker(self.content, self.rate)
-        self.confidence.pack(fill='x', pady=4)
-        self.composer = ctk.CTkTextbox(self.content, height=85)
-        self.composer.pack(fill='x')
+        ctk.CTkLabel(self.content, text='Your answer', anchor='w',
+                     font=ctk.CTkFont(size=14, weight='bold')).pack(fill='x', pady=(10, 3))
+        ctk.CTkLabel(self.content, text='Type your answer or revision below.',
+                     text_color=MUTED_TEXT, anchor='w').pack(fill='x', pady=(0, 5))
+        self.composer = ctk.CTkTextbox(
+            self.content, height=110, border_width=2, border_color=ACCENT,
+            fg_color=CARD_FG, text_color=PRIMARY_TEXT, corner_radius=8,
+            font=ctk.CTkFont(size=14))
+        self.composer.pack(fill='x', pady=(0, 4))
         row = ctk.CTkFrame(self.content, fg_color='transparent')
         row.pack(fill='x', pady=5)
         self.buttons = {}
@@ -142,9 +147,6 @@ class CoachScreen(BaseScreen):
     def revise(self):
         self._submitted(self.service.submit_revision(self.session_id, self.composer.get('1.0', 'end')))
 
-    def rate(self, key):
-        self._submitted(self.service.rate_confidence(self.session_id, key))
-
     def navigate(self, quote):
         root = self.winfo_toplevel()
         session = self.state.coach_session_by_id(self.session_id)
@@ -178,12 +180,11 @@ class CoachScreen(BaseScreen):
                 ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
-        self.confidence.update_question(q, self.busy)
         gates = {
             'question': (bool(session) and (not q or q.feedback_given), 'Finish this question and get feedback first.'),
             'answer': (bool(q and q.first_answer is None), 'The first answer is saved once; revise after feedback.'),
-            'hint': (bool(q and q.confidence and q.status != 'closed'), 'Answer first, then rate confidence to unlock hints.'),
-            'feedback': (bool(q and q.confidence and q.status != 'closed'), 'Rate confidence to unlock feedback.'),
+            'hint': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer to unlock hints.'),
+            'feedback': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer to unlock feedback.'),
             'revision': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before adding a revision.'),
             'followup': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before a follow-up.'),
             'cancel': (self.busy, 'There is no turn in progress.')}

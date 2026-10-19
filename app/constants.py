@@ -23,7 +23,7 @@ EXTRACTION_PROGRESS_HZ = 10           # NFR-12: at most ~10 progress updates/s
 
 # --- Study Coach context (v2) -------------------------------------------------
 MAX_SOURCES = 5                    # A-37 / SEL-1: sources per session
-MAX_PACK_CHARS = 6000              # A-37 / SEL-2: source-pack character budget
+MAX_PACK_CHARS = 1_000_000         # Source-pack character budget
 MAX_MEMORY_TURNS = 10              # A-26: last N turns feed generation
 AI_TIMEOUT_S = 30                  # A-34 / PROV-2: live call timeout
 DEFAULT_AI_MODEL = "deepseek-chat" # A-22 default model name
