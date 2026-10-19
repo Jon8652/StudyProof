@@ -38,6 +38,12 @@ class PageViewer(ctk.CTkFrame):
     def __init__(self, master, events: UIEventQueue):
         super().__init__(master, corner_radius=12, fg_color=("white", "#1c1c26"),
                          border_width=1, border_color=("gray75", "gray28"))
+        # This frame owns the two stage widgets directly (see _show_stage),
+        # so it must size itself to them.  CTkFrame defaults to
+        # pack/grid-propagate *disabled*, which used to leave the text pane
+        # collapsed to a 1x1 window — the "blank after Show text" bug.
+        self.pack_propagate(True)
+        self.grid_propagate(True)
         self._events = events
         self._document_id: str | None = None
         self._path: Path | None = None
@@ -319,7 +325,14 @@ class PageViewer(ctk.CTkFrame):
     def _fallback_to_text(self, notice: str) -> None:
         self._show_text = True
         self.text_toggle.configure(text="Show image")
-        self._set_placeholder(notice)
+        # Show the notice on the image stage first (harmless — the text pane
+        # covers it), then swap to the text pane.  If a page render fails
+        # *while* the text pane is already visible, skip the placeholder
+        # step entirely: painting it would pack_forget the text pane and
+        # force Tk to re-map the whole scroll-frame chain mid-flight, which
+        # is exactly when the pane used to end up collapsed and blank.
+        if not self._is_packed(self.text_scroll):
+            self._set_placeholder(notice)
         self._render_text_pane()
 
     def _render_text_pane(self) -> None:
@@ -341,10 +354,33 @@ class PageViewer(ctk.CTkFrame):
                        "(The PDF may be scanned/image-only — the page image "
                        "view still works.)")
         inner.configure(state="disabled")
-        # Force the scrollable frame to recompute its scroll region so the
-        # freshly inserted text is actually visible in the viewport.
+        # The text pane was just (re)packed, so its geometry is still stale:
+        # CTkScrollableFrame's inner canvas reports 1x1 until Tk's idle
+        # geometry pass after a (re)map, and CTkTextbox sizes itself from
+        # those dimensions.  Inserting before that pass leaves the pane
+        # blank; yview_moveto(0) would also run against an unmapped
+        # viewport.  Force one idle-geometry round now so the textbox is
+        # sized from real dimensions ...
         try:
-            self.text_scroll._parent_canvas.yview_moveto(0.0)
+            self.update_idletasks()
+        except tk.TclError:
+            return                        # widget torn down mid-update
+        # ... and refresh the scroll region once more after the freshly
+        # wrapped text has reported its new requested height, then rewind
+        # the viewport to the top of the pane.
+        self._sync_text_scrollregion()
+        self.after(60, self._sync_text_scrollregion)
+
+    def _sync_text_scrollregion(self) -> None:
+        """Recompute the text pane's scroll region and show its top."""
+        try:
+            canvas = self.text_scroll._parent_canvas
+            if not canvas.winfo_exists():
+                return
+            bbox = canvas.bbox("all")
+            if bbox:
+                canvas.configure(scrollregion=bbox)
+            canvas.yview_moveto(0.0)
         except Exception:
             pass
 
