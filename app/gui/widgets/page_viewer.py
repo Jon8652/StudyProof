@@ -163,8 +163,40 @@ class PageViewer(ctk.CTkFrame):
         if self._show_text:
             self._render_text_pane()
 
+    def clear(self) -> None:
+        """Force the viewer back to its empty state, even when the current
+        document id is already ``None``.
+
+        ``set_document(None, ...)`` short-circuits its "changed" branch when
+        the id hasn't moved, so after deleting a document a late render job
+        could still repaint the toolbar with "Page 1 of N".  This method
+        bumps the render sequence (invalidating every in-flight job), retires
+        the image cache and resets the toolbar to "No document".
+        """
+        self._document_id = None
+        self._path = None
+        self._page_count = 0
+        self._page_number = 1
+        self._text_by_page = {}
+        self._render_seq += 1
+        self._retire_cache()
+        self.page_label.configure(text="No document")
+        for button in (self.prev_button, self.next_button,
+                       self.zoom_button, self.text_toggle):
+            button.configure(state="disabled")
+        self._show_text = False
+        self.text_toggle.configure(text="Show text")
+        self._set_placeholder("Import or select a document to see it here.")
+
     def show_current(self) -> None:
         if self._document_id is None:
+            # No document selected/deleted: reset the toolbar too, so the
+            # prev/next bar never keeps showing "Page i of n" from the last
+            # document (the label used to only update while a doc was open).
+            self.page_label.configure(text="No document")
+            for button in (self.prev_button, self.next_button,
+                           self.zoom_button, self.text_toggle):
+                button.configure(state="disabled")
             self._set_placeholder("Import or select a document to see it here.")
             return
         if self._page_count <= 0:
@@ -292,17 +324,29 @@ class PageViewer(ctk.CTkFrame):
 
     def _render_text_pane(self) -> None:
         self._show_stage("text")
-        text = self._text_by_page.get(self._page_number, "")
-        self.text_box.configure(state="normal")
-        self.text_box.delete("1.0", "end")
+        # CTkTextbox's public configure()/get() talk to a *shadow* label and
+        # do not reliably see text inserted into the underlying tkinter.Text
+        # (and can even clear it on redraw).  All content operations below
+        # therefore go straight to tk.Text via ._textbox — the same pattern
+        # customtkinter's own examples use.
+        inner = getattr(self.text_box, "_textbox", self.text_box)
+        inner.configure(state="normal")
+        inner.delete("1.0", "end")
+        text = self._text_by_page.get(self._page_number, "") or ""
         if text.strip():
-            self.text_box.insert("1.0", text)
+            inner.insert("1.0", text)
         else:
-            self.text_box.insert(
+            inner.insert(
                 "1.0", "No stored text for this page.\n\n"
                        "(The PDF may be scanned/image-only — the page image "
                        "view still works.)")
-        self.text_box.configure(state="disabled")
+        inner.configure(state="disabled")
+        # Force the scrollable frame to recompute its scroll region so the
+        # freshly inserted text is actually visible in the viewport.
+        try:
+            self.text_scroll._parent_canvas.yview_moveto(0.0)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------------
 
