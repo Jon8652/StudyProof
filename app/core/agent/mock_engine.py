@@ -9,18 +9,6 @@ def keywords(text):
     return {w.lower() for w in re.findall(r'\b\w{6,}\b', text)}
 
 
-def assess_confidence(question):
-    """Offline assessment of the original answer against the source idea."""
-    answer = question.first_answer or ''
-    key = question.answer_key
-    term = key.get('term', '')
-    if term:
-        return 'high' if term.casefold() in answer.casefold() else 'low'
-    expected = keywords(key.get('sentence') or ' '.join(s['text'] for s in question.spans))
-    ratio = len(expected & keywords(answer)) / max(1, len(expected))
-    return 'high' if ratio >= .7 else 'medium' if ratio >= .3 else 'low'
-
-
 class MockProvider:
     def generate(self, context):
         pack, kind = context['pack'], context['kind']
@@ -62,6 +50,5 @@ class MockProvider:
         text = sentence if kind == 'hint' else (
             ('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
             + '\nMissing ideas to explain: ' + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.'))
-        return CoachReply(kind, text[:2000], [Quote(source_id, page, sentence)],
-                          {'confidence': assess_confidence(question)} if kind == 'feedback' else {})
+        return CoachReply(kind, text[:2000], [Quote(source_id, page, sentence)])
 

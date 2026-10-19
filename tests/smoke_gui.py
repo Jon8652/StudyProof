@@ -226,6 +226,7 @@ def main() -> int:
     sid = coach_res.value.id
     check('coach-question', coach.service.request_question(sid).ok)
     check('coach-answer', coach.service.submit_answer(sid, 'My unaided explanation').ok)
+    check('coach-confidence', coach.service.rate_confidence(sid, 'low').ok)
     check('coach-feedback', coach.service.request_feedback(sid).ok)
     check('coach-revision', coach.service.submit_revision(sid, 'My revised explanation').ok)
     check('coach-followup', coach.service.request_followup(sid).ok)

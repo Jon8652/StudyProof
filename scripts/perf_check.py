@@ -114,8 +114,7 @@ def check_v2(check, work_dir):
     refs = [SourceRef('document', d.id, d.file_name) for d in documents.values()]
     pack, seconds = timed(lambda: build_source_pack(
         [('document', ref.id) for ref in refs[:5]], {}, documents))
-    from app.constants import MAX_PACK_CHARS
-    assert pack.total_chars <= MAX_PACK_CHARS and pack.spans
+    assert pack.total_chars <= 6000 and pack.spans
     check('source_pack_5_documents', seconds)
 
     def build_index():
