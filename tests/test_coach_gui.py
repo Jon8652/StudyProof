@@ -44,12 +44,12 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         assert len(session.questions) == 1
         screen.composer.insert('1.0', 'Energy from sunlight')
         screen.answer()
-        assert screen.buttons['feedback'].cget('state') == 'disabled'
-        screen.rate('low')
+        assert screen.buttons['feedback'].cget('state') == 'normal'
         screen.request('feedback')
         pump(app, lambda: not screen.busy)
         screen.composer.insert('1.0', 'Chlorophyll captures sunlight to make glucose.')
         screen.revise()
+        assert session.questions[0].confidence in ('low', 'medium', 'high')
         assert session.questions[0].revisions
         assert state.get_review_metrics().weak_sources
         screen.request('followup')
@@ -59,14 +59,12 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         app.screens['stats'].refresh()
         app.show_screen('settings')
         settings = app.screens['settings']
-        settings.ai_entries['model'].delete(0, 'end')
-        settings.ai_entries['model'].insert(0, 'test-model')
+        settings.ai_entries['model'].set('test-model')
         settings._save_ai()
         assert state.settings.ai.model == 'test-model'
         app.show_screen('coach')
         screen.composer.insert('1.0', 'Energy')
         screen.answer()
-        screen.rate('high')
         state.set_ai_settings({'mode': 'live', 'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
         started = threading.Event()
         class SlowProvider:
@@ -106,3 +104,29 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         for s in app.screens.values():
             if hasattr(s, 'shutdown'): s.shutdown()
         app.destroy()
+
+
+def test_quote_popup_closes_when_pointer_moves_away():
+    from app.gui.widgets.citation_chip import Tooltip
+    class Widget:
+        pointer = (110, 110)
+        def bind(self, *args, **kwargs): pass
+        def winfo_pointerxy(self): return self.pointer
+        def winfo_rootx(self): return 100
+        def winfo_rooty(self): return 100
+        def winfo_width(self): return 100
+        def winfo_height(self): return 30
+        def after(self, *args): return 'timer'
+        def after_cancel(self, timer): pass
+    class Popup:
+        destroyed = False
+        def destroy(self): self.destroyed = True
+    widget = Widget()
+    tip = Tooltip(widget, 'Quoted text')
+    popup = Popup()
+    tip.popup = popup
+    tip._check_pointer()
+    assert tip.popup is popup
+    widget.pointer = (210, 150)
+    tip._check_pointer()
+    assert popup.destroyed and tip.popup is None

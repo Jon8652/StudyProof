@@ -1,3 +1,5 @@
+**Updated coaching behaviour (19 October 2026):** These changes supersede the original manual-confidence and 6,000-character clauses below. Confidence is assessed by the coach from the immutable first answer during feedback; no confidence picker is shown. Hints and feedback unlock after the first answer. The combined session source budget is 1,000,000 characters. Quote previews appear only while hovering over their citation. Settings can load exact model IDs from the configured service's `/models` endpoint into a selectable Model list; manual entry remains available for services without model discovery.
+
 This implementation plan is structured to strictly follow the **"Non-AI first"** constraint. It is divided into 7 incremental phases. 
 
 **Implementation update (19 October 2026):** Phases 4–7 are implemented.

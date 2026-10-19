@@ -81,9 +81,10 @@ def run(report_path: str) -> int:
             check('Mock question generated', len(session.questions) == 1)
             coach.composer.insert('1.0', 'Sunlight supplies energy.')
             coach.answer()
-            coach.rate('low')
             coach.request('feedback')
             pump(lambda: not coach.busy)
+            check('feedback completed: ' + coach.notice.cget('text'),
+                  session.questions[0].feedback_given)
             check('grounded feedback', bool(session.turns[-1].quotes)
                   and all(q['verified'] for q in session.turns[-1].quotes))
             coach.composer.insert('1.0', 'Chlorophyll absorbs sunlight to produce glucose.')

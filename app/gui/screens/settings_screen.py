@@ -98,11 +98,14 @@ class SettingsScreen(BaseScreen):
             row = ctk.CTkFrame(ai_card, fg_color='transparent')
             row.pack(fill='x', padx=CARD_PAD_X, pady=3)
             ctk.CTkLabel(row, text=label, width=80, anchor='w').pack(side='left')
-            entry = ctk.CTkEntry(row, show='*' if key == 'api_key' else '')
+            entry = (ctk.CTkComboBox(row, values=[], command=lambda _: self._save_ai())
+                     if key == 'model' else ctk.CTkEntry(row, show='*' if key == 'api_key' else ''))
             entry.pack(side='left', fill='x', expand=True)
             entry.bind('<FocusOut>', lambda _: self._save_ai())
             entry.bind('<Return>', lambda _: self._save_ai())
             self.ai_entries[key] = entry
+        self.models_button = ctk.CTkButton(ai_card, text='Load available models', command=self._load_models)
+        self.models_button.pack(anchor='w', padx=CARD_PAD_X, pady=4)
         controls = ctk.CTkFrame(ai_card, fg_color='transparent')
         controls.pack(fill='x', padx=CARD_PAD_X, pady=4)
         ctk.CTkCheckBox(controls, text='Show key', command=self._toggle_key).pack(side='left')
@@ -190,6 +193,30 @@ class SettingsScreen(BaseScreen):
         self.ai_result.configure(text=text)
         self.test_button.configure(state='normal')
 
+    def _load_models(self):
+        self._save_ai()
+        from copy import deepcopy
+        snapshot = deepcopy(self.state.settings.ai)
+        self.models_button.configure(state='disabled')
+        self.ai_result.configure(text='Loading models…')
+        def run():
+            try:
+                models = OpenAICompatProvider(snapshot).list_models()
+                message = 'Choose a model from the Model list. Your selection saves automatically.'
+            except ProviderError as exc:
+                models, message = [], str(exc)
+            self._ai_events.post(lambda: self._models_done(snapshot, models, message))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _models_done(self, snapshot, models, message):
+        self.models_button.configure(state='normal')
+        if (snapshot.base_url, snapshot.api_key) != (self.state.settings.ai.base_url, self.state.settings.ai.api_key):
+            self.ai_result.configure(text='Settings changed. Load models again.')
+            return
+        if models:
+            self.ai_entries['model'].configure(values=models)
+        self.ai_result.configure(text=message)
+
     def _manual_save(self) -> None:
         result = self.state.manual_save()
         if result.ok:
@@ -259,8 +286,11 @@ class SettingsScreen(BaseScreen):
             self._ai_snapshot = raw
             self.ai_mode.set(raw['mode'].title())
             for key, entry in self.ai_entries.items():
-                entry.delete(0, 'end')
-                entry.insert(0, raw[key])
+                if key == 'model':
+                    entry.set(raw[key])
+                else:
+                    entry.delete(0, 'end')
+                    entry.insert(0, raw[key])
         theme = self.state.settings.theme
         if theme == "dark":
             self.dark_button.configure(fg_color=ACCENT, hover_color=ACCENT_HOVER,

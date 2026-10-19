@@ -38,7 +38,6 @@ def coach(monkeypatch):
 def unlock(service, session):
     assert service.request_question(session.id).ok
     assert service.submit_answer(session.id, 'Sunlight and energy').ok
-    assert service.rate_confidence(session.id, 'low').ok
 
 
 def test_state_machine(coach):
@@ -58,8 +57,6 @@ def test_state_machine(coach):
     timestamp = q.first_answer_at
     assert not service.submit_answer(session.id, 'changed').ok
     assert not service.rate_confidence(session.id, 'invalid').ok
-    assert not service.request_hint(session.id).ok
-    assert service.rate_confidence(session.id, 'low').ok
     assert not service.rate_confidence(session.id, 'high').ok
     assert not service.request_followup(session.id).ok
     assert service.request_hint(session.id).ok
@@ -88,7 +85,6 @@ def test_determinism_grounding_and_memory(coach):
     assert '____' in a.text and not a.quotes
     assert service.complete_turn(job, ActionResult(True, value=a)).ok
     assert service.submit_answer(session.id, 'Unrelated').ok
-    assert service.rate_confidence(session.id, 'medium').ok
     for _ in range(12):
         assert service.request_hint(session.id).ok
     hint = session.turns[-1]
@@ -336,7 +332,54 @@ def test_every_coach_mutation_broadcasts(coach):
     assert service.request_hint(session.id).ok
     assert service.request_feedback(session.id).ok
     assert service.submit_revision(session.id, 'A revision').ok
-    assert len(notifications) == 6
+    assert len(notifications) == 5
     before = len(notifications)
     assert not service.submit_answer(session.id, 'Try overwrite').ok
     assert len(notifications) == before
+
+
+def test_automatic_confidence_uses_original_answer(coach):
+    state, service, session = coach
+    assert service.request_question(session.id).ok
+    q = session.questions[-1]
+    assert service.submit_answer(session.id, q.answer_key['term']).ok
+    assert q.confidence is None
+    assert service.request_feedback(session.id).ok
+    assert q.confidence == 'high'
+    assert session.turns[-2].role == 'coach'
+    assert service.submit_revision(session.id, 'An unrelated revision').ok
+    assert service.request_feedback(session.id).ok
+    assert q.confidence == 'high'
+    assert len([t for t in session.turns if t.kind == 'confidence']) == 1
+
+
+def test_million_character_source_budget():
+    from app.constants import MAX_PACK_CHARS
+    from app.core.agent.context import estimate_pack_size
+    note = Note.create('Large note', 'Long source sentence. ' * 60000)
+    pack = build_source_pack([('note', note.id)], {note.id: note}, {})
+    assert MAX_PACK_CHARS == 1000000
+    assert 990000 < pack.total_chars <= MAX_PACK_CHARS
+    assert pack.truncated
+    assert estimate_pack_size([{'chars': 1200000}]) == MAX_PACK_CHARS
+
+
+def test_model_discovery():
+    calls = []
+    def transport(request, timeout):
+        calls.append(request)
+        reply = Response('')
+        reply.body = json.dumps({'data': [{'id': 'provider/model-v2'}, {'id': 'other'}]}).encode()
+        return reply
+    provider = OpenAICompatProvider(settings(), transport)
+    assert provider.list_models() == ['other', 'provider/model-v2']
+    assert calls[0].full_url == 'https://example.test/v1/models'
+    assert calls[0].get_header('Authorization') == 'Bearer super-secret-key'
+
+
+def test_model_discovery_redacts_errors():
+    def transport(*args, **kwargs):
+        raise RuntimeError('super-secret-key')
+    with pytest.raises(ProviderError) as error:
+        OpenAICompatProvider(settings(), transport).list_models()
+    assert 'super-secret-key' not in str(error.value)

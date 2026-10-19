@@ -105,7 +105,10 @@ class OpenAICompatProvider:
             try:
                 raw = self._post(messages(context, repair), cancel,
                                  max(0, deadline - time.monotonic()))
-                return parse_reply(raw, context['kind'])
+                reply = parse_reply(raw, context['kind'])
+                if reply.kind == 'feedback' and reply.meta.get('confidence') not in ('low', 'medium', 'high'):
+                    raise ValueError('Missing coach assessment.')
+                return reply
             except ValueError:
                 if repair:
                     from app.core.agent.mock_engine import MockProvider
@@ -116,3 +119,30 @@ class OpenAICompatProvider:
     def test_connection(self):
         self._post(connection_messages(), threading.Event(), 10)
         return 'Connected to the AI service.'
+
+    def list_models(self):
+        """Read exact model IDs from the configured service without following redirects."""
+        if not self.settings.api_key:
+            raise ProviderError('Add your AI key before loading models.')
+        request = Request(sanitize_base_url(self.settings.base_url) + '/models',
+                          headers={'Authorization': 'Bearer ' + self.settings.api_key})
+        try:
+            with self.transport(request, timeout=10) as response:
+                raw = response.read(1_000_001)
+            if len(raw) > 1_000_000:
+                raise ValueError()
+            data = json.loads(raw)['data']
+            models = sorted({item['id'] for item in data if isinstance(item, dict)
+                             and isinstance(item.get('id'), str) and item['id'].strip()
+                             and self.settings.api_key not in item['id']})
+            if not models:
+                raise ValueError()
+            return models
+        except HTTPError as exc:
+            code = exc.code
+            exc.close()
+            if code in (401, 403):
+                raise ProviderError('The AI service rejected this key. Check it in Settings.') from None
+            raise ProviderError('This service could not list models. Enter its model ID manually.') from None
+        except Exception:
+            raise ProviderError('Could not load models. Check the service settings or enter its model ID manually.') from None

@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-10-19T22:21:10",
+  "updated_at": "2026-10-19T22:21:10",
+  "settings": {
+    "theme": "dark",
+    "xp_per_10_minutes": 10,
+    "ai": {
+      "mode": "mock",
+      "base_url": "",
+      "model": "deepseek-chat",
+      "api_key": ""
+    }
+  },
+  "sessions": [
+    {
+      "id": "5c5ddea9-993c-4b7b-a251-273df8b4333c",
+      "start_local": "2026-10-13T13:00:00",
+      "end_local": "2026-10-13T15:00:00",
+      "duration_minutes": 120,
+      "created_at_local": "2026-10-13T15:00:00",
+      "source": "preset"
+    }
+  ],
+  "notes": [],
+  "documents": [],
+  "coach_sessions": []
+}

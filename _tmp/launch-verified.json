@@ -1,0 +1,29 @@
+{
+  "ok": false,
+  "frozen": true,
+  "checks": [
+    "bundled asset: app_icon",
+    "bundled asset: home_icon",
+    "bundled asset: calendar_icon",
+    "bundled asset: stats_icon",
+    "bundled asset: settings_icon",
+    "bundled asset: notes_icon",
+    "bundled asset: library_icon",
+    "bundled asset: coach_icon",
+    "bundled asset: bronze_medal",
+    "bundled asset: silver_medal",
+    "bundled asset: gold_medal",
+    "bundled asset: empty_state",
+    "PDF binary imported",
+    "background operation completed",
+    "PDF extraction",
+    "background operation completed",
+    "background operation completed",
+    "PDF page rendered in Tk",
+    "coach session created",
+    "background operation completed",
+    "Mock question generated",
+    "background operation completed"
+  ],
+  "error": "Traceback (most recent call last):\n  File \"app\\release_check.py\", line 85, in run\n    pump(lambda: not coach.busy)\n  File \"app\\release_check.py\", line 25, in check\n    raise AssertionError(name)\nAssertionError: grounded feedback\n"
+}

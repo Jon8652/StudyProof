@@ -35,7 +35,7 @@ executable with PyInstaller.
 - **PDF Library** — import local PDFs, extract page text in the background,
   and browse pages with zoom and a text view. Files are copied into the local
   library. Protected, oversized and textless files receive friendly guidance.
-- **Study Coach** — offline Mock questions, confidence ratings, grounded hints
+- **Study Coach** — offline Mock questions, automatic confidence assessments, grounded hints
   and feedback, immutable first answers, revisions, follow-ups and saved
   conversations. Review highlights weak sources and links back to coaching.
   Includes the accessibility touches from the v2 spec: role prefixes
@@ -73,7 +73,7 @@ All AI requirements (COACH-, GEN-, GRD-, PROV- and AIS- families) are
 implemented and covered by the automated test suite: deterministic Mock
 generation with session-seeded output, the JSON repair ladder with Mock
 fallback, lazy normalised quote grounding with strip-and-count, the guarded
-question state machine (unaided first answer, single confidence rating, gated
+question state machine (unaided first answer, coach-assessed confidence, gated
 hints/feedback, follow-up child questions), saved-session management with
 resume/delete, the opt-in `urllib` Live client (30 s timeout, one retry on
 429/5xx, strict key redaction, connection testing, sub-second cancellation),
@@ -170,7 +170,7 @@ app/state/              AppState: single source of truth + incremental index
 app/gui/                seven screens (Home, Calendar, Notes, Library, Coach,
                         Stats, Settings), dialogs (source selection, saved
                         sessions) and widgets (page viewer, chat bubbles,
-                        citation chips, confidence picker, stopwatch)
+                        citation chips, stopwatch)
 app/utils/              paths (source vs frozen resources), asset loader
 assets/               PNG icons & medal images (user artwork, any size/mode)
 tests/                  unit tests + GUI smoke test
@@ -190,3 +190,5 @@ PDF binaries live in the adjacent `library` folder. Schema 1 saves migrate
 to schema 2 on load; coaching history and extracted page text share the same
 autosave and backup flow. Copy the library folder along with the JSON when
 moving to another device, or re-link missing PDFs in the Library screen.
+
+In AI Settings, use **Load available models** to fetch model IDs from your configured service, then select a model from the list. Manual model ID entry is also supported. Coaching sessions accept up to 1,000,000 source characters; Live services may impose their own context limits. Confidence is assessed during feedback from the original answer.

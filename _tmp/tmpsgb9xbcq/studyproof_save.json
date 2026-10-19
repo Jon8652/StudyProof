@@ -1,0 +1,233 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-10-19T22:21:14",
+  "updated_at": "2026-10-19T22:21:31",
+  "settings": {
+    "theme": "light",
+    "xp_per_10_minutes": 10,
+    "ai": {
+      "mode": "mock",
+      "base_url": "",
+      "model": "deepseek-chat",
+      "api_key": ""
+    }
+  },
+  "sessions": [
+    {
+      "id": "1b2b19c7-826a-44c8-8e4a-0c541ba09848",
+      "start_local": "2026-10-19T21:51:16",
+      "end_local": "2026-10-19T22:21:16",
+      "duration_minutes": 30,
+      "created_at_local": "2026-10-19T22:21:16",
+      "source": "preset"
+    },
+    {
+      "id": "c7d53231-33e4-44ee-b182-3e219ae2f087",
+      "start_local": "2026-10-19T21:21:16",
+      "end_local": "2026-10-19T22:21:16",
+      "duration_minutes": 60,
+      "created_at_local": "2026-10-19T22:21:16",
+      "source": "preset"
+    },
+    {
+      "id": "142574b9-0060-4b6f-acf7-64b111296f03",
+      "start_local": "2026-10-19T20:21:16",
+      "end_local": "2026-10-19T22:21:16",
+      "duration_minutes": 120,
+      "created_at_local": "2026-10-19T22:21:16",
+      "source": "preset"
+    },
+    {
+      "id": "b971a418-8f01-43b8-8dd1-823114dd4170",
+      "start_local": "2026-10-19T20:36:17",
+      "end_local": "2026-10-19T22:21:17",
+      "duration_minutes": 105,
+      "created_at_local": "2026-10-19T22:21:17",
+      "source": "custom"
+    }
+  ],
+  "notes": [
+    {
+      "id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+      "title": "Biology recap",
+      "body": "The Calvin cycle fixes carbon in the stroma.",
+      "day": null,
+      "created_at_local": "2026-10-19T22:21:28",
+      "updated_at_local": "2026-10-19T22:21:28"
+    }
+  ],
+  "documents": [],
+  "coach_sessions": [
+    {
+      "id": "dbb09d89-c37f-41d9-96d3-ae22db163e05",
+      "created_at_local": "2026-10-19T22:21:28",
+      "updated_at_local": "2026-10-19T22:21:30",
+      "sources": [
+        {
+          "kind": "note",
+          "id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+          "label": "Biology recap"
+        },
+        {
+          "kind": "document",
+          "id": "94fec527-7646-4100-9571-73443a615e1b",
+          "label": "sample.pdf"
+        }
+      ],
+      "questions": [
+        {
+          "id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "parent_id": null,
+          "prompt": "The ____ cycle fixes carbon in the stroma.\nWhich term completes this?",
+          "spans": [
+            {
+              "source_id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+              "page": 1,
+              "text": "The Calvin cycle fixes carbon in the stroma."
+            },
+            {
+              "source_id": "94fec527-7646-4100-9571-73443a615e1b",
+              "page": 1,
+              "text": "Photosynthesis converts light into glucose."
+            }
+          ],
+          "status": "closed",
+          "first_answer": "My unaided explanation",
+          "first_answer_at": "2026-10-19T22:21:29",
+          "confidence": "low",
+          "confidence_at": "2026-10-19T22:21:30",
+          "revisions": [
+            {
+              "text": "My revised explanation",
+              "at": "2026-10-19T22:21:30.528254"
+            }
+          ],
+          "hints_seen": 0,
+          "feedback_given": true,
+          "followup_ids": [
+            "e2bc8e5c-5d55-4004-9601-17111505a1d7"
+          ],
+          "answer_key": {
+            "term": "Calvin",
+            "sentence": "The Calvin cycle fixes carbon in the stroma.",
+            "source_id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+            "page": 1
+          }
+        },
+        {
+          "id": "e2bc8e5c-5d55-4004-9601-17111505a1d7",
+          "parent_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "prompt": "The ____ cycle fixes carbon in the stroma.\nWhich term completes this?",
+          "spans": [
+            {
+              "source_id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+              "page": 1,
+              "text": "The Calvin cycle fixes carbon in the stroma."
+            },
+            {
+              "source_id": "94fec527-7646-4100-9571-73443a615e1b",
+              "page": 1,
+              "text": "Photosynthesis converts light into glucose."
+            }
+          ],
+          "status": "open",
+          "first_answer": null,
+          "first_answer_at": null,
+          "confidence": null,
+          "confidence_at": null,
+          "revisions": [],
+          "hints_seen": 0,
+          "feedback_given": false,
+          "followup_ids": [],
+          "answer_key": {
+            "term": "Calvin",
+            "sentence": "The Calvin cycle fixes carbon in the stroma.",
+            "source_id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+            "page": 1
+          }
+        }
+      ],
+      "turns": [
+        {
+          "id": "31d4a462-4ce2-4542-8388-56bfc03c21e0",
+          "at_local": "2026-10-19T22:21:29",
+          "role": "coach",
+          "kind": "question",
+          "question_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "mode": "mock",
+          "text": "The ____ cycle fixes carbon in the stroma.\nWhich term completes this?",
+          "confidence": null,
+          "quotes": [],
+          "ungrounded_count": 0
+        },
+        {
+          "id": "2bbf11fa-f6bc-4e0c-979b-11d7adc719cc",
+          "at_local": "2026-10-19T22:21:29",
+          "role": "user",
+          "kind": "answer",
+          "question_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "mode": "mock",
+          "text": "My unaided explanation",
+          "confidence": null,
+          "quotes": [],
+          "ungrounded_count": 0
+        },
+        {
+          "id": "5053e9c7-b7a4-4152-b1df-ff52d85e524a",
+          "at_local": "2026-10-19T22:21:30",
+          "role": "coach",
+          "kind": "confidence",
+          "question_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "mode": "mock",
+          "text": "Coach assessment: low",
+          "confidence": "low",
+          "quotes": [],
+          "ungrounded_count": 0
+        },
+        {
+          "id": "689786a9-31be-49e2-8e2d-3b644f08974d",
+          "at_local": "2026-10-19T22:21:30",
+          "role": "coach",
+          "kind": "feedback",
+          "question_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "mode": "mock",
+          "text": "No match yet in your answer.\nMissing ideas to explain: calvin, carbon, stroma",
+          "confidence": null,
+          "quotes": [
+            {
+              "source_id": "b0ba7ab7-1b2a-4c71-87b5-a82346892ca0",
+              "page": 1,
+              "quote": "The Calvin cycle fixes carbon in the stroma.",
+              "verified": true
+            }
+          ],
+          "ungrounded_count": 0
+        },
+        {
+          "id": "8de84566-e0bd-42d0-bdcb-5e38f7766e1b",
+          "at_local": "2026-10-19T22:21:30",
+          "role": "user",
+          "kind": "revision",
+          "question_id": "7d24ec2b-1f7b-455c-ae6b-8c5e6881ec0d",
+          "mode": "mock",
+          "text": "My revised explanation",
+          "confidence": null,
+          "quotes": [],
+          "ungrounded_count": 0
+        },
+        {
+          "id": "e0904cf0-2291-48e4-bbff-638df71d8e85",
+          "at_local": "2026-10-19T22:21:30",
+          "role": "coach",
+          "kind": "followup",
+          "question_id": "e2bc8e5c-5d55-4004-9601-17111505a1d7",
+          "mode": "mock",
+          "text": "The ____ cycle fixes carbon in the stroma.\nWhich term completes this?",
+          "confidence": null,
+          "quotes": [],
+          "ungrounded_count": 0
+        }
+      ]
+    }
+  ]
+}
