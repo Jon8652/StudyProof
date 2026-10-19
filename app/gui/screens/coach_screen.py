@@ -94,8 +94,20 @@ class CoachScreen(BaseScreen):
         self.notice.configure(text='Coach is thinking…')
         self.refresh()
         def run():
-            result = self.service.generate_turn(job)
-            self.events.post(lambda: self.finished(job, result))
+            # Poll the cancel flag while the (possibly slow) provider call is
+            # in flight so Cancel returns promptly instead of waiting for the
+            # turn to finish.  A cancelled turn posts nothing at all.
+            generate = threading.Thread(
+                target=lambda: setattr(run, 'result', self.service.generate_turn(job)),
+                daemon=True)
+            generate.start()
+            while generate.is_alive():
+                if job['cancel'].is_set():
+                    return
+                generate.join(0.05)
+            if job['cancel'].is_set():
+                return
+            self.events.post(lambda: self.finished(job, run.result))
         threading.Thread(target=run, daemon=True).start()
 
     def finished(self, job, result):

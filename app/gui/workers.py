@@ -17,21 +17,52 @@ floods the event loop (NFR-12).
 
 from __future__ import annotations
 
+import os
 import queue
+import sys
 import threading
 import time
 import weakref
 from pathlib import Path
 from typing import Any, Callable
 
+# ``event_generate`` from a non-main thread is unreliable on Windows: Tk may
+# defer or drop the wake-up, leaving posted callbacks stranded until the slow
+# safety-net poll happens to fire (which can be seconds under load).  On those
+# platforms we deliver through a self-pipe instead: the worker writes one byte
+# and the main loop drains it via a file event, which is fully thread-safe.
+# ``STUDYPROOF_UIQ_PIPE`` forces the pipe backend on any OS (used by tests).
+_PIPE_BACKEND = (sys.platform.startswith('win')
+                 or os.environ.get('STUDYPROOF_UIQ_PIPE') == '1')
+
+
+def _drain_fd(fd: int) -> None:
+    try:
+        while os.read(fd, 4096):
+            pass
+    except (BlockingIOError, OSError, ValueError):
+        pass
+
 
 class UIEventQueue:
     """Callable mailbox handed from worker threads to the Tk main loop.
 
-    Delivery is *event-driven*: ``post()`` wakes the main loop immediately via
-    a virtual-event ``generate()``, so callbacks run at once even if the app
-    sits idle.  A slow ``after()`` poll remains purely as a safety net in case
-    a cross-thread event ever gets dropped by the windowing system.
+    Delivery is *event-driven*: ``post()`` schedules an immediate wake-up of
+    the main loop, so callbacks run at once even if the app sits idle.  Two
+    complementary mechanisms are used because neither is universally
+    reliable:
+
+    - ``after_idle`` is registered **from the posting thread itself** against
+      the shared Tcl interpreter.  Tkinter's ``_tkinter`` module marshals
+      calls made from non-main threads back to the main thread, so this is
+      fully thread-safe and fires within milliseconds of the next event-loop
+      service (``update()`` / ``mainloop()``).
+    - On Windows, where cross-thread ``event_generate`` can be deferred or
+      dropped entirely, a self-pipe + ``fileevent`` is armed as well; the
+      worker writes one byte and the main loop drains it instantly.
+
+    A slow ``after()`` poll remains purely as a safety net in case a wake-up
+    ever gets lost by the windowing system.
     """
 
     _WAKE_EVENT = "<<UIEventQueueWake>>"
@@ -45,27 +76,58 @@ class UIEventQueue:
         self._widget_ref = weakref.ref(widget)
         self._poll_ms = max(10, int(poll_ms))
         self._running = False
+        self._wake_scheduled = threading.Event()
         try:
             widget.bind(self._WAKE_EVENT, lambda _e: self._drain(), add='+')
         except Exception:
             pass
+        self._rfd: int | None = None
+        self._wfd: int | None = None
+        if _PIPE_BACKEND:
+            try:
+                rfd, wfd = os.pipe()
+                os.set_blocking(rfd, False)
+                os.set_blocking(wfd, False)
+                self._rfd, self._wfd = rfd, wfd
+                # ``createfilehandler`` is the portable wrapper for
+                # ``fileevent readable`` and guarantees the callback runs on
+                # the main thread.
+                widget.createfilehandler(rfd, 'readable', self._on_pipe_readable)
+            except Exception:
+                self._close_pipes()
 
     # -- worker side (any thread) ---------------------------------------------
 
     def post(self, callback: Callable[[], Any]) -> None:
         """Schedule ``callback`` to run on the main thread (thread-safe)."""
         self._queue.put(callback)
+        # Coalesce wake-ups: one pending drain is enough for any number of
+        # queued callbacks.
+        if not self._wake_scheduled.is_set():
+            self._wake_scheduled.set()
+            self._wake()
+
+    def _wake(self) -> None:
         widget = self._widget_ref()
         if widget is not None:
             try:
-                # Queue this *after* the put above, so when the main loop
-                # services the generated event the callback is already
-                # visible.  ``generate`` is documented as thread-safe for
-                # virtual events; the poll below covers platforms where it
-                # is not delivered promptly.
-                widget.event_generate(self._WAKE_EVENT)
+                # ``after_idle`` called from *this* (worker) thread goes
+                # through tkinter's thread-marshalling and executes on the
+                # main thread at the next event-loop service — no polling
+                # delay, no reliance on event_generate delivery.
+                widget.after_idle(self._idle_wake)
             except Exception:
                 pass
+        if self._wfd is not None:
+            try:
+                os.write(self._wfd, b'\x01')
+            except Exception:
+                pass
+
+    def _idle_wake(self) -> None:
+        # Runs on the main thread (marshalled by tkinter).
+        self._wake_scheduled.clear()
+        self._drain()
 
     # -- main-thread side -------------------------------------------------------
 
@@ -77,6 +139,30 @@ class UIEventQueue:
 
     def stop(self) -> None:
         self._running = False
+        self._close_pipes()
+
+    def _close_pipes(self) -> None:
+        if self._rfd is not None:
+            widget = self._widget_ref()
+            if widget is not None:
+                try:
+                    widget.deletefilehandler(self._rfd)
+                except Exception:
+                    pass
+        for fd in (self._rfd, self._wfd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        self._rfd = self._wfd = None
+
+    def _on_pipe_readable(self, _event=None) -> None:
+        """Tk file handler callback (main thread): drain the self-pipe."""
+        if self._rfd is not None:
+            _drain_fd(self._rfd)
+        self._wake_scheduled.clear()
+        self._drain()
 
     def _schedule_drain(self) -> None:
         widget = self._widget_ref()
