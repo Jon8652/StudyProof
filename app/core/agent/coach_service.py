@@ -50,7 +50,12 @@ class CoachService:
         return self._store(s, q, 'answer', q.first_answer)
 
     def rate_confidence(self, session_id, confidence, question_id=None):
-        return ActionResult(False, 'The coach assesses confidence from your answer during feedback.')
+        s, q = self._find(session_id, question_id)
+        if (session_id in self.pending or not q or q.status != 'answered'
+                or q.confidence is not None or confidence not in ('low', 'medium', 'high')):
+            return ActionResult(False, 'Answer first, then rate confidence once.')
+        q.confidence, q.confidence_at = confidence, datetime.now()
+        return self._store(s, q, 'confidence', confidence, confidence=confidence)
 
     def submit_revision(self, session_id, text, question_id=None):
         s, q = self._find(session_id, question_id)
@@ -69,10 +74,10 @@ class CoachService:
             return ActionResult(False, 'Wait for this turn or cancel it first.')
         if kind == 'question':
             if q and q.status != 'closed' and not q.feedback_given:
-                return ActionResult(False, 'Finish your answer and feedback first.')
+                return ActionResult(False, 'Finish your answer, confidence and feedback first.')
         elif kind in ('hint', 'feedback', 'followup'):
-            if not q or q.first_answer is None or q.status == 'closed':
-                return ActionResult(False, 'Submit your answer to unlock hints and feedback.')
+            if not q or not q.confidence or q.status == 'closed':
+                return ActionResult(False, 'Answer first, then rate confidence to unlock hints and feedback.')
             if kind == 'followup' and not q.feedback_given:
                 return ActionResult(False, 'Get feedback before asking a follow-up.')
         else:
@@ -151,16 +156,6 @@ class CoachService:
             q.hints_seen += 1
         elif kind == 'feedback':
             q.feedback_given = True
-            if q.confidence is None:
-                from app.core.agent.mock_engine import assess_confidence
-                q.confidence = reply.meta.get('confidence')
-                if q.confidence not in ('low', 'medium', 'high'):
-                    q.confidence = assess_confidence(q)
-                q.confidence_at = datetime.now()
-                s.turns.append(CoachTurn.create(
-                    'coach', 'confidence', 'Coach assessment: ' + q.confidence,
-                    q.id, 'mock' if reply.meta.get('fallback_notice') else job['mode'],
-                    confidence=q.confidence))
         mode = 'mock' if reply.meta.get('fallback_notice') else job['mode']
         s.turns.append(CoachTurn.create('coach', kind, reply.text, q.id, mode,
                                        quotes=quotes, ungrounded_count=failures))
