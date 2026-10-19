@@ -2,6 +2,17 @@
 
 Version **1.1.0** — PDF Library and Study Coach.
 
+**Project status: Complete.** All requirements from both specification sets —
+the consolidated v1 document (`new_requirements_document.md`) and the v2 AI
+requirements (`AI Requirements Document — StudyProof v2.md`, covering the
+COACH-, GEN-, GRD-, PROV-, AIS-, PDF-, LIB-, SEL-, REV- and DATA- families) —
+have been implemented and validated. The seven-phase plan in
+`AI_implementation_plan.md` is finished through Phase 7 (Gates, Packaging &
+Polish); the release build passed 122 automated tests, the full GUI smoke
+flow, every performance budget, and 32 frozen-app checks on 19 October 2026.
+No known open items remain; real Live endpoints were never contacted during
+validation (Live mode is opt-in and user-configured).
+
 A cross-platform desktop app for tracking daily study sessions with XP,
 medals (Bronze / Silver / Gold), streaks, a calendar view, and statistics —
 built with Python + CustomTkinter and packaged as a standalone Windows
@@ -40,6 +51,10 @@ executable with PyInstaller.
 - **Study Coach** — offline Mock questions, confidence ratings, grounded hints
   and feedback, immutable first answers, revisions, follow-ups and saved
   conversations. Review highlights weak sources and links back to coaching.
+  Includes the accessibility touches from the v2 spec: role prefixes
+  ("Coach:"/"You:") and textual verified ticks, tooltips explaining disabled
+  gated buttons, and a "General guidance" badge for turns with zero verified
+  quotes (ACC-3/ACC-4/ACC-5, GRD-5).
 - **Settings** — dark/light theme (persisted), manual save, and a safe
   "Load from file" flow (validate → confirm → backup → replace).
 - **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs keep their reading so you can resume, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.
@@ -66,6 +81,16 @@ question state and last ten turns. Keys are stored locally in the save file,
 masked in Settings and excluded from prompts and error messages. There is
 no telemetry. Failed turns offer a one-click Mock fallback; Cancel immediately
 restores the composer and discards late responses.
+
+All AI requirements (COACH-, GEN-, GRD-, PROV- and AIS- families) are
+implemented and covered by the automated test suite: deterministic Mock
+generation with session-seeded output, the JSON repair ladder with Mock
+fallback, lazy normalised quote grounding with strip-and-count, the guarded
+question state machine (unaided first answer, single confidence rating, gated
+hints/feedback, follow-up child questions), saved-session management with
+resume/delete, the opt-in `urllib` Live client (30 s timeout, one retry on
+429/5xx, strict key redaction, connection testing, sub-second cancellation),
+and per-turn Mock fallback when Live credentials are missing (PROV-3).
 
 ## Requirements
 
@@ -146,11 +171,19 @@ run_build.ps1           Windows release build script
 app/constants.py        gameplay rules (XP, medals, streaks, limits)
 app/core/               models, study metrics, PDF extraction/rendering
 app/core/agent/         coach state machine, grounding, Mock/Live providers
+                        (schema, parser, prompt, context pack builder,
+                        mock_engine, coach_service, provider_base,
+                        provider_openai)
 app/release_check.py    isolated diagnostic used by the frozen build gate
-app/persistence/        JSON repository, schema, atomic save, backup/recovery
+app/persistence/        JSON repository, schema, atomic save, backup/recovery,
+                        library binary storage (import/delete/re-link)
 app/state/              AppState: single source of truth + incremental index
-                        (session and note mutations/views, total-notes stat)
-app/gui/                seven screens, dialogs, PDF viewer and coach widgets
+                        (session and note mutations/views, document and coach
+                        indexes, total-notes stat)
+app/gui/                seven screens (Home, Calendar, Notes, Library, Coach,
+                        Stats, Settings), dialogs (source selection, saved
+                        sessions) and widgets (page viewer, chat bubbles,
+                        citation chips, confidence picker, stopwatch)
 app/utils/              paths (source vs frozen resources), asset loader
 assets/               PNG icons & medal images (user artwork, any size/mode)
 tests/                  unit tests + GUI smoke test
