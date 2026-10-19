@@ -20,25 +20,52 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable
 
 
 class UIEventQueue:
-    """Callable mailbox handed from worker threads to the Tk main loop."""
+    """Callable mailbox handed from worker threads to the Tk main loop.
+
+    Delivery is *event-driven*: ``post()`` wakes the main loop immediately via
+    a virtual-event ``generate()``, so callbacks run at once even if the app
+    sits idle.  A slow ``after()`` poll remains purely as a safety net in case
+    a cross-thread event ever gets dropped by the windowing system.
+    """
+
+    _WAKE_EVENT = "<<UIEventQueueWake>>"
 
     def __init__(self, widget, poll_ms: int = 50):
         """``widget`` is any Tk-interpolating object used for ``after()``."""
         self._queue: "queue.Queue[Callable[[], Any]]" = queue.Queue()
-        self._widget = widget
+        # Weak reference: a destroyed widget must never keep the pump alive
+        # (and calling ``after``/``bind`` on a dead widget would raise TclError
+        # from worker threads after shutdown).
+        self._widget_ref = weakref.ref(widget)
         self._poll_ms = max(10, int(poll_ms))
         self._running = False
+        try:
+            widget.bind(self._WAKE_EVENT, lambda _e: self._drain(), add='+')
+        except Exception:
+            pass
 
     # -- worker side (any thread) ---------------------------------------------
 
     def post(self, callback: Callable[[], Any]) -> None:
         """Schedule ``callback`` to run on the main thread (thread-safe)."""
         self._queue.put(callback)
+        widget = self._widget_ref()
+        if widget is not None:
+            try:
+                # Queue this *after* the put above, so when the main loop
+                # services the generated event the callback is already
+                # visible.  ``generate`` is documented as thread-safe for
+                # virtual events; the poll below covers platforms where it
+                # is not delivered promptly.
+                widget.event_generate(self._WAKE_EVENT)
+            except Exception:
+                pass
 
     # -- main-thread side -------------------------------------------------------
 
@@ -52,8 +79,13 @@ class UIEventQueue:
         self._running = False
 
     def _schedule_drain(self) -> None:
+        widget = self._widget_ref()
+        if widget is None:
+            # Widget garbage-collected between stop and tick — nothing left.
+            self._running = False
+            return
         try:
-            self._widget.after(self._poll_ms, self._drain)
+            widget.after(self._poll_ms, self._drain)
         except Exception:
             # Widget destroyed between stop and tick — nothing left to do.
             self._running = False
