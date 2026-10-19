@@ -383,6 +383,10 @@ class LibraryScreen(BaseScreen):
 
     def _on_extract_done(self, document_id: str, result) -> None:
         self._progress_text.pop(document_id, None)
+        # The document may have been deleted while extraction was running;
+        # ignore the late callback instead of resurrecting stale UI state.
+        if self.state.document_by_id(document_id) is None:
+            return
         pages = [(no, text) for no, text in result.pages]
         # Empty status string = "derive ready/textless from the new text".
         self.state.update_document_status(document_id, "", pages=pages)
@@ -390,6 +394,20 @@ class LibraryScreen(BaseScreen):
 
     def _on_extract_failed(self, document_id: str, kind: str) -> None:
         self._progress_text.pop(document_id, None)
+        if self.state.document_by_id(document_id) is None:
+            return                     # deleted mid-flight — nothing to do
+        if kind == "dependency_missing":
+            # Honest reporting (ERR-29 must not lie): the *engine* is
+            # missing, not the user's file.  Restore a sane status so the
+            # row doesn't spin forever and surface the real reason.
+            document = self.state.document_by_id(document_id)
+            fallback = "ready" if (document and document.char_count > 0) \
+                else "textless"
+            self.state.update_document_status(document_id, fallback)
+            show_message(self, "PDF engine missing",
+                         _IMPORT_ERROR_MESSAGES["dependency_missing"])
+            self.refresh()
+            return
         if kind == "cancelled":
             document = self.state.document_by_id(document_id)
             if document is not None:
@@ -445,11 +463,21 @@ class LibraryScreen(BaseScreen):
             confirm_text="Delete")
         if not confirmed:
             return
+        # Stop every background job tied to this document *before* the
+        # record goes away; otherwise a late extraction/render callback
+        # re-paints the viewer with the deleted document's page ("still
+        # shows Page 1 of N after delete").
+        self._worker.cancel(document.id)
+        self._progress_text.pop(document.id, None)
         result = self.state.delete_document(document.id)
         if not result.ok:
             show_error(self, result.message or "")
             return
         self._selected_id = None
+        # Force the viewer back to its clean "no document" state even when
+        # the id itself is unchanged (viewer may still hold the old doc):
+        # clear first via a sentinel switch, then refresh().
+        self.viewer.set_document(None, None, 0, {})
         self.refresh()
 
     def _relink_clicked(self) -> None:

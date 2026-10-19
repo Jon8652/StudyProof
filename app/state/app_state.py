@@ -558,13 +558,16 @@ class AppState:
             # instances (a legacy index quirk), autosave would serialise the
             # stale dataset record — an empty text_pages list — so every
             # restart showed blank "Show text" even though extraction worked.
-            # Mirror the freshly derived fields onto the saved record too.
+            # Mirror the freshly derived fields onto *every* alias we can
+            # find, then re-point the id map at the canonical dataset record
+            # so future lookups never return a detached copy again.
             stored = self.dataset.document_by_id(document.id)
             if stored is not None and stored is not document:
                 stored.text_pages = document.text_pages
                 stored.page_count = document.page_count
                 stored.char_count = document.char_count
                 stored.status = document.status
+                self._doc_by_id[document.id] = stored
         if status in DOC_STATUSES:               # "" keeps the derived state
             document.status = status
         if save:
