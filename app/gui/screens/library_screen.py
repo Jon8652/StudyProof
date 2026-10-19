@@ -474,10 +474,12 @@ class LibraryScreen(BaseScreen):
             show_error(self, result.message or "")
             return
         self._selected_id = None
-        # Force the viewer back to its clean "no document" state even when
-        # the id itself is unchanged (viewer may still hold the old doc):
-        # clear first via a sentinel switch, then refresh().
-        self.viewer.set_document(None, None, 0, {})
+        # Force the viewer back to its clean "no document" state: cancel any
+        # in-flight render (clear() bumps the seq), drop the image cache and
+        # reset the toolbar label — set_document(None,...) alone short-
+        # circuits when the id hasn't changed, which left "Page 1 of N" on
+        # screen after deleting the open document.
+        self.viewer.clear()
         self.refresh()
 
     def _relink_clicked(self) -> None:
