@@ -38,12 +38,11 @@ class PageViewer(ctk.CTkFrame):
     def __init__(self, master, events: UIEventQueue):
         super().__init__(master, corner_radius=12, fg_color=("white", "#1c1c26"),
                          border_width=1, border_color=("gray75", "gray28"))
-        # This frame owns the two stage widgets directly (see _show_stage),
-        # so it must size itself to them.  CTkFrame defaults to
-        # pack/grid-propagate *disabled*, which used to leave the text pane
-        # collapsed to a 1x1 window — the "blank after Show text" bug.
-        self.pack_propagate(True)
-        self.grid_propagate(True)
+        # NOTE: do NOT enable pack/grid propagation here.  The library screen
+        # grids this frame with sticky="nsew"; letting children propagate
+        # their requested size overrode that and shrank the whole viewer to
+        # 208x208, which is what kept the text pane blank even though the
+        # extraction itself worked (see the "over-nesting" fix below).
         self._events = events
         self._document_id: str | None = None
         self._path: Path | None = None
@@ -136,10 +135,15 @@ class PageViewer(ctk.CTkFrame):
         self.apply_appearance(theme_is_dark(self))
 
         # Text stage: also created up-front but only packed in text mode.
-        self.text_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        # The CTkTextbox is a *direct* child of this frame — it has its own
+        # internal tk.Text and scrollbars, so wrapping it in a
+        # CTkScrollableFrame was pure over-nesting: under CustomTkinter 6.0
+        # the scroll frame's hidden _parent_frame ended up with no geometry
+        # manager at all (unmapped, 1x1), which kept the pane blank even
+        # though the extracted text was correctly inserted into the widget.
         self.text_box = ctk.CTkTextbox(
-            self.text_scroll, wrap="word", font=ctk.CTkFont(size=13))
-        self.text_box.pack(fill="both", expand=True, padx=4, pady=4)
+            self, wrap="word", font=ctk.CTkFont(size=13),
+            fg_color=("white", "#1c1c26"))
 
     # ------------------------------------------------------------------------
     # Public API (main thread only)
@@ -329,9 +333,8 @@ class PageViewer(ctk.CTkFrame):
         # covers it), then swap to the text pane.  If a page render fails
         # *while* the text pane is already visible, skip the placeholder
         # step entirely: painting it would pack_forget the text pane and
-        # force Tk to re-map the whole scroll-frame chain mid-flight, which
-        # is exactly when the pane used to end up collapsed and blank.
-        if not self._is_packed(self.text_scroll):
+        # force Tk to re-map the whole chain mid-flight.
+        if not self._is_packed(self.text_box):
             self._set_placeholder(notice)
         self._render_text_pane()
 
@@ -354,42 +357,20 @@ class PageViewer(ctk.CTkFrame):
                        "(The PDF may be scanned/image-only — the page image "
                        "view still works.)")
         inner.configure(state="disabled")
-        # The text pane was just (re)packed, so its geometry is still stale:
-        # CTkScrollableFrame's inner canvas reports 1x1 until Tk's idle
-        # geometry pass after a (re)map, and CTkTextbox sizes itself from
-        # those dimensions.  Inserting before that pass leaves the pane
-        # blank; yview_moveto(0) would also run against an unmapped
-        # viewport.  Force one idle-geometry round now so the textbox is
-        # sized from real dimensions ...
+        # Rewind to the top of the page once the viewport is actually mapped
+        # (yview_moveto against an unmapped widget is a no-op).
         try:
             self.update_idletasks()
         except tk.TclError:
             return                        # widget torn down mid-update
-        # ... and refresh the scroll region once more after the freshly
-        # wrapped text has reported its new requested height, then rewind
-        # the viewport to the top of the pane.
-        self._sync_text_scrollregion()
-        self.after(60, self._sync_text_scrollregion)
-
-    def _sync_text_scrollregion(self) -> None:
-        """Recompute the text pane's scroll region and show its top."""
-        try:
-            canvas = self.text_scroll._parent_canvas
-            if not canvas.winfo_exists():
-                return
-            bbox = canvas.bbox("all")
-            if bbox:
-                canvas.configure(scrollregion=bbox)
-            canvas.yview_moveto(0.0)
-        except Exception:
-            pass
+        inner.yview_moveto(0.0)
 
     # ------------------------------------------------------------------------
 
     def _show_stage(self, stage: str) -> None:
         """Pack exactly one of the two stages (image / text)."""
         if stage == "image":
-            self.text_scroll.pack_forget()
+            self.text_box.pack_forget()
             if not self._is_packed(self.image_canvas):
                 self.image_canvas.pack(side="left", fill="both", expand=True,
                                        padx=(8, 0), pady=8)
@@ -398,9 +379,9 @@ class PageViewer(ctk.CTkFrame):
         else:
             self.image_canvas.pack_forget()
             self._image_vbar.pack_forget()
-            if not self._is_packed(self.text_scroll):
-                self.text_scroll.pack(fill="both", expand=True,
-                                      padx=8, pady=8)
+            if not self._is_packed(self.text_box):
+                self.text_box.pack(fill="both", expand=True,
+                                   padx=8, pady=8)
 
     @staticmethod
     def _is_packed(widget) -> bool:
