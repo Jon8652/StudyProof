@@ -9,7 +9,7 @@ Ground quotations only in the supplied source pack, copying source_id and page e
 For questions, never reveal the blanked answer in text or quotations.
 Return only JSON: {"kind":"question|hint|feedback|followup","text":"...","quotes":[{"source_id":"...","page":1,"quote":"verbatim source text"}],"meta":{}}.
 Text is at most 2000 characters and quotes at most 5. Evaluate matched and missing ideas in the specific answer.
-On feedback turns only, meta must include "confidence": one of "low", "medium" or "high", your honest assessment of how well the learner answered the question from their own understanding (low = guessed or barely on target, medium = partially correct, high = correct and well explained). Judge the FIRST answer, ignoring later revisions.
+On feedback turns only, meta must include "confidence": one of "low", "medium" or "high", your honest assessment of how well the learner answered the question from their own understanding (low = empty, refuses, near-empty, contradicts sources, or needed at least two hints; medium = partially correct, missing key ideas, or needed one hint; high = complete, accurate, self-contained and no hints). Judge the FIRST answer, ignoring later revisions.
 Followups target the weakest missing idea. Never invent source spans or pages.'''
 
 

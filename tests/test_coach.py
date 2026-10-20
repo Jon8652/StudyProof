@@ -425,3 +425,27 @@ def test_model_choice_sanitization():
     assert AISettings.sanitized({'model': 'deepseek-chat'}).model == DEFAULT_AI_MODEL
     assert AISettings.sanitized({'model': ''}).model == DEFAULT_AI_MODEL
     assert AISettings.sanitized({}).model == DEFAULT_AI_MODEL
+
+
+@pytest.mark.parametrize('confidence', [None, 'invalid', [], 1])
+def test_feedback_parser_requires_confidence(confidence):
+    with pytest.raises(ValueError, match='confidence'):
+        parse_reply(json.dumps({'kind': 'feedback', 'text': 'Feedback',
+                                'meta': {'confidence': confidence}}))
+
+
+def test_hint_confidence_caps_and_saved_record(coach):
+    from app.core.agent.confidence import assess_confidence
+    state, service, session = coach
+    assert service.request_question(session.id).ok
+    q = session.questions[-1]
+    assert service.submit_answer(session.id, q.answer_key['sentence']).ok
+    assert assess_confidence(q) == 'high'
+    assert service.request_hint(session.id).ok
+    assert assess_confidence(q) == 'medium'
+    assert service.request_hint(session.id).ok
+    assert assess_confidence(q) == 'low'
+    assert service.request_feedback(session.id).ok
+    rating = session.turns[-2]
+    assert rating.kind == 'confidence' and rating.confidence == 'low'
+    assert q.confidence_at is not None

@@ -161,7 +161,7 @@ class AISettings:
 
     mode: str = "mock"                       # "mock" | "live" (A-21 default)
     base_url: str = ""                       # OpenAI-compatible endpoint (A-22)
-    model: str = DEFAULT_AI_MODEL            # default deepseek-chat
+    model: str = DEFAULT_AI_MODEL            # default deepseek-flash
     api_key: str = field(default="", repr=False)  # local-only secret (A-28)
 
     @classmethod
@@ -297,9 +297,10 @@ class SourceRef:
 class QuestionRecord:
     """One coached question inside a session (§14, COACH-*).
 
-    State machine (COACH-1): open → answered → confidence_set →
+    State machine (COACH-1): open → answered →
     feedback_given → (revised | followup)* → closed — represented by the
-    combination of status + first_answer/confidence/feedback_given flags.
+    combination of status + first_answer/feedback_given flags. Confidence is
+    assigned by the coach with feedback.
     """
 
     id: str

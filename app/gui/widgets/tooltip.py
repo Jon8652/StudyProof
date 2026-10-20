@@ -25,7 +25,7 @@ import tkinter as tk
 
 from app.gui.theme import CARD_FG
 
-_HOVER_DELAY_MS = 350     # rest time before a tip appears
+_HOVER_DELAY_MS = 500     # rest time before a tip appears
 _POLL_MS = 120            # how often the pointer is re-checked while visible
 _WRAPLENGTH = 520
 # Hover text is noticeably larger than the pre-refactor CTkLabel popup
@@ -73,12 +73,14 @@ class Tooltip:
 
     def set_text(self, text):
         """Update the hover text; hides the popup if this tip was showing."""
+        self._cancel_enter()
         self.text = text
         if Tooltip._active is self:
             self._deactivate()
 
     def hide(self, event=None):
-        """Dismiss this tooltip (kept for callers that treat it per-widget)."""
+        """Dismiss this tooltip and cancel any pending show."""
+        self._cancel_enter()
         if Tooltip._active is self:
             self._deactivate()
 
@@ -110,11 +112,7 @@ class Tooltip:
 
     def _on_leave(self, event=None):
         self._cancel_enter()
-        # Hide on leave *regardless* of which tip the shared window currently
-        # shows.  A <Leave> for this widget always means "this explanation is
-        # no longer wanted"; only trusting the active-tip match let popups
-        # linger whenever a stale Enter had armed this tooltip while another
-        # one owned the window.
+        # Only the current owner may dismiss the shared popup.
         self._deactivate()
 
     def _on_destroy(self, event=None):
@@ -179,8 +177,9 @@ class Tooltip:
         return False
 
     def _deactivate(self):
-        if Tooltip._active is self:
-            Tooltip._active = None
+        if Tooltip._active is not self:
+            return
+        Tooltip._active = None
         Tooltip._cancel_poll()
         Tooltip._hide_window()
 
@@ -207,6 +206,10 @@ class Tooltip:
         window = tk.Toplevel(master)
         window.overrideredirect(True)
         window.attributes('-topmost', True)
+        try:
+            window.attributes('-disabled', True)
+        except tk.TclError:
+            pass  # Pointer polling covers platforms without this attribute.
         try:
             window.transient(master)
         except tk.TclError:

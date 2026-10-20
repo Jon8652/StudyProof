@@ -34,11 +34,12 @@ class CoachService:
         q = (s.question_by_id(question_id) if question_id else s.questions[-1] if s.questions else None) if s else None
         return s, q
 
-    def _store(self, session, question, kind, text, **kwargs):
+    def _store(self, session, question, kind, text, persist=True, **kwargs):
         mode = next((t.mode for t in reversed(session.turns) if t.mode), 'mock')
         session.turns.append(CoachTurn.create(
             'user', kind, text, question_id=question.id, mode=mode, **kwargs))
-        self.state.persist_coach_session(session)
+        if persist:
+            self.state.persist_coach_session(session)
         return ActionResult(True, value=question)
 
     def submit_answer(self, session_id, text, question_id=None):
@@ -153,6 +154,9 @@ class CoachService:
             q.confidence = resolve_feedback_confidence(q, reply)
             q.confidence_at = datetime.now()
             q.feedback_given = True
+        if kind == 'feedback':
+            self._store(s, q, 'confidence', f'Coach confidence rating: {q.confidence}',
+                        confidence=q.confidence, persist=False)
         mode = 'mock' if reply.meta.get('fallback_notice') else job['mode']
         s.turns.append(CoachTurn.create('coach', kind, reply.text, q.id, mode,
                                         quotes=quotes, ungrounded_count=failures,

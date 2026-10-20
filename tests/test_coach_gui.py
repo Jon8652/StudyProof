@@ -42,14 +42,20 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         screen.request('question')
         pump(app, lambda: not screen.busy)
         assert len(session.questions) == 1
+        assert screen._suggestion_job is not None
+        screen._hide_suggestions()
+        screen.use_suggestion('In my own words, ')
+        assert screen.composer.get('1.0', 'end').strip() == 'In my own words,'
+        assert session.questions[0].first_answer is None
+        screen.composer.delete('1.0', 'end')
         screen.composer.insert('1.0', 'Energy from sunlight')
-        screen.answer()
-        # Feedback is gated until the answer is submitted; after that it opens.
-        assert screen.buttons['feedback'].cget('state') == 'normal'
-        screen.request('feedback')
+        assert 'answer' not in screen.buttons and 'feedback' not in screen.buttons
+        assert 'revision' not in screen.buttons
+        assert screen.send() == 'break'
         pump(app, lambda: not screen.busy)
         screen.composer.insert('1.0', 'Chlorophyll captures sunlight to make glucose.')
-        screen.revise()
+        screen.send()
+        pump(app, lambda: not screen.busy)
         assert session.questions[0].revisions
         assert state.get_review_metrics().weak_sources
         screen.request('followup')
