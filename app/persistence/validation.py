@@ -411,9 +411,6 @@ def _parse_question(record: Any) -> QuestionRecord | None:
                     if isinstance(f, str) and f.strip()] \
         if isinstance(record.get("followup_ids"), list) else []
 
-    answer_key = record.get("answer_key")
-    if not isinstance(answer_key, dict):
-        answer_key = {}
 
     first_answer = record.get("first_answer")
     if first_answer is not None and not isinstance(first_answer, str):
@@ -434,7 +431,6 @@ def _parse_question(record: Any) -> QuestionRecord | None:
             hints_seen=max(0, _parse_int(record.get("hints_seen"))),
             feedback_given=bool(record.get("feedback_given", False)),
             followup_ids=followup_ids,
-            answer_key=answer_key,
         )
     except Exception:
         return None
@@ -456,7 +452,7 @@ def _parse_turn(record: Any) -> CoachTurn | None:
         return None
 
     mode = record.get("mode")
-    if mode not in ("mock", "live"):
+    if mode != "live":
         mode = None
 
     confidence = record.get("confidence")

@@ -142,7 +142,6 @@ def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
                         "hints_seen": q.hints_seen,
                         "feedback_given": q.feedback_given,
                         "followup_ids": q.followup_ids,
-                        "answer_key": q.answer_key,
                     }
                     for q in c.questions
                 ],

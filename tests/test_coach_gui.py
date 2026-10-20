@@ -5,7 +5,6 @@ import tkinter
 
 import pytest
 
-from app.core.agent.mock_engine import MockProvider
 from app.gui.main_window import MainWindow, NAV_ITEMS
 from app.state.app_state import AppState
 from app.persistence.repository import dataset_to_payload
@@ -21,7 +20,58 @@ def pump(app, predicate, timeout=3):
     assert predicate()
 
 
-def test_full_mock_loop_and_live_cancel(monkeypatch):
+def test_unconfigured_coach_opens_and_only_prompts_on_interaction(monkeypatch):
+    from types import SimpleNamespace
+    from app.core.models import AISettings
+    from app.core.agent.schema import CoachReply
+    from app.core.result import ActionResult
+    from app.gui.screens import coach_screen
+
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Sunlight supplies energy to plants.').value
+    # A saved conversation must remain readable after credentials are cleared.
+    from app.core.agent.coach_service import CoachService
+    service = CoachService(state)
+    state.settings.ai = AISettings('live', 'https://example.test/v1', api_key='test-key')
+    session = service.start_session([('note', note.id)]).value
+    job = service.prepare_turn(session.id, 'question').value
+    assert service.complete_turn(job, ActionResult(True, value=CoachReply(
+        'question', 'How does sunlight help plants?'))).ok
+    state.settings.ai = AISettings()
+    notifications = []
+    monkeypatch.setattr(coach_screen, 'show_message', lambda *args: notifications.append(args))
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.withdraw()
+        app._nav_buttons['coach'].invoke()
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        screen.refresh()
+        assert app.current_screen_key == 'coach'
+        assert screen.thread.winfo_children()
+        assert not notifications
+        assert screen.send_button.cget('state') == 'normal'
+        assert screen.composer.cget('state') == 'normal'
+        assert screen._composer_input(SimpleNamespace(char='')) is None
+        assert not notifications
+        assert screen._composer_input(SimpleNamespace(char='a')) == 'break'
+        assert screen._composer_paste() == 'break'
+        screen.send_button.invoke()
+        screen.buttons['hint'].invoke()
+        assert len(notifications) == 4
+        assert len(session.turns) == 1
+    finally:
+        for screen in app.screens.values():
+            if hasattr(screen, 'shutdown'):
+                screen.shutdown()
+        app.destroy()
+
+
+def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
     note = state.create_note('Biology',
@@ -37,6 +87,10 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         assert [n[0] for n in NAV_ITEMS] == ['home', 'calendar', 'notes', 'library', 'coach', 'stats', 'settings']
         app.show_screen('coach')
         screen = app.screens['coach']
+        state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+        class ReviewProvider(scripted_provider):
+            confidence = 'low'
+        screen.service.live_factory = ReviewProvider
         session = screen.service.start_session([('note', note.id)]).value
         screen.session_id = session.id
         screen.request('question')
@@ -83,7 +137,7 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
             def generate(self, context):
                 started.set()
                 release.wait(3)
-                return MockProvider().generate(context)
+                return scripted_provider(None).generate(context)
         screen.service.live_factory = SlowProvider
         before = len(session.turns)
         screen.request('feedback')

@@ -91,9 +91,6 @@ class SettingsScreen(BaseScreen):
 
         ai_card = _section_card(self.content, 'AI', 'Study Coach (AI)',
             'Your key stays on this device and is sent only to the base URL above.')
-        self.ai_mode = ctk.CTkSegmentedButton(ai_card, values=['Mock', 'Live'],
-                                             command=lambda _: self._save_ai())
-        self.ai_mode.pack(anchor='w', padx=CARD_PAD_X, pady=4)
         self.ai_entries = {}
         for key, label in [('base_url', 'Base URL'), ('api_key', 'API key')]:
             row = ctk.CTkFrame(ai_card, fg_color='transparent')
@@ -170,7 +167,7 @@ class SettingsScreen(BaseScreen):
 
     def _save_ai(self, *_ignored):
         raw = {key: entry.get() for key, entry in self.ai_entries.items()}
-        raw['mode'] = self.ai_mode.get().lower()
+        raw['mode'] = 'live'
         self.state.set_ai_settings(raw)
 
     def _toggle_key(self):
@@ -267,7 +264,6 @@ class SettingsScreen(BaseScreen):
         raw = asdict(self.state.settings.ai)
         if raw != self._ai_snapshot:
             self._ai_snapshot = raw
-            self.ai_mode.set(raw['mode'].title())
             for key, entry in self.ai_entries.items():
                 if key == 'model':
                     # CTkOptionMenu has no delete/insert; set the exact

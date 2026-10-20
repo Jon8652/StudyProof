@@ -47,7 +47,7 @@ class OpenAICompatProvider:
     def _post(self, prompt, cancel, timeout):
         key = self.settings.api_key
         if not key:
-            raise ProviderError('Add your AI key in Settings (or continue this turn in Mock).')
+            raise ProviderError('Add your AI key in Settings.')
         url = sanitize_base_url(self.settings.base_url) + '/chat/completions'
         body = json.dumps({'model': self.settings.model, 'messages': prompt,
                            'temperature': 0.2, 'max_tokens': 700}).encode()
@@ -108,10 +108,7 @@ class OpenAICompatProvider:
                 return parse_reply(raw, context['kind'])
             except ValueError:
                 if repair:
-                    from app.core.agent.mock_engine import MockProvider
-                    reply = MockProvider().generate(context)
-                    reply.meta['fallback_notice'] = 'The AI reply could not be read. This turn uses Mock.'
-                    return reply
+                    raise ProviderError('The AI reply could not be read. Please try again.') from None
 
     def test_connection(self):
         self._post(connection_messages(), threading.Event(), 10)

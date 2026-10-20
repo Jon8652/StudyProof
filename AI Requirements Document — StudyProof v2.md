@@ -1,8 +1,8 @@
 # AI Requirements Document — StudyProof v2 (Study Coach & PDF Library)
 
 **Document status:** Expansion requirements — plans the Study Coach (AI) subsystem and the PDF Study Library subsystem on top of the consolidated v1 requirements (`new_requirements_document`) and the current repository (`github.com/Jon8652/StudyProof`). It introduces new requirement IDs, re-splits the agreed task list into **AI features** and **non-AI features**, and explicitly **corrects** the small number of v1 clauses that the new features invalidate (§4). Where this document is silent, the consolidated v1 document remains authoritative.
-**Target product:** StudyProof v1 plus: (a) a local PDF study library (import, view, extract, ground citations) and (b) a Study Coach that generates questions, hints, feedback and follow-ups from the user's own notes/PDFs — **offline-first with a deterministic mock engine, optionally live through a user-configured OpenAI-compatible endpoint (DeepSeek/ELM)**.
-**Primary technology additions:** PyMuPDF (fitz) for extraction/page rendering; Python stdlib `urllib.request` for optional live calls (no new network dependency); all v1 technologies unchanged.
+**Target product:** StudyProof with a local PDF library and a Study Coach powered by a user-configured live OpenAI-compatible endpoint.
+**Primary technology additions:** PyMuPDF (fitz) for extraction/page rendering; Python stdlib `urllib.request` for live coach calls (no new network dependency); all v1 technologies unchanged.
 **Distribution target:** unchanged (PyInstaller one-folder windowed Windows exe; source cross-platform). The frozen build must bundle PyMuPDF and keep extraction/rendering working from `dist\StudyProof\`.
 **Assumptions:** All v1 decisions A-1…A-20 remain in force except where corrected in §4; new decisions A-21…A-37 are added below.
 
@@ -24,9 +24,9 @@ The v1 product is a fully offline StudyProof app. v2 adds two subsystems and one
 | Change | Description |
 |---|---|
 | **[NEW] PDF Study Library** | Import PDFs into a local library, view pages in-app, extract per-page text with PyMuPDF, and store it with page references. The extracted page text is the grounding source for AI quotations. |
-| **[NEW] Study Coach (AI)** | A coached question/answer loop over user-selected sources (Notes and/or Documents): question generation, unaided first answer, confidence rating, hints, source-grounded feedback, revisions and follow-up explanation questions. Ships with a deterministic **mock engine** so every coach feature works with no API key and no network; **live mode** is opt-in via a user-configured OpenAI-compatible endpoint. |
+| **[NEW] Study Coach (AI)** | Source-grounded questions, hints, feedback and follow-ups through a user-configured live AI endpoint. |
 | **[NEW] Coaching log & review** | First answers (immutable), revisions, confidence and hint usage are persisted per coach session; a derived weak-topic review surface surfaces struggling sources. |
-| **[UPDATED] Offline rule** | v1's absolute "no network" wording is corrected (§4): the app remains fully functional offline; the **only** permitted network use is a user-initiated, user-configured, cancellable live Study Coach call. Telemetry remains forbidden. |
+| **[UPDATED] Offline rule** | v1's absolute "no network" wording is corrected (§4): local study features remain functional offline; the Study Coach requires its configured AI service; the **only** permitted network use is a user-initiated, user-configured, cancellable live Study Coach call. Telemetry remains forbidden. |
 | **[UPDATED] Navigation** | Sidebar grows from five to **seven** destinations (Library and Coach added); corrects UI-1. |
 | **[UPDATED] Save schema 1 → 2** | New optional top-level arrays `documents` and `coach_sessions` plus `settings.ai`; v1 saves migrate on load; v1 builds refuse to overwrite v2 files (existing FutureSchemaError protection). |
 | **[NEW] Work-package split** | All tasks from the agreed division of responsibilities are re-categorised as AI vs non-AI (§2); five tasks originally listed under the application/data owner are reclassified as AI features because their behaviour is defined by AI interaction semantics. |
@@ -38,7 +38,7 @@ The application shall still **not** include: accounts/authentication, cloud sync
 ## 2. Division of Responsibilities and Reclassification
 
 ### 2.1 Categorisation criterion
-A task is categorised **AI** when its acceptance criteria depend on model-interaction semantics: prompting, structured model output, the coaching turn state machine, grounding of quotations, conversation memory, or provider configuration/erroring. A task is **non-AI** when it exists, behaves identically and is testable with the coach permanently disabled (no provider, mock engine removed). Categorisation drives requirement grouping, test gates and mock/live parity; implementation ownership (Person A = agent core/provider, Person B = app/data/UI) is recorded per row.
+A task is categorised **AI** when its acceptance criteria depend on model-interaction semantics: prompting, structured model output, the coaching turn state machine, grounding of quotations, conversation memory, or provider configuration/erroring. A task is **non-AI** when it exists, behaves identically and is testable with the coach permanently disabled (no provider). Categorisation drives requirement grouping, test gates and provider boundary behavior; implementation ownership (Person A = agent core/provider, Person B = app/data/UI) is recorded per row.
 
 ### 2.2 Task categorisation table
 
@@ -68,7 +68,7 @@ A task is categorised **AI** when its acceptance criteria depend on model-intera
 | 22 | **Connect UI to Person A's agent** | B | **AI — RECLASSIFIED** (integration contract) | A + B | INT-1…INT-6 |
 
 ### 2.3 Reclassification rationale
-- **Rows 17–19, 21, 22 move to the AI category.** The Q&A screen's flow (feedback withheld until an unaided answer and confidence exist; hints gated; revisions append-only; follow-ups spawned from question state) is the coaching protocol rendered — it cannot be specified or tested without the AI turn rules. Confidence is only meaningful at its protocol moment (post-answer, pre-feedback) and is an input to adaptive feedback. The first-answer/revision log exists to preserve unaided attempts and to serve as conversation memory — both AI-integrity concerns. The AI settings card exists solely to configure the provider (mode resolution, key hygiene, connection test). The UI↔agent connection *is* the agent boundary contract (ActionResult actions, mock/live parity, cancellation).
+- **Rows 17–19, 21, 22 move to the AI category.** The Q&A screen's flow (feedback withheld until an unaided answer and confidence exist; hints gated; revisions append-only; follow-ups spawned from question state) is the coaching protocol rendered — it cannot be specified or tested without the AI turn rules. Confidence is only meaningful at its protocol moment (post-answer, pre-feedback) and is an input to adaptive feedback. The first-answer/revision log exists to preserve unaided attempts and to serve as conversation memory — both AI-integrity concerns. The AI settings card exists solely to configure the provider (mode resolution, key hygiene, connection test). The UI↔agent connection *is* the agent boundary contract (ActionResult actions, provider boundary behavior, cancellation).
 - **Rows 11–16, 20 stay non-AI.** They behave identically with the coach deleted: PDF pipeline, library UI, storage schema mechanics, source selection list, and weak-topic derivation (pure arithmetic over the coaching log).
 - **Two shared contracts** are co-owned: the **grounding span index** (row 14 storage is non-AI; its normalisation/matching contract is AI, §8.3) and **coaching-log persistence** (row 19 rules are AI; rows 3/15 persistence mechanics are non-AI repository work, §9.5).
 
@@ -92,17 +92,15 @@ A task is categorised **AI** when its acceptance criteria depend on model-intera
 | Span | A contiguous excerpt of a source with provenance (note body pseudo-page 1, or PDF page number). |
 | Quotation / citation | A `{source_id, page, quote}` triple attached to a coach turn, claimed verbatim from the source. |
 | Grounding validation | Checking each quotation against the normalised page text of its cited source/page; failures are stripped and counted. |
-| Mock mode | Coach mode using the deterministic offline mock engine; default; no key, no network. |
 | Live mode | Coach mode calling a user-configured OpenAI-compatible endpoint; requires key + valid base URL. |
-| Effective mode | The mode actually used for a turn: `live` only when configured and valid, else `mock` with a friendly notice. |
-| Mock engine | Deterministic extractive generator (seeded cloze questions, sentence hints, keyword-overlap feedback) that is grounded by construction. |
-| Agent core | GUI-free package implementing prompts, response schema, parsing, grounding, memory, mock engine, providers and the coach state machine. |
+| Effective mode | Live generation through the configured endpoint. |
+| Agent core | GUI-free prompts, parsing, grounding, memory, live provider and coaching state machine. |
 | CoachService | The GUI-facing, GUI-free façade of the agent core; every method returns `ActionResult`. |
 | Document | A persisted PDF library record (metadata + per-page extracted text) plus its binary copy in the app-data library folder. |
 | Textless document | An imported PDF from which no selectable text could be extracted; viewable but not selectable as a coach source. |
 | Normalised page index | Lazily built, non-persisted map of `(source_id, page) → whitespace-collapsed text` used for grounding validation. |
 | Weak-topic score | Derived per-source score from confidence/revisions/hints; drives the Review surface. |
-| Mode badge | Sidebar/screen chip showing the effective coach mode ("Mock" / "Live"); text, not colour alone. |
+| Mode badge | Sidebar/screen chip identifying the Live coach. |
 | General guidance label | Badge applied to feedback/hints whose quotations all failed grounding (or none were provided despite sources). |
 
 ---
@@ -114,9 +112,9 @@ Only the clauses below change; every other v1 requirement stands.
 | v1 ID / location | v1 wording (summary) | v2 correction | Reason |
 |---|---|---|---|
 | §1 & §4 "shall not depend on any external server, network service…" / "shall not include … network connectivity requirements" | Absolute prohibition | Core app remains dependency-free; the **only** permitted network use is a live Study Coach turn explicitly triggered by the user in Live mode, to a user-configured endpoint. "No **required** network connectivity" replaces "no network". | Live AI is opt-in; offline functionality is complete without it (A-21). |
-| NFR-2 | "The application shall run offline." | "The application shall run offline and be fully functional (Mock mode) with no network and no key; live coach calls are the single permitted, user-initiated network use." | Same. |
+| NFR-2 | The application shall support offline local study features; Study Coach requires a configured live AI endpoint. |
 | NFR-5 | "No external server dependencies." | "No **required** external server dependencies; an optional user-provided AI endpoint is permitted and never assumed." | Same. |
-| UI-15 | "The UI shall not … show any network-dependent features." | "The UI shall not require internet access; Live-mode controls may be shown but must badge the effective mode and degrade gracefully to Mock with a friendly notice when key/network are unavailable." | Live controls must be visible-but-safe. |
+| UI-15 | Live coach controls shall show configuration or connection errors with friendly guidance. |
 | NFR-3 | No telemetry. | Unchanged and **reinforced**: the live turn payload contains only system prompt + source pack + conversation turns; the key travels only in the `Authorization` header; nothing else leaves the machine (NFR-15). | Privacy. |
 | UI-1 | Five navigation destinations. | **Seven**: Home, Calendar, Notes, **Library**, **Coach**, Statistics, Settings. | New screens. |
 | §5.1 sidebar description | Five nav buttons + stopwatch + version. | Seven nav buttons (icon + label), stopwatch and `v1.1.0` version label unchanged in position. | Consistency. |
@@ -136,13 +134,12 @@ Only the clauses below change; every other v1 requirement stands.
 
 | ID | Decision | Consequence / Rule |
 |---|---|---|
-| A-21 | The Study Coach is **offline-first**: Mock mode is the default and every coach feature works in it. | No feature may hard-require a key or network; live mode is additive. |
+| A-21 | The Study Coach uses the live provider. A valid base URL and non-empty API key are required. |
 | A-22 | Live providers speak the **OpenAI-compatible chat-completions contract**: `POST {base_url}/chat/completions` with `{model, messages, temperature, max_tokens}`; covers DeepSeek and ELM-compatible gateways. | Config: `base_url`, `model` (default `deepseek-chat`), `api_key`; base URL whitespace-stripped, trailing slash removed, scheme must be http(s). |
-| A-23 | Model output must be a **single JSON object** conforming to the coach response schema; the parser applies a repair ladder: strip code fences → extract first balanced `{…}` → `json.loads` → field validation → **one** retry with a repair instruction → mock-engine fallback for that turn with a friendly notice. | Deterministic degradation; never crashes, never stores raw garbage. |
+| A-23 | Parse a single JSON object: strip fences, extract a balanced object, validate fields, then make one repair retry. On failure, show a friendly error and store no turn. |
 | A-24 | **Grounding rule:** every quotation must be a verbatim span (whitespace-normalised, case-insensitive match, original casing preserved for display) of the cited page of the cited selected source. Invalid quotations are stripped and counted (`ungrounded_count`); a feedback/hint turn left with zero verified quotations while sources exist is badged "General guidance". | No fabricated page numbers in either mode (GEN-8). |
 | A-25 | **Unaided-attempt preservation:** the first answer is immutable once submitted; confidence is captured exactly once, after the first answer and before any hint/feedback is revealed; hints/feedback are gated on both existing; revisions append only. | The coaching log is an integrity-protected record, not an editable draft. |
-| A-26 | **Context assembly (memory):** every generation request builds: system prompt + source pack (≤5 sources, ≤6,000 chars, truncated at sentence boundaries) + last 10 turns + current question state. The **same assembler runs in mock and live** (parity). | Older turns beyond 10 are dropped (no summarisation in v2). |
-| A-27 | The **mock engine is deterministic and extractive**: seeded cloze questions from source-pack sentences, sentence hints, keyword-overlap feedback — grounded by construction, no randomness beyond a seed derived from session id + counter. | Mock mode is genuinely useful offline and unit-testable. |
+| A-26 | Assemble the system prompt, selected source pack, last ten turns and current question state for each live request. |
 | A-28 | **Key hygiene:** the API key is stored only inside the local save file's `settings.ai`; masked in UI with a show toggle; never written to logs, exceptions, exports or prompts; sent only as `Authorization: Bearer` to the configured base URL; clearable at any time. | Testable (NFR-16). |
 | A-29 | Importing a PDF **copies** it to `<app-data>/library/<uuid>.pdf`; the record never depends on the original path; delete removes copy + record + extracted text after confirmation. | Library survives source-file moves/deletions. |
 | A-30 | Extraction and page rendering run **off the UI thread** (worker + queue) with progress and cancel; rendered page images are cached LRU (5 pages). | NFR-12/NFR-14 budgets; UI never blocks. |
@@ -150,9 +147,9 @@ Only the clauses below change; every other v1 requirement stands.
 | A-32 | Coach sessions and documents are **first-class persisted data**: autosave, atomic write, backup, quarantine recovery, manual load and partial-record skipping (ERR-21 style) apply exactly as for sessions/notes. | One persistence story. |
 | A-33 | Weak topics and coach activity metrics are **derived only**, never stored. | Mirrors v1 derived-data policy. |
 | A-34 | Live turns use timeout `AI_TIMEOUT_S = 30`, are user-cancellable, and retry **once** with 2 s backoff on HTTP 429/5xx only; timeouts/network errors go straight to the friendly fallback path. | Bounded waiting; simple retry policy. |
-| A-35 | The agent core is **GUI-free and provider-agnostic**: `CoachProvider.generate(context) -> CoachReply` implemented by `MockProvider` and `OpenAICompatProvider`; providers are injectable for tests. | Extends ARCH-2/NFR-10/NFR-11. |
+| A-35 | The GUI-free agent core uses an injectable CoachProvider interface implemented by OpenAICompatProvider. |
 | A-36 | Confidence scale is fixed at three levels: `low`="Guessed", `medium`="Unsure", `high`="Confident"; stored as key, displayed as label. | No v2 UI editor for the scale. |
-| A-37 | Source selection caps at **5 sources** per session and a **6,000-char** source pack; the selection UI enforces the cap with a friendly notice and shows a live pack-size estimate. | Bounded prompts and predictable mock behaviour. |
+| A-37 | Source selection caps at five sources and shows the source-pack size. |
 
 ---
 
@@ -160,7 +157,7 @@ Only the clauses below change; every other v1 requirement stands.
 
 - **Library:** import PDFs (copied locally), browse a document list with status chips, view pages in-app (rendered images with zoom + text pane + open-externally), extract per-page text in the background with progress/cancel, re-extract, delete with confirmation, re-link missing files.
 - **Study Coach:** pick up to five sources (Notes and/or ready Documents) → generate a question → submit an **unaided first answer** → rate confidence → receive **source-grounded feedback** (quotations as page chips) → optionally request hints (counted) and submit **revisions** → spawn **follow-up explanation questions** → everything persisted per session; sessions list/resume/delete.
-- **Mock/Live parity:** identical state machine, context assembly and response schema in both modes; mode badge always shows the effective mode; live failures degrade per-turn to mock with a friendly notice.
+- **Live coach:** all actions validate configuration and use the same state machine, grounding and schema. Failed turns show an error and store nothing.
 - **Review:** Stats gains weak-topic rows (per source: weak points, questions, average confidence) and coach activity cards, all derived from the coaching log.
 - **AI settings:** mode toggle, base URL, model, masked key, connection test, privacy note — persisted in `settings.ai`.
 - Still excluded: accounts, cloud sync, social, telemetry, required networking, multi-user, session editing, streaming output, embeddings/RAG, OCR, PDF annotation.
@@ -170,7 +167,7 @@ Only the clauses below change; every other v1 requirement stands.
 ## 7. User Interface Structure Additions
 
 ### 7.1 Overall layout **[UPDATED]**
-Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library, Coach, Statistics, Settings; the Coach button carries the **mode badge** chip ("Mock"/"Live"). Stopwatch widget and version label (`v1.1.0`) remain packed at the sidebar bottom. Content stack, `tkraise()`, lazy construction (A-20) and symmetric insets unchanged; the two new screens are lazily built like the rest.
+Sidebar holds Home, Calendar, Notes, Library, Coach, Statistics and Settings. The Coach badge shows Live. Screens remain lazily constructed.
 
 ### 7.2 Screens (additions/changes)
 
@@ -189,12 +186,12 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | UI-20 | The Library screen shall show a document list (file name, page count, imported date, status chip Ready/Textless/Extracting/Missing) and a viewer pane with page image, "Page i of n", prev/next, zoom (1.0/1.5/2.0), text-pane toggle and open-externally button. | Render on demand + LRU cache (A-30). |
 | UI-21 | The Coach screen shall show: session header (source chips with page counts, mode badge, "Sessions…", "New session"), a scrollable thread of role-distinct bubbles (coach/user) with quotation chips, a multiline answer composer with Submit, and an action row (Rate confidence, Request hint, Submit revision, Ask follow-up, Cancel while a live turn is in flight). | Buttons enable/disable strictly per the turn state machine (COACH-1); disabled buttons carry tooltips explaining the gate ("Answer first, then rate confidence"). |
 | UI-22 | Confidence shall be captured by three inline labelled buttons (Guessed / Unsure / Confident) shown immediately after a first answer is submitted and before any hint/feedback; once rated, the picker becomes read-only text. | A-25, A-36. |
-| UI-23 | Settings shall contain a "Study Coach (AI)" card: Mock/Live segmented control, base URL entry, model entry, key entry (password-masked, show toggle, clear button), "Test connection" button with friendly result message, and a one-line privacy note ("Your key stays on this device and is sent only to the base URL above."). | AIS-1…AIS-5. |
+| UI-23 | Settings shall contain a Study Coach card with base URL, model selector, masked key, show/clear controls, connection testing and a local-key privacy note. |
 | UI-24 | Statistics shall show a Review section listing sources with weak-topic score ≥ 2 (label, weak points, questions, average confidence) and coach activity cards (questions asked, answered, confidence distribution, hints used, revisions); friendly empty state when no coach sessions exist. | REV-1…REV-3. |
 | UI-25 | Source selection shall use a modal dialog with grouped checklists (Notes / Documents-ready), search box, per-item size hint, live pack-size estimate, and a 5-source cap with friendly cap notice. | SEL-1…SEL-3, A-37. |
 | UI-26 | A sessions dialog shall list coach sessions (created date, source labels, question count, mode) with Resume and Delete (confirm). | COACH-14. |
 | UI-27 | Quotation chips shall render as "p. N" (documents) or "note" (notes) with a verified tick; clicking opens the Library viewer at that page (or the Notes detail for note sources); ungrounded notices use muted danger text ("2 quotations could not be verified and were removed."). | GRD-4, GRD-3. |
-| UI-28 | All new surfaces shall use the centralised theme tokens (bubbles: coach = card surface + accent left border, user = tinted accent; citation chips = time-blue; mode badge = accent for Live, muted for Mock) and friendly empty states ("No PDFs yet — import your first study document.", "Pick sources to start a coached session."). | §5.5 token system extended, not replaced. |
+| UI-28 | New surfaces shall use central theme tokens, a Live coach badge, and friendly empty states. |
 
 ### 7.4 Dialogs and widgets (new)
 
@@ -217,15 +214,15 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | ID | Requirement |
 |---|---|
 | COACH-1 | The agent core shall maintain a per-question turn state machine: `open → answered → confidence_set → feedback_given → (revised | followup)* → closed`. Actions outside the current state are refused with a friendly message and store nothing (ERR-38). |
-| COACH-2 | `request_question(session_id)` shall build the source pack from the session's selection and produce one question turn (mock: GEN-2; live: GEN-1) with its spans attached to the question record. |
+| COACH-2 | request_question builds the selected source pack and generates one live question with its source spans. |
 | COACH-3 | `submit_answer` on an `open` question stores the **first answer immutably** with timestamp, transitions to `answered`, and unlocks confidence capture. Later attempts to change it are refused (A-25). |
 | COACH-4 | `rate_confidence` is accepted exactly once per question, only in `answered` state (i.e. before any hint/feedback), storing key + timestamp (A-25, A-36). |
-| COACH-5 | `request_hint` is accepted only in `confidence_set` or later; increments `hints_seen`; hint text is grounded (mock by construction; live via GRD validation). |
+| COACH-5 | request_hint requires an unaided answer, increments hints_seen on success, and validates quoted sources. |
 | COACH-6 | `request_feedback` is accepted only in `confidence_set` or later; feedback evaluates matched/missing ideas against the answer and carries validated quotations; sets `feedback_given`. |
 | COACH-7 | `submit_revision` is accepted only after feedback; appends `{text, at}` to `revisions`; the first answer remains untouched. |
 | COACH-8 | `request_followup` creates a child question record (`parent_id` set) targeting the weakest missing idea; the child runs the same state machine inside the same session. |
 | COACH-9 | Conversation memory: all turns persist per session; the context assembler (A-26) feeds generation; memory trimming drops oldest turns beyond 10 with no summarisation. |
-| COACH-10 | Mock/live parity: state machine, context assembly, response schema and grounding run identically in both modes; each turn records its effective mode. |
+| COACH-10 | All coaching actions share context assembly, response schema and grounding. New turns record live mode. |
 | COACH-11 | Every coach operation returns `ActionResult`; the GUI stays thin; mutations autosave and broadcast through the existing listener mechanism (coach screen, Stats review refresh; unvisited screens skipped per A-20). |
 | COACH-12 | Deleting a coach session requires confirmation; deleting a *source* (note/document) never deletes sessions — affected sessions mark that source missing (ERR-33). |
 | COACH-13 | The coaching log schema is §14.4; every turn/question mutation autosaves immediately (FR-57 extension). |
@@ -237,17 +234,14 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | ID | Requirement |
 |---|---|
 | GEN-1 | Live question prompts shall include the source pack spans with page references and instruct a schema JSON of kind `question` whose own spans are copied from the pack (never invented). |
-| GEN-2 | Mock question generation shall be deterministic: seed = hash(session id + question counter); pick a sentence of 80–200 chars from pack spans; blank a key term (longest alphanumeric word ≥ 6 chars, not first/last token); prompt = cloze sentence + "Which term completes this?"; the question record stores the answer key (term + span). |
-| GEN-3 | Mock hints shall return the source sentence containing the term with its page citation (grounded by construction). |
-| GEN-4 | Mock feedback shall compare answer tokens against the term and sentence keywords, list matched/missing ideas, and cite the sentence; zero-overlap answers receive "no match yet" guidance plus the hint sentence citation. |
 | GEN-5 | Live hint/feedback/follow-up prompts shall include the question record (prompt, spans), first answer, confidence, revisions so far, hints seen, and the source pack, and shall require verbatim quotations with page numbers drawn only from the pack. |
 | GEN-6 | Feedback (both modes) shall reference the user's specific answer (matched/missing ideas), never generic praise alone. |
-| GEN-7 | Follow-ups shall target the weakest missing idea (mock: cloze over the next pack sentence containing a missing keyword; live: prompt rule). |
+| GEN-7 | Follow-ups shall target the weakest missing idea through the live prompt rules. |
 | GEN-8 | Neither mode may emit page numbers or spans absent from the source pack (enforced by GRD validation post-generation). |
 | GEN-9 | The system prompt shall state: role (patient study coach), unaided-attempt rule (never answer before the user's first answer and confidence), grounding rule, schema rule, tone (brief, encouraging, non-verbatim answers to cloze), and refusal to discuss non-study topics. |
 | GEN-10 | All model-visible prompts shall be assembled in exactly one module (`app/core/agent/prompt.py`) and unit-testable headlessly. |
 | GEN-11 | The structured response schema shall be `{kind: question|hint|feedback|followup, text: str, quotes: [{source_id, page, quote}], meta: {}}` with length caps (text ≤ 2,000 chars; quotes ≤ 5). |
-| GEN-12 | Parsing shall follow the A-23 ladder (fences → first balanced object → validate → one repair retry → mock fallback for that turn with friendly notice, ERR-27). |
+| GEN-12 | Parsing strips fences, extracts a balanced object, validates fields and makes one repair retry. Failure returns an error without storing a turn. |
 
 ### 8.3 Grounding (GRD-)
 
@@ -263,11 +257,11 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 
 | ID | Requirement |
 |---|---|
-| PROV-1 | `CoachProvider` interface with `generate(context) -> CoachReply`; implementations `MockProvider`, `OpenAICompatProvider`; injectable (A-35). |
+| PROV-1 | An injectable CoachProvider interface is implemented by OpenAICompatProvider. |
 | PROV-2 | `OpenAICompatProvider` posts `{model, messages, temperature: 0.2, max_tokens: 700}` to `{base_url}/chat/completions` with `Authorization: Bearer <key>`, using stdlib `urllib.request` in a worker thread with `AI_TIMEOUT_S`. |
-| PROV-3 | In Live mode with empty/missing key, no call is made; the friendly ERR-25 message is returned with a Settings deep-link; the turn runs as mock only if the user accepts the offered fallback. |
+| PROV-3 | With a missing key, no call is made. Return friendly Settings guidance and store no turn. |
 | PROV-4 | Base URL sanitisation per A-22; invalid URL → friendly validation error, no call. |
-| PROV-5 | HTTP 401/403 → ERR-35 message; 429/5xx → single retry with 2 s backoff then ERR-36; timeout/TLS/DNS/proxy → ERR-26/ERR-34; every failure path offers "continue this turn in Mock" (one click) and stores nothing on the failed turn. |
+| PROV-5 | 401/403 show key guidance; 429/5xx retry once after two seconds; timeout/TLS/DNS/proxy errors show friendly guidance. Failed turns store nothing and may be retried. |
 | PROV-6 | Non-JSON or schema-invalid bodies enter the GEN-12 ladder. |
 | PROV-7 | Exceptions and logs shall redact the key (`<redacted>`); the key never appears in messages shown to the user beyond the masked settings field. |
 | PROV-8 | "Test connection" sends a minimal completion with a 10 s timeout and reports friendly success/failure; results are never persisted. |
@@ -277,10 +271,10 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | ID | Requirement |
 |---|---|
 | AIS-1 | The Settings AI card (UI-23) edits `settings.ai` = `{mode, base_url, model, api_key}`; changes autosave (FR-57 extension). |
-| AIS-2 | Mode switch takes effect from the next turn; sessions record per-turn effective mode, not a global flag. |
-| AIS-3 | Effective-mode resolution: `live` requires `mode == "live"` **and** non-empty key **and** valid base URL; otherwise the turn runs mock and the user sees a one-time-per-session friendly notice ("No AI key yet — running in Mock."). |
+| AIS-2 | AI setting changes take effect on the next turn; new turns record live mode. |
+| AIS-3 | Every coach request uses live generation and requires a non-empty key and valid base URL. |
 | AIS-4 | Key entry is masked by default with show toggle and clear button (A-28). |
-| AIS-5 | `Settings.sanitized()` extends to `ai`: invalid mode → `mock`; empty model → `deepseek-chat`; base URL/key coerced to stripped strings; v1 saves gain defaults on migration. |
+| AIS-5 | Settings.sanitized normalizes mode to live, validates the supported model, strips URL/key strings and supplies defaults for older saves. |
 
 ---
 
@@ -345,8 +339,8 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | INT-1 | The agent core exposes `CoachService` (GUI-free): `start_session(selection)`, `request_question`, `submit_answer`, `rate_confidence`, `request_hint`, `request_feedback`, `submit_revision`, `request_followup`, `cancel_turn`, `delete_session`; all return `ActionResult`. |
 | INT-2 | `AppState` owns the `documents`/`coach_sessions` collections and new indexes (`_doc_by_id`, `_coach_by_id`); mutations autosave + broadcast exactly like v1 mutations; weak-topic derivation lives in `app/core/stats.py` (or sibling) as a pure function. |
 | INT-3 | GUI modules shall never build prompts, parse model JSON, or validate quotations; they call CoachService and render results (ARCH-1 extension). |
-| INT-4 | Provider selection happens per turn from effective-mode resolution (AIS-3); tests inject fake providers/transports (NFR-10 extension). |
-| INT-5 | Both providers pass generated quotations through `grounding.validate_quotes` before the turn is stored; mock output is grounded by construction but validated anyway (parity). |
+| INT-4 | Every turn uses the live provider after configuration validation (AIS-3); tests inject fake providers/transports (NFR-10 extension). |
+| INT-5 | Generated quotations pass through grounding.validate_quotes before storage. |
 | INT-6 | New screens register with the existing listener broadcast and lazy-screen cache (A-20); refresh exceptions remain contained per screen (ERR-23). |
 | ARCH-5 **[NEW]** | The agent core (`app/core/agent/`) has no GUI and no persistence imports; it receives repositories/state via injection. |
 | ARCH-6 **[NEW]** | All socket-level code is confined to `app/core/agent/provider_openai.py` (stdlib urllib); no other module may open network connections; static test asserts this. |
@@ -368,7 +362,7 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 | ID | Requirement |
 |---|---|
 | NFR-12 | Extracting a 200-page PDF shall complete ≤ 15 s wall on a typical modern PC with **zero** UI-thread blocking (worker + queue); progress updates at most ~10 Hz. |
-| NFR-13 | Mock coach turns shall complete ≤ 200 ms; source-pack build ≤ 100 ms for 5 documents; live turns are bounded by `AI_TIMEOUT_S`; cancel re-enables the UI ≤ 1 s. |
+| NFR-13 | Source-pack build should complete within 100 ms for five documents; live turns are bounded by AI_TIMEOUT_S; cancel re-enables the UI within one second. |
 | NFR-14 | Page render at zoom 1.0 shall take ≤ 300 ms per page with the LRU cache making repeat navigation instantaneous. |
 | NFR-15 | Live payload minimality: system prompt + source pack + ≤ 10 turns + question state only; no settings, paths, telemetry or metadata; key only in the Authorization header (NFR-3 reinforced). |
 | NFR-16 | Key hygiene is testable: with a fake key configured, no test-visible log/exception/message string contains it (A-28). |
@@ -381,18 +375,18 @@ Sidebar now holds **seven** nav buttons in order: Home, Calendar, Notes, Library
 
 | ID | Scenario | Required Behavior |
 |---|---|---|
-| ERR-25 | Live mode without a key. | Friendly "Add your AI key in Settings (or stay in Mock) — opening Settings…"; no call; optional one-click mock fallback for the turn. |
-| ERR-26 | Live turn times out. | Friendly "The AI took too long to answer."; offer retry / mock fallback; nothing stored for the failed turn. |
-| ERR-27 | Model returns malformed/non-JSON output. | GEN-12 ladder: repair → one retry → mock fallback for that turn with a friendly notice. |
+| ERR-25 | Missing key: ask the user to add an AI key in Settings; make no request. |
+| ERR-26 | Timeout: show a friendly error, allow retry and store no failed turn. |
+| ERR-27 | Unreadable reply: attempt one repair retry, then show a friendly error without storing a turn. |
 | ERR-28 | Quotations fail grounding. | Strip + count + muted notice; zero verified with sources present → "General guidance" badge (GRD-3/GRD-5). |
 | ERR-29 | Encrypted or corrupt PDF at import. | Friendly "This PDF couldn't be opened (it may be protected or damaged)."; copy and partial record removed. |
 | ERR-30 | PDF over 100 MB or 2,000 pages. | Friendly limit message; no import. |
 | ERR-31 | PDF yields no selectable text. | Import succeeds as `textless`; viewer works; selection lists it as unavailable with explanation. |
 | ERR-32 | Library binary missing on disk. | `status = "missing"`; viewer disabled; text usable; Re-link or remove offered. |
 | ERR-33 | Coach session source deleted (note or document). | Session persists; source chip shows "removed"; its spans drop from future packs; existing quotations display "source removed" and fail validation gracefully. |
-| ERR-34 | DNS/proxy/TLS failure. | Same friendly path as ERR-26 with wording "couldn't reach the AI service"; mock fallback offered. |
+| ERR-34 | DNS/proxy/TLS failure: show connection guidance, allow retry and store no failed turn. |
 | ERR-35 | HTTP 401/403. | "The AI service rejected this key. Check it in Settings." |
-| ERR-36 | HTTP 429/5xx. | One retry with 2 s backoff; then "The AI service is busy or unavailable right now." + mock fallback offered. |
+| ERR-36 | 429/5xx: retry once after two seconds, then show service-unavailable guidance. |
 | ERR-37 | Question requested with empty selection. | Friendly "Select at least one note or document first."; selection dialog opens. |
 | ERR-38 | Out-of-order coach action (e.g. feedback before confidence). | Friendly gate message explaining the next step; nothing stored (COACH-1). |
 | ERR-39 | Coach worker thread raises unexpectedly. | Exception contained; friendly message; session and dataset intact (mirrors ERR-23). |
@@ -412,7 +406,7 @@ Top-level structure (v1 arrays unchanged):
   "settings": {
     "theme": "dark",
     "xp_per_10_minutes": 10,
-    "ai": { "mode": "mock", "base_url": "", "model": "deepseek-chat", "api_key": "" }
+    "ai": { "mode": "live", "base_url": "", "model": "deepseek-chat", "api_key": "" }
   },
   "sessions": [ /* unchanged from v1 */ ],
   "notes":    [ /* unchanged from v1 */ ],
@@ -454,7 +448,7 @@ Top-level structure (v1 arrays unchanged):
           "role": "coach | user",
           "kind": "question | answer | confidence | hint | feedback | revision | followup | notice",
           "question_id": "<uuid>",
-          "mode": "mock | live",
+          "mode": "live",
           "text": "…",
           "confidence": "low | medium | high | null",
           "quotes": [ { "source_id": "<uuid>", "page": 3, "quote": "…", "verified": true } ],
@@ -505,7 +499,6 @@ app/core/agent/            NEW package (ARCH-5)
     schema.py              CoachReply/Quote dataclasses + caps (GEN-11)
     parser.py              repair ladder (GEN-12, A-23)
     grounding.py           normalised index + validate_quotes (GRD-1..GRD-3)
-    mock_engine.py         deterministic extractive MockProvider (A-27, GEN-2..GEN-4)
     provider_base.py       CoachProvider interface (PROV-1)
     provider_openai.py     OpenAI-compatible client, urllib, redaction (PROV-2..PROV-7, ARCH-6)
     coach_service.py       CoachService state machine + ActionResult façade (COACH-*, INT-1)
@@ -546,15 +539,14 @@ No other additions; CustomTkinter/Pillow/platformdirs/python-dateutil roles unch
 
 | ID | Requirement |
 |---|---|
-| QA-8 | Parser/repair ladder unit tests: fenced JSON, embedded braces, truncation, repair-retry success, mock-fallback path (headless). |
+| QA-8 | Headless parser tests cover fenced JSON, embedded braces, invalid output, repair success and errors after repair fails. |
 | QA-9 | Grounding tests: whitespace normalisation, case-insensitivity, wrong page, missing page, missing source, casing preservation. |
-| QA-10 | Mock engine determinism tests (same seed → same output) and grounded-by-construction tests across fixture packs. |
 | QA-11 | Coach state-machine tests: illegal transitions refused, first-answer immutability, confidence-once, hint/feedback gating, revision append, follow-up linkage. |
 | QA-12 | Provider simulation tests with a fake transport: missing key, timeout, 401/403, 429→retry→fail, 5xx, malformed body; assert redaction (NFR-16) and that nothing is stored on failed turns. |
 | QA-13 | PDF pipeline tests with PyMuPDF-generated fixtures in temp dirs: import/copy, extract page counts/text, textless detection, caps refusal, duplicate refusal, delete cleanup, re-link. |
 | QA-14 | Schema tests: v1→v2 migration, missing/new arrays, invalid record skipping, v1-reader refusal to overwrite v2 (simulated). |
 | QA-15 | Review derivation tests: weak-score arithmetic, sorting, average confidence, empty history. |
-| QA-16 | GUI smoke extension (xvfb): library import of a generated fixture → source selection → full mock coach loop (question → answer → confidence → feedback → revision → follow-up) → Stats review shows the source → restart round-trip. |
+| QA-16 | GUI tests exercise the coaching loop using fixed test replies, cancellation, PDF sources, Review and persistence. |
 | QA-17 | Perf gate extension: NFR-12/13/14 budgets plus a 50-document × 50-page index/pack build and 5,000-attempt review derivation within budget; gate remains a hard build gate in `run_build.ps1`. |
 
 ---
@@ -565,8 +557,8 @@ No other additions; CustomTkinter/Pillow/platformdirs/python-dateutil roles unch
 |---|---|---|
 | M1 — Data & Library (non-AI) | DATA-7…12, PDF-1…7, LIB-1…6, schema-2 repository/validation, library binaries | QA-13, QA-14 green |
 | M2 — Selection & Review shell (non-AI) | SEL-1…3, REV-1…3, UI-24/UI-25 | QA-15 green |
-| M3 — Agent core, mock only (AI) | GEN-*, GRD-*, COACH-1…15 (MockProvider), INT-1…5 | QA-8…QA-11 green |
-| M4 — Coach UI in mock (AI) | UI-19…23, 26…28, coach/library screens wired to CoachService, AIS-1…5 | QA-16 green (mock path) |
+| M3 — Agent core (AI) | Live generation, parsing, grounding and state machine | Headless tests |
+| M4 — Coach UI (AI) | Coach, library and settings wiring | GUI tests with fixed replies |
 | M5 — Live provider (AI) | PROV-1…8, ERR-25…28/34…36, cancellation | QA-12 green |
 | M6 — Gates & release | QA-17 perf extension, NFR-18 frozen validation, spec/build updates, README/requirements-doc sync | `run_build.ps1` fully green |
 

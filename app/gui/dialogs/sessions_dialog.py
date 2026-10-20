@@ -21,7 +21,7 @@ class SessionsDialog(ctk.CTkToplevel):
         for session in sorted(self._app_state.dataset.coach_sessions, key=lambda s: s.updated_at_local, reverse=True):
             row = ctk.CTkFrame(self.scroll)
             row.pack(fill='x', pady=4)
-            modes = ', '.join(sorted({t.mode for t in session.turns if t.mode})) or 'Mock'
+            modes = ', '.join(sorted({t.mode for t in session.turns if t.mode == 'live'})) or 'Live'
             text = (f'{session.created_at_local:%d %b %Y} · {len(session.questions)} questions · {modes}\n'
                     + ', '.join(s.label for s in session.sources))
             ctk.CTkLabel(row, text=text, wraplength=380, justify='left').pack(side='left', padx=6)

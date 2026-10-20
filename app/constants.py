@@ -34,7 +34,7 @@ AI_TIMEOUT_S = 30                  # A-34 / PROV-2: live call timeout
 # (change request #4).
 AI_MODEL_CHOICES = ("deepseek-flash", "deepseek-v4-pro")
 DEFAULT_AI_MODEL = AI_MODEL_CHOICES[0]
-VALID_AI_MODES = ("mock", "live")  # AIS-5 mode keys
+VALID_AI_MODES = ("live",)  # AIS-5 mode keys
 CONFIDENCE_LEVELS = ("low", "medium", "high")   # A-36
 CONFIDENCE_LABELS = {"low": "Guessed", "medium": "Unsure",
                      "high": "Confident"}       # A-36 display labels

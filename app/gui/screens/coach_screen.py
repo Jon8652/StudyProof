@@ -3,9 +3,12 @@ import threading
 import customtkinter as ctk
 from app.core.agent.coach_service import CoachService
 from app.core.agent.grounding import PageIndex
+from app.core.agent.provider_openai import sanitize_base_url
+from app.core.agent.provider_base import ProviderError
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
+from app.gui.dialogs.message_dialog import show_message
 from app.gui.widgets.chat_bubble import ChatBubble
 from app.gui.widgets.tooltip import Tooltip
 from app.gui.workers import UIEventQueue
@@ -51,6 +54,8 @@ class CoachScreen(BaseScreen):
         self.composer.bind('<Return>', self.send)
         self.composer.bind('<Shift-Return>', lambda event: None)
         self.composer.bind('<KeyRelease>', self._typing, add='+')
+        self.composer.bind('<KeyPress>', self._composer_input, add='+')
+        self.composer.bind('<<Paste>>', self._composer_paste, add='+')
         self.send_button = ctk.CTkButton(
             composer_row, text='↑', width=42, height=42, corner_radius=21,
             font=ctk.CTkFont(size=26), command=self.send)
@@ -71,10 +76,11 @@ class CoachScreen(BaseScreen):
             button.gate_tip = Tooltip(button, '')
         self.notice = ctk.CTkLabel(self.content, text='', wraplength=700)
         self.notice.pack(fill='x')
-        self.fallback = ctk.CTkButton(self.content, text='Continue this turn in Mock', command=self.mock_fallback)
         self.refresh()
 
     def new_session(self):
+        if not self._require_connection():
+            return
         if self.busy:
             self.cancel()
         dialog = SourceSelectDialog(self, self.state)
@@ -101,14 +107,13 @@ class CoachScreen(BaseScreen):
         self.session_id = sid
         self.refresh()
 
-    def request(self, kind, force_mock=False):
+    def request(self, kind):
+        if not self._require_connection():
+            return
         self._last_action = kind
-        self.fallback.pack_forget()
-        prepared = self.service.prepare_turn(self.session_id, kind, force_mock=force_mock)
+        prepared = self.service.prepare_turn(self.session_id, kind)
         if not prepared.ok:
             self.notice.configure(text=prepared.message)
-            if self.state.settings.ai.mode == 'live':
-                self.fallback.pack(pady=3)
             return
         job = prepared.value
         self.busy = True
@@ -137,13 +142,7 @@ class CoachScreen(BaseScreen):
         self.busy = False
         result = self.service.complete_turn(job, result)
         self.notice.configure(text=result.message or '')
-        if not result.ok and job['mode'] == 'live':
-            self.fallback.pack(pady=3)
         self.refresh()
-
-    def mock_fallback(self):
-        if self._last_action:
-            self.request(self._last_action, True)
 
     def cancel(self):
         self.service.cancel_turn(self.session_id)
@@ -167,10 +166,13 @@ class CoachScreen(BaseScreen):
         """Send an unaided answer or revision, then request coach feedback."""
         if self.busy:
             return 'break'
+        if not self._require_connection():
+            return 'break'
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
         text = self.composer.get('1.0', 'end').strip()
         if not q or q.status == 'closed':
+            self.notice.configure(text='Choose New session and select your notes or PDFs to get a question first.')
             return 'break'
         if q.first_answer is not None and not q.feedback_given:
             self.request('feedback')
@@ -211,6 +213,8 @@ class CoachScreen(BaseScreen):
             self.suggestions.pack(fill='x', before=self.composer.master, pady=4)
 
     def use_suggestion(self, text):
+        if not self._require_connection():
+            return
         self._hide_suggestions()
         if not self.composer.get('1.0', 'end').strip():
             self.composer.insert('1.0', text)
@@ -228,6 +232,35 @@ class CoachScreen(BaseScreen):
         elif ref:
             root.show_screen('notes')
             root.screens['notes']._select(ref.id)
+
+    def _connection_configured(self):
+        ai = self.state.settings.ai
+        configured = bool(ai.api_key.strip() and ai.model.strip())
+        try:
+            sanitize_base_url(ai.base_url)
+        except ProviderError:
+            configured = False
+        return configured
+
+    def _require_connection(self):
+        if self._connection_configured():
+            return True
+        message = ('Connect an AI model to use Study Coach. Open Settings, add your '
+                   'Base URL and API key, choose a model, then click Test connection.')
+        self.notice.configure(text=message)
+        show_message(self.winfo_toplevel(), 'Connect an AI model', message)
+        return False
+
+    def _composer_input(self, event):
+        # Reading, selecting and scrolling saved chats requires no AI setup.
+        # Only an attempt to enter text should prompt for a connection.
+        if event.char and event.char.isprintable() and not self.busy:
+            if not self._require_connection():
+                return 'break'
+
+    def _composer_paste(self, event=None):
+        if not self.busy and not self._require_connection():
+            return 'break'
 
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
@@ -248,7 +281,7 @@ class CoachScreen(BaseScreen):
                 exists = ref.id in (notes if ref.kind == 'note' else docs)
                 labels.append(ref.label + (f' ({docs[ref.id].page_count} pages)' if ref.id in docs else '')
                               + ('' if exists else ' (removed)'))
-            mode = next((t.mode for t in reversed(session.turns) if t.mode), 'mock')
+            mode = 'live'
             self.header.configure(text=f'{mode.title()} · ' + ' · '.join(labels))
             for turn in session.turns:
                 if turn.kind == 'confidence':
@@ -281,7 +314,8 @@ class CoachScreen(BaseScreen):
             if enabled and (not self.busy or key == 'cancel'):
                 button.pack(side='right', padx=2)
                 button.configure(state='normal')
-        can_send = bool(q and q.status != 'closed' and not self.busy)
+        # Keep Send actionable so setup and session guidance can be shown.
+        can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
 
