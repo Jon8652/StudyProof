@@ -23,10 +23,17 @@ EXTRACTION_PROGRESS_HZ = 10           # NFR-12: at most ~10 progress updates/s
 
 # --- Study Coach context (v2) -------------------------------------------------
 MAX_SOURCES = 5                    # A-37 / SEL-1: sources per session
-MAX_PACK_CHARS = 6000              # A-37 / SEL-2: source-pack character budget
+# A-37 / SEL-2: source-pack character budget.  Raised from 6,000 to
+# 1,000,000 so whole documents/notes can be added to a new session
+# without truncation (change request #3).
+MAX_PACK_CHARS = 1_000_000
 MAX_MEMORY_TURNS = 10              # A-26: last N turns feed generation
 AI_TIMEOUT_S = 30                  # A-34 / PROV-2: live call timeout
-DEFAULT_AI_MODEL = "deepseek-chat" # A-22 default model name
+# A-22: the model must be one of the exact names below; the settings UI
+# offers them as a dropdown and the save file coerces anything else
+# (change request #4).
+AI_MODEL_CHOICES = ("deepseek-flash", "deepseek-v4-pro")
+DEFAULT_AI_MODEL = AI_MODEL_CHOICES[0]
 VALID_AI_MODES = ("mock", "live")  # AIS-5 mode keys
 CONFIDENCE_LEVELS = ("low", "medium", "high")   # A-36
 CONFIDENCE_LABELS = {"low": "Guessed", "medium": "Unsure",

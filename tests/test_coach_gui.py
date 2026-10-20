@@ -59,10 +59,12 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         app.screens['stats'].refresh()
         app.show_screen('settings')
         settings = app.screens['settings']
-        settings.ai_entries['model'].delete(0, 'end')
-        settings.ai_entries['model'].insert(0, 'test-model')
+        # Change request #4: the model is a dropdown of exact names now.
+        assert set(settings.ai_model_menu.cget('values')) == {
+            'deepseek-flash', 'deepseek-v4-pro'}
+        settings.ai_model_menu.set('deepseek-v4-pro')
         settings._save_ai()
-        assert state.settings.ai.model == 'test-model'
+        assert state.settings.ai.model == 'deepseek-v4-pro'
         app.show_screen('coach')
         screen.composer.insert('1.0', 'Energy')
         screen.answer()
