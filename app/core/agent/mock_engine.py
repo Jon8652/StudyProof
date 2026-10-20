@@ -2,12 +2,22 @@
 import hashlib
 import random
 import re
-from app.core.agent.confidence import assess_confidence
 from app.core.agent.schema import CoachReply, Quote
 
 
 def keywords(text):
     return {w.lower() for w in re.findall(r'\b\w{6,}\b', text)}
+
+
+def _assess_confidence(question):
+    """Local wrapper so the module has no import-time dependency on
+    app.core.agent.confidence (which imports :func:`keywords` from here).
+
+    The real implementation is resolved lazily at call time to avoid a
+    circular import between mock_engine and confidence.
+    """
+    from app.core.agent.confidence import assess_confidence
+    return assess_confidence(question)
 
 
 class MockProvider:
@@ -55,7 +65,7 @@ class MockProvider:
             verdict = {'low': 'Confidence: low — this looks like a guess.',
                        'medium': 'Confidence: medium — partially on target.',
                        'high': 'Confidence: high — answered well from your own understanding.'}[
-                assess_confidence(question)]
+                _assess_confidence(question)]
             text = (('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
                     + '\nMissing ideas to explain: '
                     + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.')
@@ -64,6 +74,6 @@ class MockProvider:
             text = (('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
                     + '\nMissing ideas to explain: '
                     + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.'))
-        meta = {'confidence': assess_confidence(question)} if kind == 'feedback' else {}
+        meta = {'confidence': _assess_confidence(question)} if kind == 'feedback' else {}
         return CoachReply(kind, text[:2000], [Quote(source_id, page, sentence)], meta)
 

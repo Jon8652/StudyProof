@@ -173,6 +173,13 @@ class CoachService:
         result = self.prepare_turn(session_id, kind, question_id, force_mock)
         return self.complete_turn(result.value, self.generate_turn(result.value)) if result.ok else result
 
+    def rate_confidence(self, session_id, confidence, question_id=None):
+        """Deprecated: confidence is now coach-assigned with the feedback turn.
+
+        Kept so older callers/scripts fail gracefully instead of crashing.
+        """
+        return ActionResult(False, 'Confidence is assigned by the coach after feedback.')
+
     def request_question(self, session_id, **kwargs):
         return self._request(session_id, 'question', **kwargs)
 

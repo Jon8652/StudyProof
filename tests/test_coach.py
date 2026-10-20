@@ -38,7 +38,49 @@ def coach(monkeypatch):
 def unlock(service, session):
     assert service.request_question(session.id).ok
     assert service.submit_answer(session.id, 'Sunlight and energy').ok
-    assert service.rate_confidence(session.id, 'low').ok
+
+
+def test_ai_assigned_confidence(coach):
+    """Confidence comes from the coach, not from manual buttons."""
+    state, service, session = coach
+    assert service.request_question(session.id).ok
+    q = session.questions[0]
+    # Answering with source language earns a high rating on feedback.
+    assert service.submit_answer(
+        session.id, 'Photosynthesis converts sunlight into chemical energy stored in glucose').ok
+    assert service.request_feedback(session.id).ok
+    assert q.confidence == 'high'
+    assert session.turns[-1].confidence == 'high'
+    assert 'Confidence:' in session.turns[-1].text
+    # A second question answered poorly is rated low (hints count against it).
+    assert service.request_followup(session.id).ok
+    child = session.questions[-1]
+    assert service.submit_answer(session.id, 'totally unrelated', child.id).ok
+    assert service.request_hint(session.id).ok
+    assert service.request_hint(session.id).ok
+    assert service.request_feedback(session.id).ok
+    assert child.confidence == 'low'
+
+
+def test_live_meta_confidence_is_preferred(coach):
+    from app.core.agent.schema import CoachReply
+    from app.core.agent.confidence import resolve_feedback_confidence
+    state, service, session = coach
+    assert service.request_question(session.id).ok
+    q = session.questions[0]
+    assert service.submit_answer(session.id, 'Sunlight and energy').ok
+    job = service.prepare_turn(session.id, 'feedback').value
+    reply = CoachReply('feedback', 'Good effort.', [], {'confidence': 'high'})
+    assert service.complete_turn(job, ActionResult(True, value=reply)).ok
+    assert q.confidence == 'high'          # model-supplied rating wins
+    # An invalid meta value falls back to the deterministic assessment.
+    assert service.request_followup(session.id).ok
+    child = session.questions[-1]
+    assert service.submit_answer(session.id, 'zzz', child.id).ok
+    job = service.prepare_turn(session.id, 'feedback', child.id).value
+    reply = CoachReply('feedback', 'Try again.', [], {'confidence': 'very-high'})
+    assert service.complete_turn(job, ActionResult(True, value=reply)).ok
+    assert child.confidence == 'low'      # deterministic fallback (no key words)
 
 
 def test_state_machine(coach):
@@ -50,21 +92,23 @@ def test_state_machine(coach):
     for action in (service.request_question, service.request_hint, service.request_feedback,
                    service.request_followup):
         assert not action(session.id).ok
-    assert not service.rate_confidence(session.id, 'high').ok
     assert not service.submit_revision(session.id, 'revision').ok
     assert not service.submit_answer(session.id, ' ').ok
     assert len(session.turns) == before
     assert service.submit_answer(session.id, 'Original').ok
     timestamp = q.first_answer_at
     assert not service.submit_answer(session.id, 'changed').ok
+    # Confidence is no longer self-reported; the legacy API refuses politely.
+    assert not service.rate_confidence(session.id, 'low').ok
     assert not service.rate_confidence(session.id, 'invalid').ok
-    assert not service.request_hint(session.id).ok
-    assert service.rate_confidence(session.id, 'low').ok
-    assert not service.rate_confidence(session.id, 'high').ok
+    assert q.confidence is None
     assert not service.request_followup(session.id).ok
     assert service.request_hint(session.id).ok
     assert q.hints_seen == 1
     assert service.request_feedback(session.id).ok
+    # The coach assigned a confidence level together with the feedback.
+    assert q.confidence in ('low', 'medium', 'high')
+    assert session.turns[-1].confidence == q.confidence
     assert not service.submit_revision(session.id, '').ok
     assert service.submit_revision(session.id, 'Better explanation').ok
     assert service.submit_revision(session.id, 'Another revision').ok
@@ -88,7 +132,6 @@ def test_determinism_grounding_and_memory(coach):
     assert '____' in a.text and not a.quotes
     assert service.complete_turn(job, ActionResult(True, value=a)).ok
     assert service.submit_answer(session.id, 'Unrelated').ok
-    assert service.rate_confidence(session.id, 'medium').ok
     for _ in range(12):
         assert service.request_hint(session.id).ok
     hint = session.turns[-1]
@@ -336,7 +379,9 @@ def test_every_coach_mutation_broadcasts(coach):
     assert service.request_hint(session.id).ok
     assert service.request_feedback(session.id).ok
     assert service.submit_revision(session.id, 'A revision').ok
-    assert len(notifications) == 6
+    # question + answer + hint + feedback + revision = 5 persisted mutations
+    # (the removed manual confidence turn no longer broadcasts).
+    assert len(notifications) == 5
     before = len(notifications)
     assert not service.submit_answer(session.id, 'Try overwrite').ok
     assert len(notifications) == before

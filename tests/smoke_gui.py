@@ -226,8 +226,10 @@ def main() -> int:
     sid = coach_res.value.id
     check('coach-question', coach.service.request_question(sid).ok)
     check('coach-answer', coach.service.submit_answer(sid, 'My unaided explanation').ok)
-    check('coach-confidence', coach.service.rate_confidence(sid, 'low').ok)
     check('coach-feedback', coach.service.request_feedback(sid).ok)
+    q = coach.state.coach_session_by_id(sid).questions[-1]
+    check('coach-confidence-assigned', q.confidence in ('low', 'medium', 'high'),
+          f"(confidence={q.confidence!r})")
     check('coach-revision', coach.service.submit_revision(sid, 'My revised explanation').ok)
     check('coach-followup', coach.service.request_followup(sid).ok)
     check('coach-review-updates', bool(state.get_review_metrics().weak_sources))
