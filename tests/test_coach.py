@@ -45,9 +45,19 @@ def test_ai_assigned_confidence(coach):
     state, service, session = coach
     assert service.request_question(session.id).ok
     q = session.questions[0]
-    # Answering with source language earns a high rating on feedback.
+    # Answering with the full target sentence earns a high rating on
+    # feedback.  The mock engine picks the cloze sentence at random from
+    # the pack (seeded by the uuid session id), so echo *every* candidate
+    # sentence: whichever span was chosen is covered verbatim, and the
+    # keyword-overlap ratio stays above the 'high' threshold either way.
+    target = ' '.join(span.get('text', '') if isinstance(span, dict)
+                      else span.text for span in q.spans)
     assert service.submit_answer(
-        session.id, 'Photosynthesis converts sunlight into chemical energy stored in glucose').ok
+        session.id,
+        'Photosynthesis converts sunlight into chemical energy stored in '
+        'glucose while chlorophyll absorbs light. Mitochondria release '
+        'usable energy through respiration, supplying the cell with '
+        'energy for growth and maintenance. ' + target).ok
     assert service.request_feedback(session.id).ok
     assert q.confidence == 'high'
     assert session.turns[-1].confidence == 'high'
