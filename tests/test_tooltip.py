@@ -217,3 +217,19 @@ def test_citation_chip_imports_shared_tooltip():
     old duplicate class there was the source of the lingering popups."""
     from app.gui.widgets import citation_chip
     assert citation_chip.Tooltip is Tooltip
+
+
+def test_popup_font_matches_ctk_default(root):
+    """The shared popup label must render at CTk's default 13pt size — the
+    refactor briefly used a bare tk.Label (Tk's ~9pt system default), which
+    made hover text noticeably smaller than before."""
+    from app.gui.widgets.tooltip import _FONT_SIZE
+
+    button = tkinter.Button(root, text='B')
+    button.pack()
+    Tooltip(button, 'finish this question and get feedback first')
+    root.update_idletasks()
+    window = Tooltip._ensure_window()
+    font = Tooltip._shared_label.cget('font')
+    size = int(font[-1]) if isinstance(font, (tuple, list)) else int(str(font).split()[-1])
+    assert size >= _FONT_SIZE, f'popup font too small: {font!r}'

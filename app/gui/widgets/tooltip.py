@@ -28,6 +28,11 @@ from app.gui.theme import CARD_FG
 _HOVER_DELAY_MS = 350     # rest time before a tip appears
 _POLL_MS = 120            # how often the pointer is re-checked while visible
 _WRAPLENGTH = 380
+# Font size kept identical to the pre-refactor CTkLabel popup default so the
+# hover text stays as readable as before (the shared tk.Label below has no
+# explicit font, which would have shrunk it to Tk's ~9pt system default).
+_FONT_FAMILY = 'Roboto'
+_FONT_SIZE = 13
 
 # The tooltip window is created once and reused forever.  On Windows Tk has
 # historically crashed when a mapped top-level is destroyed during an event
@@ -207,6 +212,7 @@ class Tooltip:
         except tk.TclError:
             pass
         label = tk.Label(window, text='', justify='left', wraplength=_WRAPLENGTH,
+                         font=(_FONT_FAMILY, _FONT_SIZE),
                          bg=CARD_FG[1], fg='white', padx=8, pady=5,
                          highlightthickness=1, highlightbackground='gray30')
         label.pack()
