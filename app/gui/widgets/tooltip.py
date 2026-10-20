@@ -27,12 +27,12 @@ from app.gui.theme import CARD_FG
 
 _HOVER_DELAY_MS = 350     # rest time before a tip appears
 _POLL_MS = 120            # how often the pointer is re-checked while visible
-_WRAPLENGTH = 380
-# Font size kept identical to the pre-refactor CTkLabel popup default so the
-# hover text stays as readable as before (the shared tk.Label below has no
-# explicit font, which would have shrunk it to Tk's ~9pt system default).
+_WRAPLENGTH = 520
+# Hover text is noticeably larger than the pre-refactor CTkLabel popup
+# default (13) for readability; the wraplength grows with it so lines stay
+# roughly the same physical width.
 _FONT_FAMILY = 'Roboto'
-_FONT_SIZE = 13
+_FONT_SIZE = 20
 
 # The tooltip window is created once and reused forever.  On Windows Tk has
 # historically crashed when a mapped top-level is destroyed during an event
