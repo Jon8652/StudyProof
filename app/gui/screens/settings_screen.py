@@ -168,7 +168,7 @@ class SettingsScreen(BaseScreen):
             self._on_theme_change(theme)
         self.refresh()
 
-    def _save_ai(self):
+    def _save_ai(self, *_ignored):
         raw = {key: entry.get() for key, entry in self.ai_entries.items()}
         raw['mode'] = self.ai_mode.get().lower()
         self.state.set_ai_settings(raw)
