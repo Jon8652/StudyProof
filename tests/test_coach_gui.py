@@ -63,7 +63,9 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         assert set(settings.ai_model_menu.cget('values')) == {
             'deepseek-flash', 'deepseek-v4-pro'}
         settings.ai_model_menu.set('deepseek-v4-pro')
-        settings._save_ai()
+        # CTkOptionMenu invokes its command with the chosen value; saving
+        # must tolerate being called both as a callback and bare.
+        settings._save_ai('deepseek-v4-pro')
         assert state.settings.ai.model == 'deepseek-v4-pro'
         app.show_screen('coach')
         screen.composer.insert('1.0', 'Energy')
