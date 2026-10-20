@@ -10,7 +10,6 @@ from app.core.models import Dataset, Note, SourceRef, AISettings
 from app.core.agent.context import build_source_pack
 from app.core.agent.coach_service import CoachService
 from app.core.agent.grounding import PageIndex, validate_quotes
-from app.core.agent.mock_engine import MockProvider
 from app.core.agent.parser import parse_reply
 from app.core.agent.prompt import messages
 from app.core.agent.provider_openai import OpenAICompatProvider, sanitize_base_url
@@ -26,11 +25,12 @@ TEXT = ('Photosynthesis converts sunlight into chemical energy stored in glucose
 
 
 @pytest.fixture
-def coach(monkeypatch):
+def coach(monkeypatch, scripted_provider):
     note = Note.create('Biology', TEXT)
     state = AppState(Dataset(notes=[note]))
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
-    service = CoachService(state)
+    state.settings.ai = settings()
+    service = CoachService(state, live_factory=scripted_provider)
     session = service.start_session([('note', note.id)]).value
     return state, service, session
 
@@ -45,11 +45,6 @@ def test_ai_assigned_confidence(coach):
     state, service, session = coach
     assert service.request_question(session.id).ok
     q = session.questions[0]
-    # Answering with the full target sentence earns a high rating on
-    # feedback.  The mock engine picks the cloze sentence at random from
-    # the pack (seeded by the uuid session id), so echo *every* candidate
-    # sentence: whichever span was chosen is covered verbatim, and the
-    # keyword-overlap ratio stays above the 'high' threshold either way.
     target = ' '.join(span.get('text', '') if isinstance(span, dict)
                       else span.text for span in q.spans)
     assert service.submit_answer(
@@ -62,14 +57,14 @@ def test_ai_assigned_confidence(coach):
     assert q.confidence == 'high'
     assert session.turns[-1].confidence == 'high'
     assert 'Confidence:' in session.turns[-1].text
-    # A second question answered poorly is rated low (hints count against it).
+    # A subsequent question also records the provider-supplied confidence.
     assert service.request_followup(session.id).ok
     child = session.questions[-1]
     assert service.submit_answer(session.id, 'totally unrelated', child.id).ok
     assert service.request_hint(session.id).ok
     assert service.request_hint(session.id).ok
     assert service.request_feedback(session.id).ok
-    assert child.confidence == 'low'
+    assert child.confidence == 'high'
 
 
 def test_live_meta_confidence_is_preferred(coach):
@@ -83,14 +78,16 @@ def test_live_meta_confidence_is_preferred(coach):
     reply = CoachReply('feedback', 'Good effort.', [], {'confidence': 'high'})
     assert service.complete_turn(job, ActionResult(True, value=reply)).ok
     assert q.confidence == 'high'          # model-supplied rating wins
-    # An invalid meta value falls back to the deterministic assessment.
+    # Invalid confidence leaves the turn unsaved.
     assert service.request_followup(session.id).ok
     child = session.questions[-1]
     assert service.submit_answer(session.id, 'zzz', child.id).ok
     job = service.prepare_turn(session.id, 'feedback', child.id).value
     reply = CoachReply('feedback', 'Try again.', [], {'confidence': 'very-high'})
-    assert service.complete_turn(job, ActionResult(True, value=reply)).ok
-    assert child.confidence == 'low'      # deterministic fallback (no key words)
+    before = len(session.turns)
+    assert not service.complete_turn(job, ActionResult(True, value=reply)).ok
+    assert child.confidence is None and not child.feedback_given
+    assert len(session.turns) == before
 
 
 def test_state_machine(coach):
@@ -134,12 +131,11 @@ def test_state_machine(coach):
     assert state.get_review_metrics().activity.questions_answered == 2
 
 
-def test_determinism_grounding_and_memory(coach):
+def test_grounding_and_memory(coach):
     state, service, session = coach
     job = service.prepare_turn(session.id, 'question').value
-    a = MockProvider().generate(job)
-    assert a == MockProvider().generate(job)
-    assert '____' in a.text and not a.quotes
+    a = service.generate_turn(job).value
+    assert a.text and not a.quotes
     assert service.complete_turn(job, ActionResult(True, value=a)).ok
     assert service.submit_answer(session.id, 'Unrelated').ok
     for _ in range(12):
@@ -242,11 +238,18 @@ def test_transport_failures(coach, error):
     assert 'super-secret-key' not in str(exc.value)
 
 
-def test_mock_fallback_and_cancel(coach):
+def test_unreadable_reply_and_cancel(coach):
     state, service, session = coach
     job = service.prepare_turn(session.id, 'question').value
-    reply = OpenAICompatProvider(settings(), lambda *a, **k: Response('broken')).generate(job)
-    assert reply.meta['fallback_notice']
+    calls = []
+    def broken(*args, **kwargs):
+        calls.append(True)
+        return Response('broken')
+    with pytest.raises(ProviderError, match='could not be read'):
+        OpenAICompatProvider(settings(), broken).generate(job)
+    assert len(calls) == 2
+    assert not session.questions and not session.turns
+    reply = service.generate_turn(job).value
     service.cancel_turn(session.id)
     assert job['cancel'].is_set()
     assert not service.complete_turn(job, ActionResult(True, value=reply)).ok
@@ -266,9 +269,9 @@ def test_missing_key_and_sources(coach):
     state.settings.ai = settings()
     state.settings.ai.api_key = ''
     assert not service.request_question(session.id).ok
-    assert service.request_question(session.id, force_mock=True).ok
+    assert not session.questions and not session.turns
     state.dataset.notes.clear()
-    assert session.sources and session.questions
+    assert session.sources and not session.questions
     assert not service.request_hint(session.id).ok
 
 
@@ -288,7 +291,7 @@ def test_sources_changed_or_dataset_replaced_during_turn(coach):
     assert not state.dataset.coach_sessions[0].turns
 
 
-def test_failed_turn_does_not_mutate_and_can_retry(coach):
+def test_failed_turn_does_not_mutate_and_can_retry(coach, scripted_provider):
     state, service, session = coach
     unlock(service, session)
     state.settings.ai = settings()
@@ -301,7 +304,8 @@ def test_failed_turn_does_not_mutate_and_can_retry(coach):
     assert not result.ok and 'super-secret-key' not in result.message
     assert len(session.turns) == before
     assert not session.questions[0].feedback_given
-    assert service.request_feedback(session.id, force_mock=True).ok
+    service.live_factory = scripted_provider
+    assert service.request_feedback(session.id).ok
 
 
 def test_source_deletion_preserves_history(coach):
@@ -434,18 +438,17 @@ def test_feedback_parser_requires_confidence(confidence):
                                 'meta': {'confidence': confidence}}))
 
 
-def test_hint_confidence_caps_and_saved_record(coach):
-    from app.core.agent.confidence import assess_confidence
+def test_feedback_confidence_saved_record(coach):
     state, service, session = coach
-    assert service.request_question(session.id).ok
-    q = session.questions[-1]
-    assert service.submit_answer(session.id, q.answer_key['sentence']).ok
-    assert assess_confidence(q) == 'high'
-    assert service.request_hint(session.id).ok
-    assert assess_confidence(q) == 'medium'
-    assert service.request_hint(session.id).ok
-    assert assess_confidence(q) == 'low'
+    unlock(service, session)
     assert service.request_feedback(session.id).ok
+    q = session.questions[-1]
     rating = session.turns[-2]
-    assert rating.kind == 'confidence' and rating.confidence == 'low'
+    assert rating.kind == 'confidence' and rating.confidence == 'high'
     assert q.confidence_at is not None
+
+
+def test_settings_default_to_live():
+    assert AISettings().mode == 'live'
+    assert AISettings.sanitized({}).mode == 'live'
+    assert AISettings.sanitized({'mode': 'removed-mode'}).mode == 'live'

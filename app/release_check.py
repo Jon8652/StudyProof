@@ -76,24 +76,6 @@ def run(report_path: str) -> int:
             check('coach session created', started.ok)
             session = started.value
             coach.resume_session(session.id)
-            coach.request('question')
-            pump(lambda: not coach.busy)
-            check('Mock question generated', len(session.questions) == 1)
-            coach.composer.insert('1.0', 'Sunlight supplies energy.')
-            coach.answer()
-            coach.rate('low')
-            coach.request('feedback')
-            pump(lambda: not coach.busy)
-            check('grounded feedback', bool(session.turns[-1].quotes)
-                  and all(q['verified'] for q in session.turns[-1].quotes))
-            coach.composer.insert('1.0', 'Chlorophyll absorbs sunlight to produce glucose.')
-            coach.revise()
-            check('revision appended', len(session.questions[0].revisions) == 1)
-            coach.request('followup')
-            pump(lambda: not coach.busy)
-            check('follow-up linked', session.questions[-1].parent_id == session.questions[0].id)
-            app.show_screen('stats')
-            check('Review updated', bool(state.get_review_metrics().weak_sources))
             app.show_screen('settings')
             check('AI settings masked', app.screens['settings'].ai_entries['api_key'].cget('show') == '*')
             # Import the optional client without making any network requests.
@@ -101,8 +83,8 @@ def run(report_path: str) -> int:
             check('Live client bundled', OpenAICompatProvider is not None)
             check('save succeeded', state.manual_save().ok)
             restored = repository.validate_file_for_manual_load(paths.get_default_save_path()).dataset
-            check('restart round-trip', restored.coach_sessions[0].questions[0].first_answer
-                  == 'Sunlight supplies energy.' and restored.documents[0].status == 'ready')
+            check('restart round-trip', restored.coach_sessions[0].id == session.id
+                  and restored.documents[0].status == 'ready')
             check('no Tk callback errors', not callback_errors)
             app._on_close()
             app = None

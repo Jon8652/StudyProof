@@ -159,7 +159,7 @@ class AISettings:
     The API key is local-only (A-28): masked in the UI, never logged.
     """
 
-    mode: str = "mock"                       # "mock" | "live" (A-21 default)
+    mode: str = "live"                       # live provider only
     base_url: str = ""                       # OpenAI-compatible endpoint (A-22)
     model: str = DEFAULT_AI_MODEL            # default deepseek-flash
     api_key: str = field(default="", repr=False)  # local-only secret (A-28)
@@ -168,9 +168,9 @@ class AISettings:
     def sanitized(cls, raw: Any) -> "AISettings":
         """Coerce a raw dict to safe values; never reject the file (AIS-5)."""
         raw = raw if isinstance(raw, dict) else {}
-        mode = raw.get("mode", "mock")
+        mode = raw.get("mode", "live")
         if mode not in VALID_AI_MODES:
-            mode = "mock"
+            mode = "live"
         base_url = raw.get("base_url", "")
         if not isinstance(base_url, str):
             base_url = str(base_url or "")
@@ -316,15 +316,12 @@ class QuestionRecord:
     hints_seen: int = 0
     feedback_given: bool = False
     followup_ids: list[str] = field(default_factory=list)
-    answer_key: dict[str, Any] = field(default_factory=dict)  # mock cloze key
 
     @classmethod
     def create(cls, prompt: str, spans: list[dict[str, Any]] | None = None,
-               parent_id: str | None = None,
-               answer_key: dict[str, Any] | None = None) -> "QuestionRecord":
+               parent_id: str | None = None) -> "QuestionRecord":
         return cls(id=str(uuid.uuid4()), prompt=prompt,
-                   spans=list(spans or []), parent_id=parent_id,
-                   answer_key=dict(answer_key or {}))
+                   spans=list(spans or []), parent_id=parent_id)
 
 
 @dataclass

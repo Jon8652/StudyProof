@@ -19,3 +19,24 @@ def isolated_data_dir(tmp_path, monkeypatch):
     paths.set_override_data_dir(data_dir)
     yield data_dir
     paths.set_override_data_dir(None)
+
+
+class ScriptedProvider:
+    """Fixed replies for exercising the coach boundary without network calls."""
+    confidence = 'high'
+
+    def __init__(self, settings):
+        pass
+
+    def generate(self, context):
+        from app.core.agent.schema import CoachReply, Quote
+        span = context['pack'].spans[0]
+        kind = context['kind']
+        quotes = [Quote(span.source_id, span.page, span.text)] if kind in ('hint', 'feedback') else []
+        return CoachReply(kind, 'Confidence: high. Explain how sunlight supplies energy.',
+                          quotes, {'confidence': self.confidence} if kind == 'feedback' else {})
+
+
+@pytest.fixture
+def scripted_provider():
+    return ScriptedProvider

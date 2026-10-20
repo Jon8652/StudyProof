@@ -8,7 +8,6 @@ from app.core.models import CoachTurn, QuestionRecord
 from app.core.agent.confidence import resolve_feedback_confidence
 from app.core.agent.context import build_source_pack
 from app.core.agent.grounding import PageIndex, validate_quotes
-from app.core.agent.mock_engine import MockProvider
 from app.core.agent.provider_openai import OpenAICompatProvider, sanitize_base_url
 from app.core.agent.provider_base import ProviderError
 
@@ -35,7 +34,7 @@ class CoachService:
         return s, q
 
     def _store(self, session, question, kind, text, persist=True, **kwargs):
-        mode = next((t.mode for t in reversed(session.turns) if t.mode), 'mock')
+        mode = next((t.mode for t in reversed(session.turns) if t.mode), 'live')
         session.turns.append(CoachTurn.create(
             'user', kind, text, question_id=question.id, mode=mode, **kwargs))
         if persist:
@@ -60,7 +59,7 @@ class CoachService:
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
         return self._store(s, q, 'revision', text.strip())
 
-    def prepare_turn(self, session_id, kind, question_id=None, force_mock=False):
+    def prepare_turn(self, session_id, kind, question_id=None):
         s, q = self._find(session_id, question_id)
         if not s:
             return ActionResult(False, 'Choose a coaching session first.')
@@ -82,14 +81,13 @@ class CoachService:
         if not pack.spans:
             return ActionResult(False, 'Select at least one note or document containing study text first.')
         settings = copy.deepcopy(self.state.settings.ai)
-        mode = 'mock' if force_mock else settings.mode
-        if mode == 'live':
-            try:
-                if not settings.api_key:
-                    raise ProviderError('Add your AI key in Settings, or continue this turn in Mock.')
-                sanitize_base_url(settings.base_url)
-            except ProviderError as exc:
-                return ActionResult(False, str(exc))
+        mode = 'live'
+        try:
+            if not settings.api_key:
+                raise ProviderError('Add your AI key in Settings.')
+            sanitize_base_url(settings.base_url)
+        except ProviderError as exc:
+            return ActionResult(False, str(exc))
         flag = threading.Event()
         job = {'session_id': s.id, 'kind': kind, 'pack': pack,
                'question': copy.deepcopy(q), 'counter': len(s.questions),
@@ -104,14 +102,14 @@ class CoachService:
     def generate_turn(self, job):
         """Worker-safe: no state mutation, persistence or GUI calls."""
         try:
-            provider = self.live_factory(job['settings']) if job['mode'] == 'live' else MockProvider()
+            provider = self.live_factory(job['settings'])
             return ActionResult(True, value=provider.generate(job))
         except ProviderError as exc:
             key = job['settings'].api_key
             message = str(exc).replace(key, '<redacted>') if key else str(exc)
             return ActionResult(False, message)
         except Exception:
-            return ActionResult(False, 'The coach could not finish this turn. Try again or continue in Mock.')
+            return ActionResult(False, 'The coach could not finish this turn. Try again.')
 
     def complete_turn(self, job, result):
         sid = job['session_id']
@@ -133,39 +131,39 @@ class CoachService:
             return ActionResult(False, 'Your sources changed during this turn. Please try again.')
         quotes, failures = validate_quotes(reply.quotes, PageIndex(s.sources, notes, docs), job['pack'])
         kind = job['kind']
+        if kind == 'feedback':
+            try:
+                confidence = resolve_feedback_confidence(q, reply)
+            except ProviderError as exc:
+                return ActionResult(False, str(exc))
         if kind in ('question', 'followup'):
             parent = q if kind == 'followup' else None
             if q:
                 q.status = 'closed'
             q = QuestionRecord.create(reply.text, job['pack'].as_spans_payload(),
-                                      parent.id if parent else None,
-                                      reply.meta.get('answer_key', {})
-                                      if job['mode'] == 'mock' or reply.meta.get('fallback_notice') else {})
+                                      parent.id if parent else None)
             if parent:
                 parent.followup_ids.append(q.id)
             s.questions.append(q)
-            # Question citations can leak a cloze answer before the unaided attempt.
+            # Question citations can reveal the answer before the unaided attempt.
             quotes = []
         elif kind == 'hint':
             q.hints_seen += 1
         elif kind == 'feedback':
             # Confidence is no longer self-reported; the coach rates how well
             # the question was answered when it delivers the feedback.
-            q.confidence = resolve_feedback_confidence(q, reply)
+            q.confidence = confidence
             q.confidence_at = datetime.now()
             q.feedback_given = True
         if kind == 'feedback':
             self._store(s, q, 'confidence', f'Coach confidence rating: {q.confidence}',
                         confidence=q.confidence, persist=False)
-        mode = 'mock' if reply.meta.get('fallback_notice') else job['mode']
+        mode = 'live'
         s.turns.append(CoachTurn.create('coach', kind, reply.text, q.id, mode,
                                         quotes=quotes, ungrounded_count=failures,
                                         confidence=q.confidence if kind == 'feedback' else None))
-        notice = reply.meta.get('fallback_notice')
-        if notice:
-            s.turns.append(CoachTurn.create('coach', 'notice', notice, q.id, mode))
         self.state.persist_coach_session(s)
-        return ActionResult(True, notice, q)
+        return ActionResult(True, value=q)
 
     def cancel_turn(self, session_id):
         job = self.pending.pop(session_id, None)
@@ -173,8 +171,8 @@ class CoachService:
             job['cancel'].set()
         return ActionResult(True)
 
-    def _request(self, session_id, kind, question_id=None, force_mock=False):
-        result = self.prepare_turn(session_id, kind, question_id, force_mock)
+    def _request(self, session_id, kind, question_id=None):
+        result = self.prepare_turn(session_id, kind, question_id)
         return self.complete_turn(result.value, self.generate_turn(result.value)) if result.ok else result
 
     def rate_confidence(self, session_id, confidence, question_id=None):

@@ -35,7 +35,7 @@ executable with PyInstaller.
 - **PDF Library** — import local PDFs, extract page text in the background,
   and browse pages with zoom and a text view. Files are copied into the local
   library. Protected, oversized and textless files receive friendly guidance.
-- **Study Coach** — offline Mock questions, confidence ratings, grounded hints
+- **Study Coach** — live AI questions, confidence ratings, grounded hints
   and feedback, immutable first answers, revisions, follow-ups and saved
   conversations. Review highlights weak sources and links back to coaching.
   Includes the accessibility touches from the v2 spec: role prefixes
@@ -55,30 +55,30 @@ executable with PyInstaller.
 ## Study Coach
 
 Open **Coach → New session**, choose up to five notes or PDFs, and request a
-question. Submit your first answer, then choose Guessed, Unsure, or Confident
-to unlock hints and feedback. Revisions keep your first answer intact;
+question. Submit your first answer to unlock hints and feedback. The coach
+assigns a confidence rating with feedback. Revisions keep your first answer intact;
 follow-ups start a new question in the same saved conversation. Statistics
 shows weak topics and can reopen their latest coaching session.
 
-Mock mode works offline without a key. For optional Live mode, open
+The Study Coach requires a configured live AI service. Open
 **Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
 key, then select deepseek-flash or deepseek-v4-pro. The URL should include the API prefix (for example `/v1`),
 without `/chat/completions`. Live requests send only the bounded source pack,
 question state and last ten turns. The source budget is 1,000,000 characters;
 large packs can produce large provider prompts and token costs. Keys are stored locally in the save file,
 masked in Settings and excluded from prompts and error messages. There is
-no telemetry. Failed turns offer a one-click Mock fallback; Cancel immediately
+no telemetry. Failed turns show an error and can be retried; Cancel immediately
 restores the composer and discards late responses.
 
 All AI requirements (COACH-, GEN-, GRD-, PROV- and AIS- families) are
-implemented and covered by the automated test suite: deterministic Mock
-generation with session-seeded output, the JSON repair ladder with Mock
-fallback, lazy normalised quote grounding with strip-and-count, the guarded
+implemented with live generation: bounded JSON parsing with one repair
+retry, lazy normalised quote grounding with strip-and-count, the guarded
 question state machine (unaided first answer, AI-assigned confidence with feedback, gated
 hints/feedback, follow-up child questions), saved-session management with
-resume/delete, the opt-in `urllib` Live client (30 s timeout, one retry on
+resume/delete, the `urllib` Live client (30 s timeout, one retry on
 429/5xx, strict key redaction, connection testing, sub-second cancellation),
-and per-turn Mock fallback when Live credentials are missing (PROV-3).
+and configuration validation before requests. Missing credentials and failed
+replies leave the failed turn unsaved. Automated tests use fixed provider replies.
 
 ## Requirements
 
@@ -106,8 +106,8 @@ PyMuPDF before any tests), runs the test suite, performance gates and full
 GUI smoke test, then builds with
 `StudyProof.spec` (PyInstaller **one-folder, windowed** build — no
 console window). It then runs the packaged executable against temporary
-data to verify bundled assets, PDF extraction/rendering, the Mock coaching
-loop, Review, settings and save/reload. A failed gate stops the build. Output:
+data to verify bundled assets, PDF extraction/rendering, coach session
+creation, settings and save/reload without network calls. A failed gate stops the build. Output:
 
 ```
 dist\StudyProof\StudyProof.exe   ← working executable
@@ -135,8 +135,8 @@ python scripts/perf_check.py       # 10k sessions plus v2 performance budgets
 
 `scripts/perf_check.py` generates exactly 10,000 study sessions and asserts
 startup, refresh, index and autosave budgets. It also checks 200-page PDF
-extraction ≤15 seconds, page rendering at zoom 1.0 ≤300 ms, Mock generation
-≤200 ms, and a five-document pack ≤100 ms. The scalability checks materialise
+extraction ≤15 seconds, page rendering at zoom 1.0 ≤300 ms,
+and a five-document pack ≤100 ms. The scalability checks materialise
 a 50-document × 50-page index and derive Review over 5,000 attempts, each
 within one second. Fixture generation is outside the measured operations.
 
@@ -158,9 +158,9 @@ StudyProof.spec      PyInstaller build configuration (Part M)
 run_build.ps1           Windows release build script
 app/constants.py        gameplay rules (XP, medals, streaks, limits)
 app/core/               models, study metrics, PDF extraction/rendering
-app/core/agent/         coach state machine, grounding, Mock/Live providers
+app/core/agent/         coach state machine, grounding, live provider
                         (schema, parser, prompt, context pack builder,
-                        mock_engine, coach_service, provider_base,
+                        coach_service, provider_base,
                         provider_openai)
 app/release_check.py    isolated diagnostic used by the frozen build gate
 app/persistence/        JSON repository, schema, atomic save, backup/recovery,

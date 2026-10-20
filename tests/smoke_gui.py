@@ -219,9 +219,14 @@ def main() -> int:
     coach_res = state.create_coach_session([r for r in refs if r])
     check("coach-session-created", coach_res.ok, f"(msg={coach_res.message!r})")
 
-    # Phases 4–6: a complete offline coaching loop through the real service.
+    # Exercise the coach with fixed test replies and no external requests.
     app.show_screen('coach')
     coach = app.screens['coach']
+    from tests.conftest import ScriptedProvider
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    class ReviewProvider(ScriptedProvider):
+        confidence = 'low'
+    coach.service.live_factory = ReviewProvider
     coach.resume_session(coach_res.value.id)
     sid = coach_res.value.id
     check('coach-question', coach.service.request_question(sid).ok)
