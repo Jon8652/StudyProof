@@ -223,10 +223,10 @@ def test_popup_font_is_large_enough(root):
     """The shared popup label must render at the enlarged readable size.
     History: the original CTk popups used ~13pt; the refactor briefly fell
     back to a bare tk.Label (Tk's ~9pt system default), which made hover
-    text noticeably smaller.  It is now deliberately set larger (16pt)."""
+    text noticeably smaller.  It is now deliberately set larger (20pt)."""
     from app.gui.widgets.tooltip import _FONT_SIZE
 
-    assert _FONT_SIZE >= 16, 'tooltip font should be at least 16pt'
+    assert _FONT_SIZE >= 20, 'tooltip font should be at least 20pt'
 
     button = tkinter.Button(root, text='B')
     button.pack()
