@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.constants import (
+    AI_MODEL_CHOICES,
     CONFIDENCE_LEVELS,
     DEFAULT_AI_MODEL,
     DEFAULT_THEME,
@@ -106,7 +107,7 @@ class Session:
 
 
 MAX_NOTE_TITLE_LENGTH = 120
-MAX_NOTE_BODY_LENGTH = 100_000
+MAX_NOTE_BODY_LENGTH = 1_000_000
 
 
 @dataclass
@@ -177,7 +178,12 @@ class AISettings:
         model = raw.get("model", DEFAULT_AI_MODEL)
         if not isinstance(model, str):
             model = str(model or "")
-        model = model.strip() or DEFAULT_AI_MODEL
+        model = model.strip()
+        # Change request #4: the model must be one of the exact names in
+        # AI_MODEL_CHOICES.  Anything else (free text from older save
+        # files, typos, empty strings) is coerced to the default choice.
+        if model not in AI_MODEL_CHOICES:
+            model = DEFAULT_AI_MODEL
         api_key = raw.get("api_key", "")
         if not isinstance(api_key, str):
             api_key = str(api_key or "")

@@ -19,6 +19,7 @@ from app.core.agent.provider_base import ProviderError
 from app.gui.workers import UIEventQueue
 from tkinter import filedialog
 
+from app.constants import AI_MODEL_CHOICES
 from app.gui.dialogs.confirm_dialog import ask_yes_no
 from app.gui.dialogs.message_dialog import show_message
 from app.gui.screens.base_screen import BaseScreen
@@ -94,7 +95,7 @@ class SettingsScreen(BaseScreen):
                                              command=lambda _: self._save_ai())
         self.ai_mode.pack(anchor='w', padx=CARD_PAD_X, pady=4)
         self.ai_entries = {}
-        for key, label in [('base_url', 'Base URL'), ('model', 'Model'), ('api_key', 'API key')]:
+        for key, label in [('base_url', 'Base URL'), ('api_key', 'API key')]:
             row = ctk.CTkFrame(ai_card, fg_color='transparent')
             row.pack(fill='x', padx=CARD_PAD_X, pady=3)
             ctk.CTkLabel(row, text=label, width=80, anchor='w').pack(side='left')
@@ -103,6 +104,15 @@ class SettingsScreen(BaseScreen):
             entry.bind('<FocusOut>', lambda _: self._save_ai())
             entry.bind('<Return>', lambda _: self._save_ai())
             self.ai_entries[key] = entry
+        # Change request #4: the model is no longer free text.  The user
+        # must pick one of the exact supported names from this dropdown.
+        model_row = ctk.CTkFrame(ai_card, fg_color='transparent')
+        model_row.pack(fill='x', padx=CARD_PAD_X, pady=3)
+        ctk.CTkLabel(model_row, text='Model', width=80, anchor='w').pack(side='left')
+        self.ai_model_menu = ctk.CTkOptionMenu(
+            model_row, values=list(AI_MODEL_CHOICES), command=self._save_ai)
+        self.ai_model_menu.pack(side='left', fill='x', expand=True)
+        self.ai_entries['model'] = self.ai_model_menu
         controls = ctk.CTkFrame(ai_card, fg_color='transparent')
         controls.pack(fill='x', padx=CARD_PAD_X, pady=4)
         ctk.CTkCheckBox(controls, text='Show key', command=self._toggle_key).pack(side='left')
@@ -259,6 +269,11 @@ class SettingsScreen(BaseScreen):
             self._ai_snapshot = raw
             self.ai_mode.set(raw['mode'].title())
             for key, entry in self.ai_entries.items():
+                if key == 'model':
+                    # CTkOptionMenu has no delete/insert; set the exact
+                    # model name (change request #4).
+                    entry.set(raw[key])
+                    continue
                 entry.delete(0, 'end')
                 entry.insert(0, raw[key])
         theme = self.state.settings.theme

@@ -45,9 +45,19 @@ def test_ai_assigned_confidence(coach):
     state, service, session = coach
     assert service.request_question(session.id).ok
     q = session.questions[0]
-    # Answering with source language earns a high rating on feedback.
+    # Answering with the full target sentence earns a high rating on
+    # feedback.  The mock engine picks the cloze sentence at random from
+    # the pack (seeded by the uuid session id), so echo *every* candidate
+    # sentence: whichever span was chosen is covered verbatim, and the
+    # keyword-overlap ratio stays above the 'high' threshold either way.
+    target = ' '.join(span.get('text', '') if isinstance(span, dict)
+                      else span.text for span in q.spans)
     assert service.submit_answer(
-        session.id, 'Photosynthesis converts sunlight into chemical energy stored in glucose').ok
+        session.id,
+        'Photosynthesis converts sunlight into chemical energy stored in '
+        'glucose while chlorophyll absorbs light. Mitochondria release '
+        'usable energy through respiration, supplying the cell with '
+        'energy for growth and maintenance. ' + target).ok
     assert service.request_feedback(session.id).ok
     assert q.confidence == 'high'
     assert session.turns[-1].confidence == 'high'
@@ -385,3 +395,33 @@ def test_every_coach_mutation_broadcasts(coach):
     before = len(notifications)
     assert not service.submit_answer(session.id, 'Try overwrite').ok
     assert len(notifications) == before
+
+
+# --- Change requests #3 and #4 ------------------------------------------------
+
+def test_pack_budget_is_one_million_chars():
+    """Change request #3: whole documents/notes fit in the source pack."""
+    from app.constants import MAX_PACK_CHARS
+    assert MAX_PACK_CHARS == 1_000_000
+
+
+def test_large_note_fits_without_truncation():
+    big = ('Sentence about energy. ' * 25_000)  # ~625k chars, > old 6k cap
+    note = Note.create('Biology', big)
+    pack = build_source_pack([('note', note.id)], {note.id: note}, {})
+    assert not pack.truncated
+    assert pack.total_chars > 6000
+
+
+def test_model_choice_sanitization():
+    """Change request #4: only exact model names survive sanitization."""
+    from app.constants import AI_MODEL_CHOICES, DEFAULT_AI_MODEL
+    assert AI_MODEL_CHOICES == ('deepseek-flash', 'deepseek-v4-pro')
+    assert DEFAULT_AI_MODEL in AI_MODEL_CHOICES
+    for name in AI_MODEL_CHOICES:
+        assert AISettings.sanitized({'model': name}).model == name
+        assert AISettings.sanitized({'model': f'  {name} '}).model == name
+    # Legacy free-text values (e.g. "deepseek-chat") are no longer valid.
+    assert AISettings.sanitized({'model': 'deepseek-chat'}).model == DEFAULT_AI_MODEL
+    assert AISettings.sanitized({'model': ''}).model == DEFAULT_AI_MODEL
+    assert AISettings.sanitized({}).model == DEFAULT_AI_MODEL
