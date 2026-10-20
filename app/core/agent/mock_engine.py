@@ -2,6 +2,7 @@
 import hashlib
 import random
 import re
+from app.core.agent.confidence import assess_confidence
 from app.core.agent.schema import CoachReply, Quote
 
 
@@ -47,8 +48,22 @@ class MockProvider:
         page = key.get('page') or candidates[0][0].page
         matched = keywords(sentence) & keywords(answer)
         absent = keywords(sentence) - keywords(answer)
-        text = sentence if kind == 'hint' else (
-            ('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
-            + '\nMissing ideas to explain: ' + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.'))
-        return CoachReply(kind, text[:2000], [Quote(source_id, page, sentence)])
+        if kind == 'hint':
+            text = sentence
+        elif kind == 'feedback':
+            # The coach now rates confidence itself, based on the answer.
+            verdict = {'low': 'Confidence: low — this looks like a guess.',
+                       'medium': 'Confidence: medium — partially on target.',
+                       'high': 'Confidence: high — answered well from your own understanding.'}[
+                assess_confidence(question)]
+            text = (('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
+                    + '\nMissing ideas to explain: '
+                    + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.')
+                    + '\n' + verdict)
+        else:
+            text = (('Matched ideas: ' + ', '.join(sorted(matched)) if matched else 'No match yet in your answer.')
+                    + '\nMissing ideas to explain: '
+                    + (', '.join(sorted(absent)) or 'none; explain the connections in your own words.'))
+        meta = {'confidence': assess_confidence(question)} if kind == 'feedback' else {}
+        return CoachReply(kind, text[:2000], [Quote(source_id, page, sentence)], meta)
 

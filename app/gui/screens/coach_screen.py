@@ -7,7 +7,6 @@ from app.gui.screens.base_screen import BaseScreen
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.widgets.chat_bubble import ChatBubble
-from app.gui.widgets.confidence_picker import ConfidencePicker
 from app.gui.widgets.citation_chip import Tooltip
 from app.gui.workers import UIEventQueue
 
@@ -29,8 +28,10 @@ class CoachScreen(BaseScreen):
         self.header.pack(fill='x')
         self.thread = ctk.CTkScrollableFrame(self.content)
         self.thread.pack(fill='both', expand=True)
-        self.confidence = ConfidencePicker(self.content, self.rate)
-        self.confidence.pack(fill='x', pady=4)
+        # No manual confidence buttons: the coach rates confidence itself,
+        # based on how the question was answered (see feedback turns).
+        self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888')
+        self.confidence_note.pack(fill='x', pady=(2, 0))
         self.composer = ctk.CTkTextbox(self.content, height=85)
         self.composer.pack(fill='x')
         row = ctk.CTkFrame(self.content, fg_color='transparent')
@@ -142,9 +143,6 @@ class CoachScreen(BaseScreen):
     def revise(self):
         self._submitted(self.service.submit_revision(self.session_id, self.composer.get('1.0', 'end')))
 
-    def rate(self, key):
-        self._submitted(self.service.rate_confidence(self.session_id, key))
-
     def navigate(self, quote):
         root = self.winfo_toplevel()
         session = self.state.coach_session_by_id(self.session_id)
@@ -161,6 +159,14 @@ class CoachScreen(BaseScreen):
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
+        # Dismiss any lingering gate tooltip before re-laying out the thread;
+        # stale popups must never survive a state change or a moved pointer.
+        for tooltip in list(Tooltip._popups):
+            try:
+                tooltip.destroy()
+            except Exception:
+                pass
+        Tooltip._popups.clear()
         for child in self.thread.winfo_children():
             child.destroy()
         if session:
@@ -178,19 +184,31 @@ class CoachScreen(BaseScreen):
                 ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
-        self.confidence.update_question(q, self.busy)
+        # Confidence is assigned by the coach when feedback is delivered —
+        # there are no manual rating buttons any more.
+        if q and q.confidence:
+            note = f'Coach confidence rating: {q.confidence}'
+        elif q and q.first_answer is not None:
+            note = 'Confidence is rated by the coach once you get feedback.'
+        else:
+            note = ''
+        self.confidence_note.configure(text=note)
         gates = {
             'question': (bool(session) and (not q or q.feedback_given), 'Finish this question and get feedback first.'),
             'answer': (bool(q and q.first_answer is None), 'The first answer is saved once; revise after feedback.'),
-            'hint': (bool(q and q.confidence and q.status != 'closed'), 'Answer first, then rate confidence to unlock hints.'),
-            'feedback': (bool(q and q.confidence and q.status != 'closed'), 'Rate confidence to unlock feedback.'),
+            'hint': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer first to unlock hints.'),
+            'feedback': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer first to get feedback.'),
             'revision': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before adding a revision.'),
             'followup': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before a follow-up.'),
             'cancel': (self.busy, 'There is no turn in progress.')}
         for key, (enabled, explanation) in gates.items():
             enabled = enabled and (not self.busy or key == 'cancel')
-            self.buttons[key].configure(state='normal' if enabled else 'disabled')
-            self.buttons[key].gate_tip.text = '' if enabled else ('Wait or cancel the current turn.' if self.busy else explanation)
+            tip_text = '' if enabled else ('Wait or cancel the current turn.' if self.busy else explanation)
+            button = self.buttons[key]
+            button.configure(state='normal' if enabled else 'disabled')
+            # Hover text only: set_text hides any popup that might be showing,
+            # so explanations never stay visible once the mouse moves away.
+            button.gate_tip.set_text(tip_text)
         self.composer.configure(state='disabled' if self.busy else 'normal')
 
     def shutdown(self):
