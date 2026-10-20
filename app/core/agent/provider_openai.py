@@ -101,14 +101,19 @@ class OpenAICompatProvider:
     def generate(self, context):
         cancel = context.get('cancel') or threading.Event()
         deadline = time.monotonic() + self.timeout
+        previous_response = None
+        validation_error = None
         for repair in (False, True):
+            raw = None
             try:
-                raw = self._post(messages(context, repair), cancel,
+                raw = self._post(messages(context, repair, previous_response, validation_error), cancel,
                                  max(0, deadline - time.monotonic()))
                 return parse_reply(raw, context['kind'])
-            except ValueError:
+            except ValueError as exc:
                 if repair:
                     raise ProviderError('The AI reply could not be read. Please try again.') from None
+                previous_response = raw
+                validation_error = str(exc)
 
     def test_connection(self):
         self._post(connection_messages(), threading.Event(), 10)
