@@ -105,13 +105,16 @@ class Tooltip:
 
     def _on_leave(self, event=None):
         self._cancel_enter()
-        if Tooltip._active is self:
-            self._deactivate()
+        # Hide on leave *regardless* of which tip the shared window currently
+        # shows.  A <Leave> for this widget always means "this explanation is
+        # no longer wanted"; only trusting the active-tip match let popups
+        # linger whenever a stale Enter had armed this tooltip while another
+        # one owned the window.
+        self._deactivate()
 
     def _on_destroy(self, event=None):
         self._cancel_enter()
-        if Tooltip._active is self:
-            self._deactivate()
+        self._deactivate()
         try:
             Tooltip._instances.remove(self)
         except ValueError:
@@ -213,11 +216,14 @@ class Tooltip:
 
     @classmethod
     def _hide_window(cls):
+        """Withdraw the shared popup.  It is *never* destroyed during hover —
+        destroying a mapped top-level inside an event callback is what crashed
+        Tk on Windows; withdraw/deiconify of one persistent window is safe."""
         window = cls._shared_window
         if window is None:
             return
         try:
-            if window.winfo_exists() and window.winfo_viewable():
+            if window.winfo_exists():
                 window.withdraw()
         except tk.TclError:
             pass

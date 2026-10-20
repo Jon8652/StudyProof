@@ -44,8 +44,8 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         assert len(session.questions) == 1
         screen.composer.insert('1.0', 'Energy from sunlight')
         screen.answer()
-        assert screen.buttons['feedback'].cget('state') == 'disabled'
-        screen.rate('low')
+        # Feedback is gated until the answer is submitted; after that it opens.
+        assert screen.buttons['feedback'].cget('state') == 'normal'
         screen.request('feedback')
         pump(app, lambda: not screen.busy)
         screen.composer.insert('1.0', 'Chlorophyll captures sunlight to make glucose.')
@@ -66,7 +66,6 @@ def test_full_mock_loop_and_live_cancel(monkeypatch):
         app.show_screen('coach')
         screen.composer.insert('1.0', 'Energy')
         screen.answer()
-        screen.rate('high')
         state.set_ai_settings({'mode': 'live', 'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
         started = threading.Event()
         class SlowProvider:

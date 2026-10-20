@@ -7,7 +7,7 @@ from app.gui.screens.base_screen import BaseScreen
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.widgets.chat_bubble import ChatBubble
-from app.gui.widgets.citation_chip import Tooltip
+from app.gui.widgets.tooltip import Tooltip
 from app.gui.workers import UIEventQueue
 
 
@@ -159,14 +159,11 @@ class CoachScreen(BaseScreen):
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
-        # Dismiss any lingering gate tooltip before re-laying out the thread;
-        # stale popups must never survive a state change or a moved pointer.
-        for tooltip in list(Tooltip._popups):
-            try:
-                tooltip.destroy()
-            except Exception:
-                pass
-        Tooltip._popups.clear()
+        # Dismiss any visible tooltip before re-laying out the thread; stale
+        # popups must never survive a state change or a moved pointer.  The
+        # shared popup window is only hidden (never destroyed) here, which is
+        # what keeps rapid refresh/hover churn from crashing Tk on Windows.
+        Tooltip.dismiss_all()
         for child in self.thread.winfo_children():
             child.destroy()
         if session:
