@@ -43,16 +43,14 @@ def assess_confidence(question):
     question's source spans; hints seen count against the learner.
     """
     answer = question.first_answer or ''
-    if not answer.strip():
+    if len(answer.strip()) < 10 or question.hints_seen >= 2:
         return 'low'
     target = question.answer_key.get('sentence') or ' '.join(
         span.get('text', '') for span in question.spans)
     ratio = _ratio(answer, target)
     if ratio is None:
         return 'medium'
-    if question.hints_seen >= 2:
-        ratio -= 0.15          # needed a lot of nudging toward the idea
-    if ratio >= 0.6:
+    if ratio >= 0.6 and question.hints_seen == 0:
         return 'high'
     if ratio >= 0.3:
         return 'medium'

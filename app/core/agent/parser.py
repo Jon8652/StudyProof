@@ -1,6 +1,7 @@
 """Parse fenced or embedded JSON without executing model output."""
 import json
 from app.core.agent.schema import CoachReply, Quote
+from app.constants import CONFIDENCE_LEVELS
 
 
 def parse_reply(raw, expected_kind=None):
@@ -25,6 +26,8 @@ def parse_reply(raw, expected_kind=None):
             or len(text) > 2000 or not isinstance(quotes, list)
             or len(quotes) > 5 or not isinstance(meta, dict)):
         raise ValueError('The AI reply did not match the requested format.')
+    if kind == 'feedback' and meta.get('confidence') not in CONFIDENCE_LEVELS:
+        raise ValueError('The AI feedback must include a valid confidence rating.')
     parsed = []
     for q in quotes:
         if (not isinstance(q, dict) or not isinstance(q.get('source_id'), str)

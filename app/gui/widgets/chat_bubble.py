@@ -13,6 +13,9 @@ class ChatBubble(ctk.CTkFrame):
         ctk.CTkLabel(self, text=('Coach: ' if turn.role == 'coach' else 'You: ')
                      + turn.text, wraplength=650, justify='left', anchor='w').pack(
                          fill='x', padx=12, pady=8)
+        if turn.kind == 'feedback' and turn.confidence:
+            ctk.CTkLabel(self, text=f'Coach confidence rating: {turn.confidence}',
+                         text_color=MUTED_TEXT).pack(anchor='w', padx=12)
         if turn.mode:
             ctk.CTkLabel(self, text=turn.mode.title(), text_color=MUTED_TEXT).pack(anchor='w', padx=12)
         if turn.kind in ('hint', 'feedback') and not turn.quotes and sources:

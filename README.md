@@ -62,9 +62,10 @@ shows weak topics and can reopen their latest coaching session.
 
 Mock mode works offline without a key. For optional Live mode, open
 **Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
-model and key. The URL should include the API prefix (for example `/v1`),
+key, then select deepseek-flash or deepseek-v4-pro. The URL should include the API prefix (for example `/v1`),
 without `/chat/completions`. Live requests send only the bounded source pack,
-question state and last ten turns. Keys are stored locally in the save file,
+question state and last ten turns. The source budget is 1,000,000 characters;
+large packs can produce large provider prompts and token costs. Keys are stored locally in the save file,
 masked in Settings and excluded from prompts and error messages. There is
 no telemetry. Failed turns offer a one-click Mock fallback; Cancel immediately
 restores the composer and discards late responses.
@@ -73,7 +74,7 @@ All AI requirements (COACH-, GEN-, GRD-, PROV- and AIS- families) are
 implemented and covered by the automated test suite: deterministic Mock
 generation with session-seeded output, the JSON repair ladder with Mock
 fallback, lazy normalised quote grounding with strip-and-count, the guarded
-question state machine (unaided first answer, single confidence rating, gated
+question state machine (unaided first answer, AI-assigned confidence with feedback, gated
 hints/feedback, follow-up child questions), saved-session management with
 resume/delete, the opt-in `urllib` Live client (30 s timeout, one retry on
 429/5xx, strict key redaction, connection testing, sub-second cancellation),
@@ -170,7 +171,7 @@ app/state/              AppState: single source of truth + incremental index
 app/gui/                seven screens (Home, Calendar, Notes, Library, Coach,
                         Stats, Settings), dialogs (source selection, saved
                         sessions) and widgets (page viewer, chat bubbles,
-                        citation chips, confidence picker, stopwatch)
+                        citation chips, stopwatch)
 app/utils/              paths (source vs frozen resources), asset loader
 assets/               PNG icons & medal images (user artwork, any size/mode)
 tests/                  unit tests + GUI smoke test

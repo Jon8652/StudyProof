@@ -18,6 +18,8 @@ class CoachScreen(BaseScreen):
         self.session_id = None
         self.busy = False
         self._last_action = None
+        self._suggestion_job = None
+        self._suggestion_question = None
         self.events = UIEventQueue(self)
         self.events.start()
         top = ctk.CTkFrame(self.content)
@@ -32,21 +34,39 @@ class CoachScreen(BaseScreen):
         # based on how the question was answered (see feedback turns).
         self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888')
         self.confidence_note.pack(fill='x', pady=(2, 0))
-        self.composer = ctk.CTkTextbox(self.content, height=85)
-        self.composer.pack(fill='x')
+        self.suggestions = ctk.CTkFrame(self.content, fg_color='transparent')
+        ctk.CTkLabel(self.suggestions, text='Need a starting point?',
+                     text_color='#888888').pack(anchor='w')
+        for label, starter in [
+            ('Explain in my own words', 'In my own words, '),
+            ('Start with what I remember', 'What I remember is '),
+            ('Describe what is unclear', "I'm unsure about ")]:
+            ctk.CTkButton(self.suggestions, text=label, height=28,
+                          command=lambda text=starter: self.use_suggestion(text)).pack(
+                              side='left', padx=3, pady=3)
+        composer_row = ctk.CTkFrame(self.content, corner_radius=18)
+        composer_row.pack(fill='x', pady=(4, 0))
+        self.composer = ctk.CTkTextbox(composer_row, height=85, border_width=0)
+        self.composer.pack(side='left', fill='x', expand=True, padx=6, pady=6)
+        self.composer.bind('<Return>', self.send)
+        self.composer.bind('<Shift-Return>', lambda event: None)
+        self.composer.bind('<KeyRelease>', self._typing, add='+')
+        self.send_button = ctk.CTkButton(
+            composer_row, text='↑', width=42, height=42, corner_radius=21,
+            font=ctk.CTkFont(size=26), command=self.send)
+        self.send_button.pack(side='right', padx=10)
+        self.send_button.gate_tip = Tooltip(self.send_button, 'Send · Enter (Shift+Enter for a new line)')
         row = ctk.CTkFrame(self.content, fg_color='transparent')
         row.pack(fill='x', pady=5)
+        ctk.CTkLabel(row, text='Enter to send · Shift+Enter for a new line',
+                     text_color='#888888').pack(side='left', padx=4)
         self.buttons = {}
         for key, label, command in [
-            ('question', 'Question', lambda: self.request('question')),
-            ('answer', 'Submit answer', self.answer),
+            ('question', 'Next question', lambda: self.request('question')),
             ('hint', 'Hint', lambda: self.request('hint')),
-            ('feedback', 'Feedback', lambda: self.request('feedback')),
-            ('revision', 'Revision', self.revise),
             ('followup', 'Follow-up', lambda: self.request('followup')),
             ('cancel', 'Cancel', self.cancel)]:
-            button = ctk.CTkButton(row, text=label, width=85, command=command)
-            button.pack(side='left', padx=2)
+            button = ctk.CTkButton(row, text=label, width=90, command=command)
             self.buttons[key] = button
             button.gate_tip = Tooltip(button, '')
         self.notice = ctk.CTkLabel(self.content, text='', wraplength=700)
@@ -143,6 +163,59 @@ class CoachScreen(BaseScreen):
     def revise(self):
         self._submitted(self.service.submit_revision(self.session_id, self.composer.get('1.0', 'end')))
 
+    def send(self, event=None):
+        """Send an unaided answer or revision, then request coach feedback."""
+        if self.busy:
+            return 'break'
+        session = self.state.coach_session_by_id(self.session_id)
+        q = session.questions[-1] if session and session.questions else None
+        text = self.composer.get('1.0', 'end').strip()
+        if not q or q.status == 'closed':
+            return 'break'
+        if q.first_answer is not None and not q.feedback_given:
+            self.request('feedback')
+            return 'break'
+        if not text:
+            return 'break'
+        if q.first_answer is None:
+            result = self.service.submit_answer(self.session_id, text)
+        elif q.feedback_given:
+            result = self.service.submit_revision(self.session_id, text)
+        self._submitted(result)
+        if result.ok:
+            self.request('feedback')
+        return 'break'
+
+    def _hide_suggestions(self):
+        if self._suggestion_job is not None:
+            self.after_cancel(self._suggestion_job)
+            self._suggestion_job = None
+        self.suggestions.pack_forget()
+
+    def _typing(self, event=None):
+        self._hide_suggestions()
+        self._schedule_suggestions()
+
+    def _schedule_suggestions(self):
+        session = self.state.coach_session_by_id(self.session_id)
+        q = session.questions[-1] if session and session.questions else None
+        if q and q.first_answer is None and not self.busy and self._suggestion_job is None:
+            self._suggestion_job = self.after(15_000, self._show_suggestions)
+
+    def _show_suggestions(self):
+        self._suggestion_job = None
+        session = self.state.coach_session_by_id(self.session_id)
+        q = session.questions[-1] if session and session.questions else None
+        if (q and q.first_answer is None and not self.busy and self.winfo_viewable()
+                and not self.composer.get('1.0', 'end').strip()):
+            self.suggestions.pack(fill='x', before=self.composer.master, pady=4)
+
+    def use_suggestion(self, text):
+        self._hide_suggestions()
+        if not self.composer.get('1.0', 'end').strip():
+            self.composer.insert('1.0', text)
+            self.composer.focus_set()
+
     def navigate(self, quote):
         root = self.winfo_toplevel()
         session = self.state.coach_session_by_id(self.session_id)
@@ -178,6 +251,8 @@ class CoachScreen(BaseScreen):
             mode = next((t.mode for t in reversed(session.turns) if t.mode), 'mock')
             self.header.configure(text=f'{mode.title()} · ' + ' · '.join(labels))
             for turn in session.turns:
+                if turn.kind == 'confidence':
+                    continue
                 ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
@@ -190,24 +265,27 @@ class CoachScreen(BaseScreen):
         else:
             note = ''
         self.confidence_note.configure(text=note)
+        question_key = (self.session_id, q.id if q else None)
+        if question_key != self._suggestion_question or self.busy or not q or q.first_answer is not None:
+            self._hide_suggestions()
+            self._suggestion_question = question_key
+        self._schedule_suggestions()
         gates = {
-            'question': (bool(session) and (not q or q.feedback_given), 'Finish this question and get feedback first.'),
-            'answer': (bool(q and q.first_answer is None), 'The first answer is saved once; revise after feedback.'),
-            'hint': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer first to unlock hints.'),
-            'feedback': (bool(q and q.first_answer is not None and q.status != 'closed'), 'Submit your answer first to get feedback.'),
-            'revision': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before adding a revision.'),
-            'followup': (bool(q and q.feedback_given and q.status != 'closed'), 'Get feedback before a follow-up.'),
-            'cancel': (self.busy, 'There is no turn in progress.')}
-        for key, (enabled, explanation) in gates.items():
-            enabled = enabled and (not self.busy or key == 'cancel')
-            tip_text = '' if enabled else ('Wait or cancel the current turn.' if self.busy else explanation)
+            'question': bool(session) and (not q or q.feedback_given),
+            'hint': bool(q and q.first_answer is not None and not q.feedback_given and q.status != 'closed'),
+            'followup': bool(q and q.feedback_given and q.status != 'closed'),
+            'cancel': self.busy}
+        for key, enabled in gates.items():
             button = self.buttons[key]
-            button.configure(state='normal' if enabled else 'disabled')
-            # Hover text only: set_text hides any popup that might be showing,
-            # so explanations never stay visible once the mouse moves away.
-            button.gate_tip.set_text(tip_text)
+            button.pack_forget()
+            if enabled and (not self.busy or key == 'cancel'):
+                button.pack(side='right', padx=2)
+                button.configure(state='normal')
+        can_send = bool(q and q.status != 'closed' and not self.busy)
+        self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
 
     def shutdown(self):
+        self._hide_suggestions()
         self.service.cancel_turn(self.session_id)
         self.events.stop()
