@@ -12,17 +12,27 @@ carries a coach-assessed ``confidence`` value:
 
 Only 'low', 'medium' and 'high' (CONFIDENCE_LEVELS) are ever stored, so all
 downstream statistics keep working unchanged.
+
+Note: this module deliberately avoids importing app.core.agent.mock_engine at
+module load time (mock_engine lazily imports assess_confidence from here at
+call time), which would otherwise create a circular import.
 """
+import re
+
 from app.constants import CONFIDENCE_LEVELS
-from app.core.agent.mock_engine import keywords
+
+
+def _keywords(text):
+    """Distinct long words in *text* (mirrors mock_engine.keywords)."""
+    return {w.lower() for w in re.findall(r'\b\w{6,}\b', text)}
 
 
 def _ratio(answer, target):
     """Fraction of distinct long words from *target* present in *answer*."""
-    target_words = keywords(target)
+    target_words = _keywords(target)
     if not target_words:
         return None
-    return len(target_words & keywords(answer)) / len(target_words)
+    return len(target_words & _keywords(answer)) / len(target_words)
 
 
 def assess_confidence(question):
