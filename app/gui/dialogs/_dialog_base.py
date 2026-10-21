@@ -23,13 +23,21 @@ to the console even though nothing visible breaks.  Targeted
 ``winfo_exists()`` guards cannot catch this because the offending call lives
 inside customtkinter/Tk code, not in our callbacks.
 
-The fix here is structural: :func:`_neutralise_ctk_global_focus` rewrites the
-``all`` bindtag's ``<Button-1>`` script so the library's focus handler only
-runs for genuinely focusable widget classes (Entry, Text, buttons, etc.) and
-is skipped for labels/canvases/frames.  Every dialog derives from
-:class:`SafeDialog`, which applies the rewrite on construction; the main
-window applies it too (see ``app.gui.main_window``).  Normal keyboard focus
-behaviour is unchanged: entries and text boxes still receive focus on click.
+The fix here is structural: :func:`_neutralise_ctk_global_focus` removes the
+library's app-wide focus handler entirely (the same thing as calling
+``unbind_all("<Button-1>")`` once at startup).  Every dialog derives from
+:class:`SafeDialog`, which applies it on construction, and the main window
+applies it too (see ``app.gui.app_state`` / ``main_window``).
+
+Consequences of removing the handler — all acceptable for this app:
+
+* Clicking a button or label no longer steals keyboard focus away from the
+  entry you are typing in (arguably an improvement: previously every stray
+  click destroyed the caret position in CTkEntries).
+* Entries still receive focus on click through their *own* class bindings
+  (``tk::EntryButton1``), so normal typing behaviour is unchanged.
+* The only lost nicety is clicking a non-entry widget to move focus to it,
+  which nothing in this app relies on.
 """
 
 from __future__ import annotations
@@ -41,23 +49,20 @@ import customtkinter as ctk
 # Name of the Tcl procedure Tk associates with customtkinter's global
 # Button-1 focus handler (CTkToplevel.__init__: ``def set_focus(event)``
 # bound via bind_all).  We identify that callback by this string so we can
-# neutralise it without touching any other app-wide bindings.
+# remove it without touching any other app-wide bindings.
 _CTK_SET_FOCUS_CMD = "set_focus"
-
-# Marker variable guarding one-time definition of the wrapper proc.
-_PATCH_FLAG = "::ctk_safe_focus_patched"
 
 
 def _neutralise_ctk_global_focus(root: tk.Misc) -> None:
-    """Make customtkinter's app-wide ``<Button-1>`` focus handler safe.
+    """Remove customtkinter's app-wide ``<Button-1>`` focus handler.
 
-    Reads the current ``bind all <Button-1>`` Tcl script, locates the
-    interpreter command id of customtkinter's ``set_focus`` callback and
-    wraps it in ``_ctk_safe_focus_cb``, which skips the deferred
-    ``focus_set()`` whenever the clicked widget's class bindtag denotes a
-    non-focusable widget (Label / Canvas / Frame / Image / Toplevel).  All
-    other app-wide handlers (e.g. CTkScrollableFrame's mouse-wheel and Shift
-    bindings) are preserved verbatim.  Idempotent.
+    customtkinter registers its ``set_focus`` callback via ``bind_all``,
+    which Tk stores as a single script under the ``all`` bindtag.  We read
+    that script, drop every chunk belonging to ``set_focus`` (identified by
+    the generated Tcl command name ending in ``set_focus``), and write the
+    remainder back — leaving any *other* app-wide Button-1 handlers intact.
+    If only ``set_focus`` was bound, the binding is removed entirely.
+    Idempotent: once no ``set_focus`` chunk remains, later calls do nothing.
     """
     try:
         script = root.tk.call("bind", "all", "<Button-1>")
@@ -65,46 +70,28 @@ def _neutralise_ctk_global_focus(root: tk.Misc) -> None:
         return
     if not script or _CTK_SET_FOCUS_CMD not in script:
         return          # nothing from customtkinter to neutralise
-    if "_ctk_safe_focus_cb" in script:
-        return          # already patched
 
-    parts = []
-    found = False
+    kept = []
+    removed = False
     for chunk in script.split("\n\n"):
         if not chunk.strip():
             continue
-        cmd_id = None
-        if _CTK_SET_FOCUS_CMD in chunk:
-            for token in chunk.replace("\n", " ").split():
-                if token.endswith(_CTK_SET_FOCUS_CMD):
-                    cmd_id = token[: -len(_CTK_SET_FOCUS_CMD)]
-                    break
-        if cmd_id is None:
-            parts.append(chunk)
+        # bind_all scripts are stored as one Tcl procedure call per binding;
+        # customtkinter's looks like "...after...set_focus %# %b ...".
+        first_line_tokens = chunk.strip().split("\n", 1)[0].split()
+        if any(tok.endswith(_CTK_SET_FOCUS_CMD) for tok in first_line_tokens):
+            removed = True
             continue
-        found = True
-        inner = (f"{cmd_id} %# %b %f %h %k %s %t %w %x %y %A %E %K %N "
-                 f"%W %T %X %Y %D")
-        parts.append("_ctk_safe_focus_cb {" + inner + "}")
+        kept.append(chunk)
 
-    if not found:
+    if not removed:
         return
 
-    preamble = "\n".join([
-        f"if {{![info exists {_PATCH_FLAG}]}} {{",
-        f"    set {_PATCH_FLAG} 1",
-        "    proc _ctk_safe_focus_cb {{cb args}} {{",
-        "        if {{[catch {{lindex [bindtags %W] 1}} cls]}} {{return}}",
-        "        if {{$cls eq \"Label\" || $cls eq \"Canvas\" || "
-        "$cls eq \"Frame\" || $cls eq \"Image\" || $cls eq \"Toplevel\"}} "
-        "{{return}}",
-        "        eval $cb $args",
-        "    }}",
-        "}}",
-    ])
-    patched = preamble + "\n" + "\n\n".join(parts) + "\n"
     try:
-        root.tk.call("bind", "all", "<Button-1>", patched)
+        if kept:
+            root.tk.call("bind", "all", "<Button-1>", "\n\n".join(kept) + "\n")
+        else:
+            root.tk.call("bind", "all", "<Button-1>", "")  # unbind entirely
     except tk.TclError:
         pass  # best-effort; worst case the old console-only error remains
 

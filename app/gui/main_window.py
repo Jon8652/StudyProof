@@ -62,6 +62,15 @@ class MainWindow(ctk.CTk):
     # never be assigned to that name on a Tk widget — use `_app_state`.
     def __init__(self, app_state: AppState | None = None):
         super().__init__()
+        # customtkinter installs an app-wide click-to-focus handler via
+        # bind_all("<Button-1>") in every CTk/CTkToplevel constructor.  When a
+        # click both focuses a doomed widget (e.g. a CTkButton's inner label)
+        # and closes its dialog, Tk prints a "bad window path name" traceback
+        # to the console.  Remove it now; dialogs re-remove it whenever they
+        # are constructed (see app.gui.dialogs._dialog_base), because each new
+        # CTkToplevel re-installs the binding.
+        from app.gui.dialogs._dialog_base import _neutralise_ctk_global_focus
+        _neutralise_ctk_global_focus(self)
         ctk.set_appearance_mode("dark")  # A-10: dark default before load
         ctk.set_default_color_theme("blue")
 
