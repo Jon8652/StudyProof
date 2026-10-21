@@ -6,6 +6,8 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
+
 
 def _safe_focus(dialog) -> None:
     """Give *dialog* keyboard focus, but only while it still exists.
@@ -25,7 +27,7 @@ def _safe_focus(dialog) -> None:
 
 def show_message(parent, title: str, message: str) -> None:
     """Show a friendly modal information dialog (non-technical wording)."""
-    dialog = ctk.CTkToplevel(parent)
+    dialog = SafeDialog(parent)
     dialog.title(title)
     dialog.transient(parent)
     try:

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
+
 
 def ask_yes_no(parent, title: str, message: str,
                confirm_text: str = "Yes", cancel_text: str = "Cancel") -> bool:
     """Show a modal yes/no confirmation; return the user's choice."""
     result: dict[str, bool] = {"value": False}
 
-    dialog = ctk.CTkToplevel(parent)
+    dialog = SafeDialog(parent)
     dialog.title(title)
     dialog.transient(parent)
     dialog.resizable(False, False)

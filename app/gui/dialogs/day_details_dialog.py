@@ -13,6 +13,8 @@ from datetime import date
 
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
+
 from app.core.medals import medal_label
 from app.gui.dialogs.confirm_dialog import ask_yes_no
 from app.gui.dialogs.note_editor_dialog import NoteEditorDialog
@@ -23,7 +25,7 @@ from app.state.app_state import AppState
 from app.utils.date_utils import format_date_long, format_minutes
 
 
-class DayDetailsDialog(ctk.CTkToplevel):
+class DayDetailsDialog(SafeDialog):
     def __init__(self, master, state: AppState, day: date):
         super().__init__(master)
         self._state = state

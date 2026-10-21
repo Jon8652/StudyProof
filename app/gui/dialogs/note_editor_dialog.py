@@ -12,13 +12,15 @@ from datetime import date
 
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
+
 from app.core.models import MAX_NOTE_BODY_LENGTH, Note
 from app.gui.dialogs.message_dialog import show_error
 from app.state.app_state import AppState
 from app.utils.date_utils import format_date_long
 
 
-class NoteEditorDialog(ctk.CTkToplevel):
+class NoteEditorDialog(SafeDialog):
     def __init__(self, master, state: AppState, note: Note | None = None,
                  default_day: date | None = None):
         super().__init__(master)
