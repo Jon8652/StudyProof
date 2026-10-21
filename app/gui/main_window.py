@@ -161,6 +161,11 @@ class MainWindow(ctk.CTk):
         # the nav/settings area.  Themed card look; works in light + dark.
         self.stopwatch = StopwatchWidget(self.sidebar, self._app_state)
         self.stopwatch.pack(side="bottom", fill="x", padx=12, pady=(16, 0))
+        # When a countdown starts / is cancelled / finishes, re-sync the
+        # screens so e.g. the Study Tracker's start buttons grey out only
+        # while the timer is actually counting down (and come back to life
+        # immediately on cancel — no stale disabled state).
+        self.stopwatch.on_countdown_change = self.refresh_all
 
         # Symmetric insets so the screen's left and right outer gaps match:
         # the content area sits 8 px from the window edge on both sides, and

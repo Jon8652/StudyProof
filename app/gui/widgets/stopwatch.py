@@ -98,6 +98,19 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_running = False          # counting down right now?
         self._cd_segment_start: float | None = None  # anchor of active segment
 
+        # Optional callback fired whenever a countdown starts, is cancelled,
+        # or finishes — lets other screens (e.g. the Study Tracker) mirror
+        # the countdown state on their buttons without polling.
+        self.on_countdown_change = None
+
+        # Countdowns are driven by a *deferred* finish job (``after``), never
+        # only by the 200 ms tick loop: Tk ``after`` callbacks do not run
+        # while a modal dialog holds the grab (grab_set + wait_window).  A
+        # scheduled job still fires once the mainloop resumes, so completion
+        # can never be missed and start-buttons can never stay greyed out
+        # with a "finished" countdown that no longer exists.
+        self._cd_finish_job: str | None = None
+
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -186,6 +199,16 @@ class StopwatchWidget(ctk.CTkFrame):
             return format_stopwatch(self._remaining_s())
         return format_stopwatch(self._elapsed_s)
 
+    def _notify_countdown_change(self) -> None:
+        """Fire the optional ``on_countdown_change`` listener, if set."""
+        callback = getattr(self, "on_countdown_change", None)
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                # A broken listener must never take down the timer itself.
+                pass
+
     # ------------------------------------------------------------- tick loop
 
     def _schedule_tick(self) -> None:
@@ -199,6 +222,35 @@ class StopwatchWidget(ctk.CTkFrame):
             except Exception:
                 pass
             self._tick_job = None
+
+    def _schedule_cd_finish(self) -> None:
+        """Arm a deferred finish job at the exact moment remaining hits 0.
+
+        The tick loop also watches for zero, but ``after`` callbacks are
+        *not* dispatched while a modal dialog (grab_set + wait_window) is
+        open — whereas scheduled jobs still run once the mainloop resumes.
+        Scheduling the finish explicitly guarantees completion always fires
+        (recording the session and re-enabling the start buttons), even if
+        the countdown "ran out" behind an open dialog.
+        """
+        self._cancel_cd_finish()
+        delay_ms = max(0, int(round(self._remaining_s() * 1000)))
+        self._cd_finish_job = self.after(delay_ms, self._on_cd_finish_due)
+
+    def _cancel_cd_finish(self) -> None:
+        if self._cd_finish_job is not None:
+            try:
+                self.after_cancel(self._cd_finish_job)
+            except Exception:
+                pass
+            self._cd_finish_job = None
+
+    def _on_cd_finish_due(self) -> None:
+        self._cd_finish_job = None
+        if self._mode != MODE_COUNTDOWN or not self._cd_running:
+            return                      # cancelled/paused — nothing to do
+        if self._remaining_s() <= 0:
+            self._finish_countdown()
 
     def _tick(self) -> None:
         if self._mode == MODE_COUNTDOWN:
@@ -306,6 +358,8 @@ class StopwatchWidget(ctk.CTkFrame):
         self._display.configure(text=self._display_text())
         self._sync_buttons()
         self._schedule_tick()
+        self._schedule_cd_finish()
+        self._notify_countdown_change()
         return True
 
     def _on_pause_toggle(self) -> None:
@@ -318,10 +372,12 @@ class StopwatchWidget(ctk.CTkFrame):
                 self._cd_segment_start = None
             self._cd_running = False
             self._cancel_tick()
+            self._cancel_cd_finish()
         else:
             self._cd_running = True
             self._cd_segment_start = time.monotonic()
             self._schedule_tick()
+            self._schedule_cd_finish()
         self._display.configure(text=self._display_text())
         self._sync_buttons()
 
@@ -334,9 +390,12 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_remaining_s = 0.0
         self._cd_total_s = 0.0
         self._mode = MODE_STOPWATCH
+        self._header.configure(text="Study Stopwatch")
         self._cancel_tick()
+        self._cancel_cd_finish()
         self._display.configure(text=self._display_text())
         self._sync_buttons()
+        self._notify_countdown_change()
 
     def _finish_countdown(self) -> None:
         """Countdown hit zero: record the session, then revert to stopwatch."""
@@ -347,9 +406,11 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_total_s = 0.0
         self._mode = MODE_STOPWATCH
         self._cancel_tick()
+        self._cancel_cd_finish()
         self._header.configure(text="Study Stopwatch")
         self._display.configure(text=self._display_text())
         self._sync_buttons()
+        self._notify_countdown_change()
 
         top = self.winfo_toplevel()
         result = self._app_state.record_timer_session(minutes)
@@ -389,6 +450,7 @@ class StopwatchWidget(ctk.CTkFrame):
 
     def destroy(self):
         self._cancel_tick()
+        self._cancel_cd_finish()
         super().destroy()
 
 
