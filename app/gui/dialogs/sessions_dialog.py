@@ -1,9 +1,11 @@
 """Resume or explicitly delete saved coaching sessions."""
 import customtkinter as ctk
+
+from app.gui.dialogs._dialog_base import SafeDialog
 from app.gui.dialogs.confirm_dialog import ask_yes_no
 
 
-class SessionsDialog(ctk.CTkToplevel):
+class SessionsDialog(SafeDialog):
     def __init__(self, master, state, service):
         super().__init__(master)
         self._app_state, self.service, self.result = state, service, None

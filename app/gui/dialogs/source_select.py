@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
+
 from app.constants import MAX_PACK_CHARS, MAX_SOURCES
 from app.core.agent.context import estimate_pack_size
 from app.gui.theme import ACCENT, MUTED_TEXT
@@ -26,7 +28,7 @@ _CAP_NOTICE = (
 )
 
 
-class SourceSelectDialog(ctk.CTkToplevel):
+class SourceSelectDialog(SafeDialog):
     """Modal source picker. Read ``self.result`` after ``wait_window``."""
 
     def __init__(self, master, state):

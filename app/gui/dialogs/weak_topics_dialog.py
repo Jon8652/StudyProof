@@ -1,8 +1,10 @@
 """Choose a specific unresolved topic to practise, without exposing ratings."""
 import customtkinter as ctk
 
+from app.gui.dialogs._dialog_base import SafeDialog
 
-class WeakTopicsDialog(ctk.CTkToplevel):
+
+class WeakTopicsDialog(SafeDialog):
     def __init__(self, master, state):
         super().__init__(master)
         self.result = None

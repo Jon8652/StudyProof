@@ -11,9 +11,10 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from app.core.models import Session
+from app.gui.dialogs._dialog_base import SafeDialog
 
 
-class CustomSessionDialog(ctk.CTkToplevel):
+class CustomSessionDialog(SafeDialog):
     def __init__(self, master, on_start):
         super().__init__(master)
         self._on_start = on_start
