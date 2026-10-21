@@ -89,7 +89,7 @@ Additional terms **[NEW]**:
 | Dated note | A note attached to a specific calendar day; it also appears in that day's Calendar cell marker and Day Details dialog. |
 | Undated note | A note with no day attachment (`day = None`); appears only in the Notes screen. |
 | Stopwatch | The sidebar digital timer with Start/Stop/Reset that can auto-log a finished run as a study session. |
-| Auto-log threshold | Minimum stopwatch run length (10 minutes) required for stopping to log a session. |
+| Auto-log threshold | Minimum stopwatch run length (10 minutes) required for resetting a finished run to log a session. |
 | Daily aggregate index | In-memory map of calendar day → (total minutes, total XP, medal, session ids), maintained incrementally by `AppState`. |
 | Quarantine file | A copy of a corrupt/unreadable save or backup renamed with a `.corrupt` suffix and preserved for diagnosis. |
 | AppState | The single in-memory coordinator between GUI screens, core engines, and the persistence repository. |
@@ -124,7 +124,7 @@ New/updated decisions **[NEW]/[UPDATED]**:
 |---|---|---|
 | A-14 | Notes are first-class persisted data alongside sessions. | Stored in the same JSON save file (`notes` array), covered by autosave, backup, atomic write, and recovery flows. Unlike sessions, notes **are** editable. |
 | A-15 | Note limits are fixed: title ≤ 120 characters, body ≤ 100,000 characters. | Values are truncated defensively on load; a note with neither title nor body text is rejected with a friendly message. |
-| A-16 | A stopwatch stop logs a session only when elapsed time ≥ 10 minutes (±0.25 s floating-point slack), rounded **down** to whole 10-minute steps. | Shorter stops preserve the reading so the run can be resumed; Reset always returns the display to zero without logging. Logged runs use the normal custom-session validation path. |
+| A-16 | A stopwatch reset logs a session only when elapsed time ≥ 10 minutes (±0.25 s floating-point slack), rounded **down** to whole 10-minute steps. | Stop only pauses and preserves the reading so the run can be resumed; Reset always returns the display to zero, logging only when the threshold is met. Logged runs use the normal custom-session validation path. |
 | A-17 | Stopwatch timing uses a monotonic clock, not wall-clock deltas. | Display accuracy survives delayed Tk callbacks; system clock changes do not distort a running measurement. |
 | A-18 | Derived views are backed by an incrementally maintained daily index. | Adding/deleting a session updates only the affected day's aggregate; stats/calendar/home read the index. Deletion recomputes day XP from remaining sessions (partial-block rounding makes XP non-additive). |
 | A-19 | Cross-platform data location *(updates A-5/A-13/NFR-1)*. | Default save directory resolves via `platformdirs.user_data_dir`: `%APPDATA%\StudyProof`-style per-user location on Windows and platform-standard locations on macOS/Linux. Windows remains the packaging/distribution target. |
@@ -138,7 +138,7 @@ StudyProof is a personal productivity and gamification application. The user log
 
 - Quick study logging using preset durations (30 min / 1 h / 2 h) — one tap from Home.
 - Custom study logging via a modal hours-and-minutes dialog with friendly inline validation (5 min – 12 h).
-- **Study stopwatch [NEW]** in the sidebar with Start/Stop/Reset; stopping a run of ≥10 minutes auto-logs it as a custom session rounded down to the nearest 10 minutes.
+- **Study stopwatch [NEW]** in the sidebar with Start/Stop/Reset; resetting a run of ≥10 minutes auto-logs it as a custom session rounded down to the nearest 10 minutes (Stop only pauses).
 - XP engine: 10 XP per completed 10-minute block (configurable/persisted rate, no UI editor in v1).
 - Daily medals: Bronze ≥ 120 min, Silver ≥ 180 min, Gold ≥ 300 min (inclusive thresholds, highest medal only), shown as image badges with text fallback.
 - Calendar view: Monday-first month grid with per-day medal icons and note-count markers, prev/next/today navigation, and a modal day-details dialog (totals, medal, session list with delete, attached notes with add/edit).
@@ -427,8 +427,8 @@ FR-76 … FR-85 are confirmed requirements, implemented and refined as follows:
 | SW-2 | The display shall show elapsed time as `H:MM:SS` (e.g. `2:35:12`) and default to `0:00:00` when the app opens. | `format_stopwatch` |
 | SW-3 | Start / Stop / Reset controls shall drive the timer; Start disables while running, Stop disables when idle. | `_sync_buttons` |
 | SW-4 | Timing shall use a monotonic clock accumulated over start/stop segments so paused time is preserved and delayed UI callbacks do not skew elapsed time. | `time.monotonic`, `_accumulated_s` |
-| SW-5 | On Stop, a run of at least 10 minutes (with 0.25 s slack) shall be logged automatically as a **custom** study session, rounded **down** to the nearest whole 10 minutes (e.g. 2:35:12 → 2 h 30 m), attributed to the current day like any other session, and the display resets to zero. | `AUTO_LOG_THRESHOLD_S`, `ROUND_TO_MINUTES`, `log_custom_session` |
-| SW-6 | Stopping a run shorter than 10 minutes shall keep the reading so the user can resume; Reset shall work while running or stopped and always return the display to zero without logging anything. | `_on_stop`, `_on_reset` |
+| SW-5 | On **Reset**, a run of at least 10 minutes (with 0.25 s slack) shall be logged automatically as a **custom** study session, rounded **down** to the nearest whole 10 minutes (e.g. 2:35:12 → 2 h 30 m), attributed to the current day like any other session, and the display resets to zero. | `AUTO_LOG_THRESHOLD_S`, `ROUND_TO_MINUTES`, `log_custom_session` |
+| SW-6 | Stopping a run shall only pause it — no session is logged and the reading is kept so the user can resume or later reset-to-log; Reset shall work while running or stopped, credit the run per SW-5 when long enough, and always return the display to zero. | `_on_stop`, `_on_reset` |
 | SW-7 | After an auto-log, the user shall receive a friendly confirmation message stating the rounded duration added; a validation failure shall instead surface the engine's friendly message. | `show_message` on result |
 | SW-8 | The logged duration shall pass through the standard custom-session validation and XP pipeline (rounded-down value ≥ 10 min always earns XP). | FR-2..FR-11 reuse |
 | SW-9 | The widget shall be themed with distinct colours in both light and dark modes and shall cancel its tick loop on destroy (no dangling callbacks). | theme tokens; `destroy()` |

@@ -41,7 +41,7 @@
   quotes (ACC-3/ACC-4/ACC-5, GRD-5).
 - **Settings** — dark/light theme (persisted), manual save, and a safe
   "Load from file" flow (validate → confirm → backup → replace).
-- **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs keep their reading so you can resume, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.
+- **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping only pauses the run (the reading is kept so you can resume). **Resetting** a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs are discarded without logging, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.
 - **Resilient persistence** — atomic JSON writes, corrupt-file backup +
   quarantine recovery, schema-version protection, close-flush of unsaved
   changes. Data lives in the OS app-data folder (`%APPDATA%\StudyProof`

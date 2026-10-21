@@ -1,8 +1,9 @@
 """Tests for the sidebar stopwatch widget.
 
 Covers both modes:
-- classic stopwatch behaviour incl. the cheat-safe auto-log-on-stop rule
-  (real elapsed time is credited, rounded down to 10-minute steps);
+- classic stopwatch behaviour incl. the cheat-safe auto-log-on-reset rule
+  (Stop pauses and keeps the reading; Reset ends the run and credits real
+  elapsed time, rounded down to 10-minute steps);
 - the new study-session countdown mode (start/pause/cancel/complete)
   where XP/time is only granted when the countdown truly reaches zero.
 
@@ -121,38 +122,52 @@ def test_start_sets_running_and_disables_start(widget):
 
 
 def test_reset_clears_everything(widget):
-    widget._accumulated_s = 1234.0
+    """Short run: Reset zeroes the display and logs nothing."""
     widget._on_start()
+    widget._segment_start -= 60              # only 1 minute elapsed
     widget._on_reset()
     assert widget._running is False
     assert widget._accumulated_s == 0.0
     assert widget._display_text() == "0:00:00"
+    assert widget._state.dataset.sessions == []   # too short: nothing logged
 
 
-# --- auto-logging on stop ---------------------------------------------------
+# --- pause on stop / auto-logging on reset -----------------------------------
 
 def _finish(widget, seconds):
-    """Simulate a run of exactly ``seconds`` and press Stop."""
+    """Simulate a run of exactly ``seconds``, press Stop, then Reset."""
     widget._on_start()
     widget._segment_start -= seconds          # rewind the monotonic anchor
+    widget._on_stop()                         # Stop now just pauses
+    widget._on_reset()                        # Reset ends + logs the run
+
+
+def test_stop_only_pauses_and_does_not_log(widget):
+    _run_then_stop = 2 * 3600 + 35 * 60 + 12  # well over the threshold
+    widget._on_start()
+    widget._segment_start -= _run_then_stop
     widget._on_stop()
+    assert widget._state.dataset.sessions == []     # nothing logged on Stop
+    assert widget._running is False
+    # reading is kept so the user can resume or reset-to-log later
+    assert widget._display_text() == "2:35:12"
 
 
-def test_stop_under_10_minutes_does_not_log(widget):
+def test_reset_under_10_minutes_does_not_log(widget):
     _finish(widget, 9 * 60 + 30)             # 9:30 — below threshold
     assert widget._state.dataset.sessions == []
-    # reading is kept so the user can resume
-    assert widget._display_text() == "0:09:30"
+    # Reset always returns the display to zero, logging or not
+    assert widget._display_text() == "0:00:00"
 
 
-def test_stop_exactly_10_minutes_logs_ten(widget):
+def test_reset_exactly_10_minutes_logs_ten(widget):
     _finish(widget, 10 * 60)                 # 10:00 counts as over 10 mins
     sessions = widget._state.dataset.sessions
     assert len(sessions) == 1
     assert sessions[0].duration_minutes == 10
 
 
-def test_stop_over_10_minutes_logs_rounded_down(widget):
+def test_reset_over_10_minutes_logs_rounded_down(widget):
     _finish(widget, 12 * 60 + 40)            # 12:40 -> 10 minutes
     sessions = widget._state.dataset.sessions
     assert len(sessions) == 1
@@ -160,7 +175,7 @@ def test_stop_over_10_minutes_logs_rounded_down(widget):
     assert widget._display_text() == "0:00:00"   # resets after logging
 
 
-def test_stop_2h35m12s_logs_two_hours_thirty(widget):
+def test_reset_2h35m12s_logs_two_hours_thirty(widget):
     _finish(widget, 2 * 3600 + 35 * 60 + 12)  # 2:35:12 -> 2 h 30 min
     sessions = widget._state.dataset.sessions
     assert len(sessions) == 1
@@ -168,20 +183,40 @@ def test_stop_2h35m12s_logs_two_hours_thirty(widget):
     assert sessions[0].source == "custom"
 
 
-def test_stop_multiple_segments_accumulate(widget):
+def test_reset_while_running_logs_open_segment(widget):
+    """Reset works mid-run: the still-open segment is banked and credited."""
+    widget._on_start()
+    widget._segment_start -= 45 * 60         # 45 min, never stopped
+    widget._on_reset()                       # Reset directly, while running
+    sessions = widget._state.dataset.sessions
+    assert len(sessions) == 1
+    assert sessions[0].duration_minutes == 40   # rounded down to 10-min step
+    assert widget._running is False
+    assert widget._display_text() == "0:00:00"
+
+
+def test_reset_after_multiple_segments_accumulates(widget):
     widget._on_start()
     widget._segment_start -= 6 * 60           # first segment: 6 min
-    widget._on_stop()                         # under threshold: kept
+    widget._on_stop()                         # paused: kept
     widget._on_start()
     widget._segment_start -= 7 * 60           # second segment: 7 min
-    widget._on_stop()                         # total 13 min -> logs 10
+    widget._on_stop()                         # total 13 min, still paused
+    assert widget._state.dataset.sessions == []   # Stop logs nothing
+    widget._on_reset()                        # Reset logs the whole run
     sessions = widget._state.dataset.sessions
     assert len(sessions) == 1
     assert sessions[0].duration_minutes == 10
     assert widget._display_text() == "0:00:00"
 
 
-def test_stop_message_dialog_shown(monkeypatch, widget):
+def test_double_reset_does_not_double_log(widget):
+    _finish(widget, 30 * 60)
+    widget._on_reset()                        # already at zero: no-op
+    assert len(widget._state.dataset.sessions) == 1
+
+
+def test_reset_message_dialog_shown(monkeypatch, widget):
     shown = {}
     monkeypatch.setattr(sw, "show_message",
                         lambda parent, title, msg: shown.update(

@@ -8,11 +8,13 @@ footer.  The widget has two modes:
 - Displays elapsed time as ``H:MM:SS``; defaults to ``0:00:00`` on open.
 - Start / Stop / Reset buttons drive a monotonic-clock-based tick loop so
   the display stays accurate even if Tk callbacks are delayed.
-- On **Stop**, if the elapsed time is over 10 minutes, the session is
+- On **Reset**, if the elapsed time is over 10 minutes, the session is
   logged automatically as a custom study session, rounded *down* to the
   nearest 10 minutes (e.g. 2:35:12 → 2 h 30 min), and the display resets
-  to zero.  Shorter stops keep the reading so it can be resumed.  This is
-  cheat-safe: real wall-clock time must actually pass while running.
+  to zero.  Stop merely pauses the run: its reading is kept so it can be
+  resumed or later reset-and-logged.  Shorter resets discard the reading
+  without logging anything.  This is cheat-safe: real wall-clock time must
+  actually pass while running.
 
 **Countdown mode** (study sessions started from the Study Tracker screen):
 
@@ -293,26 +295,33 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cancel_tick()
         self._display.configure(text=self._display_text())
         self._sync_buttons()
+        # Stop only pauses the run: the reading is kept so it can be
+        # resumed, or logged later by pressing Reset.
 
-        if self._accumulated_s >= AUTO_LOG_THRESHOLD_S - _EPS_S:
-            minutes = int(self._accumulated_s // 60) // ROUND_TO_MINUTES \
-                * ROUND_TO_MINUTES
-            self._accumulated_s = 0.0
-            self._display.configure(text=self._display_text())
-            # Rounded DOWN to whole 10-minute steps; over the threshold the
-            # rounded value is always >= 10 min, so it passes the normal
-            # custom-session validation and lands in today's study time.
-            result = self._app_state.log_custom_session(
-                hours=minutes // 60, minutes=minutes % 60)
-            top = self.winfo_toplevel()
-            if result.ok:
-                show_message(
-                    top, "Session logged",
-                    f"Your stopwatch run was rounded down to "
-                    f"{format_minutes(minutes)} and added to your study "
-                    "time.")
-            elif result.message:
-                show_message(top, "Couldn't log session", result.message)
+    def _log_stopped_run_if_long_enough(self) -> None:
+        """Credit a finished stopwatch run as a custom study session.
+
+        Called from **Reset** (the moment that ends a stopwatch run for
+        good).  Runs under the 10-minute threshold are simply discarded.
+        """
+        if self._accumulated_s < AUTO_LOG_THRESHOLD_S - _EPS_S:
+            return
+        minutes = int(self._accumulated_s // 60) // ROUND_TO_MINUTES \
+            * ROUND_TO_MINUTES
+        # Rounded DOWN to whole 10-minute steps; over the threshold the
+        # rounded value is always >= 10 min, so it passes the normal
+        # custom-session validation and lands in today's study time.
+        result = self._app_state.log_custom_session(
+            hours=minutes // 60, minutes=minutes % 60)
+        top = self.winfo_toplevel()
+        if result.ok:
+            show_message(
+                top, "Session logged",
+                f"Your stopwatch run was rounded down to "
+                f"{format_minutes(minutes)} and added to your study "
+                "time.")
+        elif result.message:
+            show_message(top, "Couldn't log session", result.message)
 
     def _on_reset(self) -> None:
         if self._mode == MODE_COUNTDOWN:
@@ -320,10 +329,14 @@ class StopwatchWidget(ctk.CTkFrame):
             # without granting anything.
             self.cancel_countdown()
             return
-        # Reset works whether running or not: cancel the tick loop, drop all
-        # accumulated time and return the display to 0:00:00.
+        # Reset works whether running or not: bank any open segment, credit
+        # the run if it cleared the threshold, then drop all accumulated
+        # time and return the display to 0:00:00.
+        if self._running and self._segment_start is not None:
+            self._accumulated_s += time.monotonic() - self._segment_start
+            self._segment_start = None
+        self._log_stopped_run_if_long_enough()
         self._running = False
-        self._segment_start = None
         self._accumulated_s = 0.0
         self._cancel_tick()
         self._display.configure(text=self._display_text())
