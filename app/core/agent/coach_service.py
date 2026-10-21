@@ -59,7 +59,19 @@ class CoachService:
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
         return self._store(s, q, 'revision', text.strip())
 
-    def prepare_turn(self, session_id, kind, question_id=None):
+    def submit_message(self, session_id, text):
+        """Save a conversational message, including topic changes and retries."""
+        s, q = self._find(session_id)
+        if session_id in self.pending or not q or q.status == 'closed':
+            return ActionResult(False, 'Start a question first, or wait for the coach.')
+        if not text.strip():
+            return ActionResult(False, 'Write a message first.')
+        if q.first_answer is None:
+            return self.submit_answer(session_id, text)
+        q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
+        return self._store(s, q, 'revision', text.strip())
+
+    def prepare_turn(self, session_id, kind, question_id=None, conversational=False):
         s, q = self._find(session_id, question_id)
         if not s:
             return ActionResult(False, 'Choose a coaching session first.')
@@ -90,6 +102,7 @@ class CoachService:
             return ActionResult(False, str(exc))
         flag = threading.Event()
         job = {'session_id': s.id, 'kind': kind, 'pack': pack,
+               'conversational': conversational,
                'question': copy.deepcopy(q), 'counter': len(s.questions),
                'history': [{'role': t.role, 'kind': t.kind, 'text': t.text}
                            for t in s.turns[-10:]], 'cancel': flag,
@@ -131,7 +144,7 @@ class CoachService:
             return ActionResult(False, 'Your sources changed during this turn. Please try again.')
         quotes, failures = validate_quotes(reply.quotes, PageIndex(s.sources, notes, docs), job['pack'])
         kind = job['kind']
-        if kind == 'feedback':
+        if kind == 'feedback' and not job.get('conversational'):
             try:
                 confidence = resolve_feedback_confidence(q, reply)
             except ProviderError as exc:
@@ -152,10 +165,11 @@ class CoachService:
         elif kind == 'feedback':
             # Confidence is no longer self-reported; the coach rates how well
             # the question was answered when it delivers the feedback.
-            q.confidence = confidence
-            q.confidence_at = datetime.now()
+            if not job.get('conversational'):
+                q.confidence = confidence
+                q.confidence_at = datetime.now()
             q.feedback_given = True
-        if kind == 'feedback':
+        if kind == 'feedback' and not job.get('conversational'):
             self._store(s, q, 'confidence', f'Coach confidence rating: {q.confidence}',
                         confidence=q.confidence, persist=False)
         mode = 'live'

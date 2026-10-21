@@ -20,20 +20,26 @@ def parse_reply(raw, expected_kind=None):
         raise ValueError('The AI reply was not readable.')
     kind, text = value.get('kind'), value.get('text')
     quotes, meta = value.get('quotes', []), value.get('meta', {})
-    if (kind not in ('question', 'hint', 'feedback', 'followup')
-            or (expected_kind and kind != expected_kind)
-            or not isinstance(text, str) or not text.strip()
-            or len(text) > 2000 or not isinstance(quotes, list)
-            or len(quotes) > 5 or not isinstance(meta, dict)):
-        raise ValueError('The AI reply did not match the requested format.')
+    if kind not in ('question', 'hint', 'feedback', 'followup') or (expected_kind and kind != expected_kind):
+        raise ValueError(f'kind must equal {expected_kind!r}.' if expected_kind
+                         else 'kind must be question, hint, feedback or followup.')
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError('text must be a non-empty string.')
+    if len(text) > 2000:
+        raise ValueError('text must contain at most 2000 characters.')
+    if not isinstance(quotes, list) or len(quotes) > 5:
+        raise ValueError('quotes must be a list containing at most 5 citations.')
+    if not isinstance(meta, dict):
+        raise ValueError('meta must be a JSON object.')
     if kind == 'feedback' and meta.get('confidence') not in CONFIDENCE_LEVELS:
         raise ValueError('The AI feedback must include a valid confidence rating.')
     parsed = []
-    for q in quotes:
+    for i, q in enumerate(quotes):
         if (not isinstance(q, dict) or not isinstance(q.get('source_id'), str)
                 or type(q.get('page')) is not int or q['page'] < 1
                 or not isinstance(q.get('quote'), str) or not q['quote'].strip()):
-            raise ValueError('The AI citation was not readable.')
+            raise ValueError(f'quotes[{i}] must contain string source_id, positive integer page '
+                             'and non-empty string quote.')
         parsed.append(Quote(q['source_id'], q['page'], q['quote']))
     return CoachReply(kind, text.strip(), parsed, meta)
 
