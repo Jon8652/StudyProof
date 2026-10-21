@@ -27,6 +27,7 @@ from app.core.models import (
     Settings,
     SourceRef,
     TURN_KINDS,
+    WeakTopic,
 )
 from app.persistence.schema import CorruptFileError, FutureSchemaError
 from app.utils.date_utils import parse_dt
@@ -179,10 +180,34 @@ def validate_payload(payload: Any) -> tuple[Dataset, list[str]]:
         notes=notes,
         documents=documents,
         coach_sessions=coach_sessions,
+        weak_topics=_parse_weak_topics(payload.get("weak_topics", []), warnings),
         created_at=created_at or datetime.now(),
         updated_at=updated_at,
     )
     return dataset, warnings
+
+
+def _parse_weak_topics(records, warnings):
+    if not isinstance(records, list):
+        warnings.append('The weak topic list was damaged and could not be loaded.')
+        return []
+    topics, seen = [], set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        source = _parse_source_ref(record.get('source'))
+        required = ('id', 'topic', 'question', 'session_id', 'question_id')
+        if (not source or any(not isinstance(record.get(k), str) or not record[k].strip()
+                              for k in required)
+                or type(record.get('score')) is not int or not 0 <= record['score'] <= 100
+                or record['id'] in seen):
+            continue
+        seen.add(record['id'])
+        topics.append(WeakTopic(
+            record['id'], source, record['topic'][:160], record['question'][:4000],
+            record['session_id'], record['question_id'], record['score'],
+            _parse_optional_dt(record.get('updated_at')) or datetime.now()))
+    return topics
 
 
 def _parse_optional_dt(value: Any) -> datetime | None:

@@ -36,6 +36,12 @@ class ScriptedProvider:
         return CoachReply(kind, 'Confidence: high. Explain how sunlight supplies energy.',
                           quotes, {'confidence': self.confidence} if kind == 'feedback' else {})
 
+    def assess_answer(self, context):
+        from app.core.agent.schema import AnswerAssessment
+        span = context['pack'].spans[0]
+        return AnswerAssessment(span.source_id, 'Light and energy', context['question'].prompt,
+                                {'low': 30, 'medium': 75, 'high': 95}[self.confidence])
+
 
 @pytest.fixture
 def scripted_provider():

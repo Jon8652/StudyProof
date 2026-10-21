@@ -111,6 +111,7 @@ def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
         screen.send()
         pump(app, lambda: not screen.busy)
         assert session.questions[0].revisions
+        pump(app, lambda: not screen.service.assessments)
         assert state.get_review_metrics().weak_sources
         screen.request('followup')
         pump(app, lambda: not screen.busy)
@@ -168,4 +169,53 @@ def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
         release.set()
         for s in app.screens.values():
             if hasattr(s, 'shutdown'): s.shutdown()
+        app.destroy()
+
+
+def test_revise_weak_topics_picker_and_hidden_background_score(monkeypatch, scripted_provider):
+    from app.core.agent.schema import CoachReply
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    class RevisionProvider(scripted_provider):
+        confidence = 'low'
+        def generate(self, context):
+            return CoachReply(context['kind'], 'How does chlorophyll help photosynthesis?'
+                              if context['kind'] == 'question' else 'Think about light energy.')
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.withdraw()
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.service.live_factory = RevisionProvider
+        session = screen.service.start_session([('note', note.id)]).value
+        screen.session_id = session.id
+        screen.request('question')
+        pump(app, lambda: not screen.busy)
+        screen.composer.insert('1.0', 'It eats sunlight.')
+        screen.send()
+        pump(app, lambda: not screen.busy and not screen.service.assessments)
+        weak = state.dataset.weak_topics[0]
+        # Select through the actual dialog while avoiding an interactive wait.
+        monkeypatch.setattr(screen, 'wait_window', lambda dialog: dialog.choose(weak.id))
+        screen.revise_weak_topics()
+        revision = state.coach_session_by_id(screen.session_id)
+        assert revision.id != session.id
+        assert weak.question in revision.turns[0].text
+        assert screen.confidence_note.cget('text') == ''
+        RevisionProvider.confidence = 'high'
+        screen.composer.insert('1.0', 'Chlorophyll absorbs the light needed for photosynthesis.')
+        screen.send()
+        pump(app, lambda: not screen.busy and not screen.service.assessments)
+        assert not state.dataset.weak_topics
+        assert all(t.confidence is None for t in revision.turns)
+        assert 'confidence rating' not in screen.confidence_note.cget('text').lower()
+    finally:
+        for screen in app.screens.values():
+            if hasattr(screen, 'shutdown'):
+                screen.shutdown()
         app.destroy()
