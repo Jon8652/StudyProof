@@ -161,6 +161,9 @@ class HomeScreen(BaseScreen):
 
         self.content.bind("<Configure>", _relayout_presets)
 
+        # NOTE: keep the widget reference separate from .pack(...) — pack()
+        # returns None, and refresh() needs the button object to toggle its
+        # state while a countdown is running.
         self.custom_button = ctk.CTkButton(
             self.content,
             text="+  Start custom session",
@@ -171,7 +174,8 @@ class HomeScreen(BaseScreen):
             text_color=NEUTRAL_TEXT,
             font=ctk.CTkFont(size=14, weight="bold"),
             command=self._open_custom_dialog,
-        ).pack(fill="x", pady=(2, 0))
+        )
+        self.custom_button.pack(fill="x", pady=(2, 0))
 
         self.empty_hint = ctk.CTkLabel(
             self.content,
@@ -274,4 +278,6 @@ class HomeScreen(BaseScreen):
             busy = widget.countdown_active
         for b in self.preset_buttons:
             b.configure(state="disabled" if busy else "normal")
-        self.custom_button.configure(state="disabled" if busy else "normal")
+        if self.custom_button is not None:
+            self.custom_button.configure(
+                state="disabled" if busy else "normal")
