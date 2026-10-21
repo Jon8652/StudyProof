@@ -213,6 +213,15 @@ class StopwatchWidget(ctk.CTkFrame):
 
     # ------------------------------------------------------------- tick loop
 
+    # Long countdowns (the 1 h / 2 h presets) must not park a single
+    # ``after(3_600_000, finish)`` job: some Tk event loops — notably when the
+    # interpreter is only serviced intermittently by ``update()`` polling, as
+    # in automated test harnesses — never dispatch such far-future timers.
+    # The finish leg is therefore split into short hops that re-arm while they
+    # run; each hop also refreshes the display, so the countdown stays alive
+    # even if the separate 200 ms tick loop is starved.
+    _CD_MAX_HOP_MS = 5_000
+
     def _schedule_tick(self) -> None:
         self._cancel_tick()
         self._tick_job = self.after(200, self._tick)
@@ -226,7 +235,8 @@ class StopwatchWidget(ctk.CTkFrame):
             self._tick_job = None
 
     def _schedule_cd_finish(self) -> None:
-        """Arm a deferred finish job at the exact moment remaining hits 0.
+        """Arm a deferred finish check at (or before) the moment remaining
+        hits 0.
 
         The tick loop also watches for zero, but ``after`` callbacks are
         *not* dispatched while a modal dialog (grab_set + wait_window) is
@@ -234,10 +244,15 @@ class StopwatchWidget(ctk.CTkFrame):
         Scheduling the finish explicitly guarantees completion always fires
         (recording the session and re-enabling the start buttons), even if
         the countdown "ran out" behind an open dialog.
+
+        The wait is chopped into hops of at most ``_CD_MAX_HOP_MS`` which
+        re-arm from inside the callback chain, so a multi-hour countdown is
+        never represented by one long-future timer that could be dropped.
         """
         self._cancel_cd_finish()
         delay_ms = max(0, int(round(self._remaining_s() * 1000)))
-        self._cd_finish_job = self.after(delay_ms, self._on_cd_finish_due)
+        self._cd_finish_job = self.after(min(delay_ms, self._CD_MAX_HOP_MS),
+                                         self._on_cd_finish_due)
 
     def _cancel_cd_finish(self) -> None:
         if self._cd_finish_job is not None:
@@ -253,6 +268,15 @@ class StopwatchWidget(ctk.CTkFrame):
             return                      # cancelled/paused — nothing to do
         if self._remaining_s() <= 0:
             self._finish_countdown()
+            return
+        # Hopped close to zero but not there yet: keep the chain alive and
+        # refresh the display on the way (belt-and-braces against a starved
+        # tick loop).
+        try:
+            self._display.configure(text=self._display_text())
+        except Exception:
+            pass
+        self._schedule_cd_finish()
 
     def _tick(self) -> None:
         if self._mode == MODE_COUNTDOWN:

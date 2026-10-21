@@ -74,7 +74,22 @@ class CustomSessionDialog(ctk.CTkToplevel):
             self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         except Exception:
             pass
-        self.hours_entry.focus_force()
+        # Focus the hours entry only while this dialog still exists.  When
+        # ``_submit`` succeeds it calls ``on_start`` *before* destroying us,
+        # and that callback can synchronously pop a "Session started" message
+        # box; Tk then processes pending events, and any queued interaction on
+        # this (already torn-down) dialog — e.g. customtkinter re-focusing its
+        # text entry after a redraw — would otherwise raise the console-only
+        # ``bad window path name`` TclError.  Guarding with ``winfo_exists``
+        # keeps the terminal clean without changing visible behaviour.
+        self._focus_hours_if_alive()
+
+    def _focus_hours_if_alive(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.hours_entry.focus_force()
+        except ctk.TclError:
+            pass  # dialog vanished mid-call — nothing to focus
 
     def _submit(self) -> None:
         total, error = Session.validate_custom_inputs(
