@@ -75,17 +75,11 @@ class CustomSessionDialog(SafeDialog):
             self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         except Exception:
             pass
-        # Focus the hours entry only while this dialog still exists.  When
-        # ``_submit`` succeeds it calls ``on_start`` *before* destroying us,
-        # and that callback can synchronously pop a "Session started" message
-        # box; Tk then processes pending events, and any queued interaction on
-        # this (already torn-down) dialog — e.g. customtkinter re-focusing its
-        # text entry after a redraw — would otherwise raise the console-only
-        # ``bad window path name`` TclError.  Guarding with ``winfo_exists``
-        # keeps the terminal clean without changing visible behaviour.
-        self._focus_hours_if_alive()
+        self.after_idle(self._focus_hours_if_alive)
 
     def _focus_hours_if_alive(self) -> None:
+        # Deferred via ``after_idle`` so this never runs in the middle of a
+        # button click; still guarded because the dialog may be gone by then.
         try:
             if self.winfo_exists():
                 self.hours_entry.focus_force()
@@ -93,11 +87,26 @@ class CustomSessionDialog(SafeDialog):
             pass  # dialog vanished mid-call — nothing to focus
 
     def _submit(self) -> None:
-        total, error = Session.validate_custom_inputs(
-            self.hours_entry.get(), self.minutes_entry.get()
-        )
+        try:
+            total, error = Session.validate_custom_inputs(
+                self.hours_entry.get(), self.minutes_entry.get()
+            )
+        except ctk.TclError:
+            return  # widgets vanished mid-call
         if error is not None:
             self.message_label.configure(text=error)
             return
-        self._on_start(total)
+        # Destroy FIRST, then hand off.  ``on_start`` pops a modal "Session
+        # started" message box whose CTkToplevel constructor installs an
+        # app-wide ``bind_all("<Button-1>")`` focus handler; Tk can replay the
+        # in-flight button press through that brand-new binding and call
+        # ``focus_set()`` on this dialog's still-alive internal label before
+        # we get a chance to tear it down ("bad window path name" traceback).
+        # Closing us up front removes those widgets from the tree, so the
+        # library's deferred focus simply finds nothing to act on.
+        try:
+            self.grab_release()
+        except ctk.TclError:
+            pass
         self.destroy()
+        self._on_start(total)
