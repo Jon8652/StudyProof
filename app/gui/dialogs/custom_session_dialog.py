@@ -1,8 +1,9 @@
 """Custom session modal dialog (Part F).
 
 Separate hours/minutes fields with friendly inline validation (FR-2..FR-5,
-ERR-1..ERR-4). On a valid submit it calls ``on_log(total_minutes)`` which is
-expected to route through AppState.log_custom_session.
+ERR-1..ERR-4). On a valid submit it calls ``on_start(total_minutes)`` which
+starts a real-time study countdown — nothing is logged until the countdown
+completes (anti-cheat redesign).
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from app.core.models import Session
 
 
 class CustomSessionDialog(ctk.CTkToplevel):
-    def __init__(self, master, on_log):
+    def __init__(self, master, on_start):
         super().__init__(master)
-        self._on_log = on_log
+        self._on_start = on_start
 
-        self.title("Log custom session")
+        self.title("Start custom session")
         self.transient(master)
         self.resizable(False, False)
 
@@ -25,7 +26,7 @@ class CustomSessionDialog(ctk.CTkToplevel):
         frame.pack(fill="both", expand=True, padx=16, pady=16)
 
         ctk.CTkLabel(
-            frame, text="Log a custom session",
+            frame, text="Start a custom session",
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(pady=(0, 4))
         ctk.CTkLabel(
@@ -59,7 +60,7 @@ class CustomSessionDialog(ctk.CTkToplevel):
         ctk.CTkButton(buttons, text="Cancel", width=100, fg_color="gray30",
                       hover_color="gray25", command=self.destroy).pack(
             side="left", padx=6)
-        ctk.CTkButton(buttons, text="Log session", width=120,
+        ctk.CTkButton(buttons, text="Start session", width=120,
                       command=self._submit).pack(side="left", padx=6)
 
         self.hours_entry.bind("<Return>", lambda _e: self._submit())
@@ -82,5 +83,5 @@ class CustomSessionDialog(ctk.CTkToplevel):
         if error is not None:
             self.message_label.configure(text=error)
             return
-        self._on_log(total)
+        self._on_start(total)
         self.destroy()

@@ -12,7 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from app.constants import SCHEMA_VERSION, SOURCE_CUSTOM, SOURCE_PRESET
+from app.constants import SCHEMA_VERSION, SOURCE_CUSTOM, SOURCE_PRESET, SOURCE_TIMER
 from app.core.models import (
     CONFIDENCE_LEVELS,
     CoachSession,
@@ -249,7 +249,7 @@ def _parse_session(record: Any) -> Session | None:
         created = end
 
     source = record.get("source")
-    if source not in (SOURCE_PRESET, SOURCE_CUSTOM):
+    if source not in (SOURCE_PRESET, SOURCE_CUSTOM, SOURCE_TIMER):
         source = SOURCE_PRESET
 
     try:

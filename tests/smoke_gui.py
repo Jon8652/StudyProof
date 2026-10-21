@@ -53,35 +53,97 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             check(f"navigate:{key}", False, repr(exc))
 
-    # 2. Log preset sessions through AppState -> Home updates with medal.
+    # 2. Study Tracker screen starts countdowns (no instant logging).
     state = app._app_state
-    state.log_preset_session(30)
-    state.log_preset_session(60)
-    state.log_preset_session(120)
+    home = app._get_screen("home")
+    app.show_screen("home")
+    app.update()
+
+    # Spamming the start buttons must NOT grant XP/time — each click only
+    # tries to start a real-time countdown; while one is active the rest
+    # are refused and the widget's buttons are disabled.
+    n_before_spam = len(state.dataset.sessions)
+    home._start_preset(60)
+    app.update()
+    home._start_preset(60)   # refused: countdown already running
+    home._start_preset(120)  # refused too
+    app.update()
+    check("spam-start-grants-nothing",
+          len(state.dataset.sessions) == n_before_spam,
+          f"(sessions={len(state.dataset.sessions)})")
+    sw_widget = app.stopwatch
+    check("countdown-active-after-start", sw_widget.countdown_active)
+    check("countdown-buttons-disabled",
+          str(home.preset_buttons[0].cget("state")) == "disabled"
+          and str(home.custom_button.cget("state")) == "disabled")
+
+    # Cancelling an unfinished countdown grants nothing.
+    sw_widget.cancel_countdown()
+    app.update()
+    check("cancel-grants-nothing",
+          len(state.dataset.sessions) == n_before_spam
+          and not sw_widget.countdown_active)
+
+    # Completing a countdown records exactly one timer session with the
+    # full planned duration (XP/medals derive from it).
+    home._start_preset(60)
+    app.update()
+    sw_widget._cd_segment_start -= 60 * 60      # simulate the hour passing
+    sw_widget._tick()                            # tick sees remaining <= 0
     app.update()
     agg = state.get_today_summary()
-    check("preset-logging-xp-medal",
-          agg is not None and agg.total_xp >= 90 and agg.medal is not None,
+    timer_sessions = [s for s in state.dataset.sessions if s.source == "timer"]
+    check("countdown-completion-records-session",
+          len(timer_sessions) == 1
+          and timer_sessions[0].duration_minutes == 60,
+          f"(timer={len(timer_sessions)})")
+    check("completion-xp-medal",
+          agg is not None and agg.total_xp >= 60 and agg.medal is not None,
           f"(xp={agg.total_xp if agg else None}, medal={agg.medal if agg else None})")
+    check("widget-reverts-to-stopwatch",
+          not sw_widget.countdown_active
+          and sw_widget._display_text() == "0:00:00")
 
-    # 3. Custom session dialog: valid submit routes through log_custom.
-    dlg = CustomSessionDialog(app, on_log=lambda total: state.log_custom_session(total // 60, total % 60))
+    # Pause freezes the remaining time (paused seconds never count).
+    home._start_preset(60)
+    app.update()
+    rem0 = sw_widget._remaining_s()
+    sw_widget._on_pause_toggle()                 # pause
+    sw_widget._cd_segment_start = None
+    frozen = sw_widget._remaining_s()
+    import time as _time
+    sw_widget._cd_remaining_s = frozen           # (pause banks the leg)
+    check("pause-freezes-remaining", abs(frozen - rem0) < 1.0,
+          f"(frozen={frozen:.1f}, start={rem0:.1f})")
+    sw_widget.cancel_countdown()
+    app.update()
+
+    # 3. Custom session dialog: valid submit starts a countdown.
+    dlg = CustomSessionDialog(app, on_start=lambda total: home._start_countdown(total))
     dlg.hours_entry.delete(0, "end"); dlg.hours_entry.insert(0, "1")
     dlg.minutes_entry.delete(0, "end"); dlg.minutes_entry.insert(0, "45")
     before = len(state.dataset.sessions)
     dlg._submit()
     app.update()
-    check("custom-dialog-submit", len(state.dataset.sessions) == before + 1,
-          f"(sessions={len(state.dataset.sessions)})")
+    check("custom-dialog-starts-countdown",
+          len(state.dataset.sessions) == before
+          and sw_widget.countdown_active
+          and abs(sw_widget._cd_total_s - 105 * 60) < 1,
+          f"(total={sw_widget._cd_total_s})")
+    # complete it so later checks see stable data
+    sw_widget._cd_segment_start -= 105 * 60
+    sw_widget._tick()
+    app.update()
 
-    # 4. Invalid custom input shows inline error, does not crash/log.
-    dlg2 = CustomSessionDialog(app, on_log=lambda total: state.log_custom_session(total // 60, total % 60))
+    # 4. Invalid custom input shows inline error, does not crash/start.
+    dlg2 = CustomSessionDialog(app, on_start=lambda total: home._start_countdown(total))
     dlg2.hours_entry.insert(0, "99")
     n_before = len(state.dataset.sessions)
     dlg2._submit()
     app.update()
     check("custom-dialog-invalid-rejected",
           len(state.dataset.sessions) == n_before
+          and not sw_widget.countdown_active
           and dlg2.message_label.cget("text") != "",
           f"(msg={dlg2.message_label.cget('text')!r})")
     dlg2.destroy()
@@ -121,7 +183,7 @@ def main() -> int:
     state.autosave()
     outcome = repository.validate_file_for_manual_load(paths.get_default_save_path())
     ds, _warnings = outcome.dataset, outcome.warnings
-    check("close-flush-roundtrip", len(ds.sessions) == 4,
+    check("close-flush-roundtrip", len(ds.sessions) == 2,
           f"(persisted={len(ds.sessions)})")
     check("assets-load-no-crash", all(
         paths.get_asset_path(f).exists() for f in

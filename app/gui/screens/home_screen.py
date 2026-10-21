@@ -1,10 +1,15 @@
-"""Home / Log Study screen (Part F).
+"""Home / Study Tracker screen (Part F).
 
 - Today summary card: total study time, XP earned, current medal status,
   and a progress bar toward the next medal.
-- One-tap preset buttons: 30 minutes / 1 hour / 2 hours (FR-1).
-- Custom session modal (FR-2..FR-5) with friendly validation.
-- Summary refreshes immediately after any successful log (listener-driven).
+- Quick-start preset buttons: 1 Hour / 2 Hours.  These no longer log time
+  instantly (anti-cheat); they start a real-time countdown on the sidebar
+  stopwatch widget, and the session is only recorded when it hits zero.
+- Custom session modal with friendly validation — also starts a countdown.
+- Start buttons are disabled while a countdown is already running so
+  sessions cannot be stacked or spammed for free XP.
+- Summary refreshes immediately after any successful recording
+  (listener-driven).
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import customtkinter as ctk
 from app.constants import PRESET_DURATIONS_MINUTES, PRESET_LABELS
 from app.core.medals import medal_label
 from app.gui.dialogs.custom_session_dialog import CustomSessionDialog
-from app.gui.dialogs.message_dialog import show_error
+from app.gui.dialogs.message_dialog import show_error, show_message
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.theme import (
     ACCENT,
@@ -36,7 +41,7 @@ BRONZE_TARGET_MINUTES = 120
 
 class HomeScreen(BaseScreen):
     def __init__(self, master, state):
-        super().__init__(master, state, title="Log Study")
+        super().__init__(master, state, title="Study Tracker")
 
         # --- Today summary panel -------------------------------------------
         today_card = card(self.content, corner_radius=16)
@@ -99,7 +104,7 @@ class HomeScreen(BaseScreen):
 
         # --- Preset buttons ---------------------------------------------------
         ctk.CTkLabel(
-            self.content, text="Quick log", font=ctk.CTkFont(size=15, weight="bold"),
+            self.content, text="Quick start", font=ctk.CTkFont(size=15, weight="bold"),
             anchor="w",
         ).pack(fill="x", pady=(0, 6))
 
@@ -133,10 +138,11 @@ class HomeScreen(BaseScreen):
                 height=PRESET_H,
                 corner_radius=12,
                 font=ctk.CTkFont(size=15, weight="bold"),
-                command=lambda m=minutes: self._log_preset(m),
+                command=lambda m=minutes: self._start_preset(m),
             )
             b.grid(row=0, column=0, sticky="nsew")
             preset_buttons.append(b)
+        self.preset_buttons = preset_buttons
 
         def _relayout_presets(_event=None):
             w = self.content.winfo_width()
@@ -155,9 +161,9 @@ class HomeScreen(BaseScreen):
 
         self.content.bind("<Configure>", _relayout_presets)
 
-        ctk.CTkButton(
+        self.custom_button = ctk.CTkButton(
             self.content,
-            text="+  Log custom session",
+            text="+  Start custom session",
             height=44,
             corner_radius=12,
             fg_color=NEUTRAL,
@@ -169,8 +175,8 @@ class HomeScreen(BaseScreen):
 
         self.empty_hint = ctk.CTkLabel(
             self.content,
-            text="Nothing logged today yet. Tap a button above to log your "
-                 "first study session!",
+            text="Nothing tracked today yet. Start a session above to earn "
+                 "study time!",
             font=ctk.CTkFont(size=13),
             text_color=MUTED_TEXT,
             wraplength=520,
@@ -181,20 +187,43 @@ class HomeScreen(BaseScreen):
 
     # ------------------------------------------------------------------------
 
-    def _log_preset(self, minutes: int) -> None:
-        result = self.state.log_preset_session(minutes, source="preset")
-        if not result.ok:
-            show_error(self, result.message or "Could not log that session.")
+    # -- countdown wiring ------------------------------------------------------
+    # The shared StopwatchWidget (built by MainWindow) acts as the study
+    # countdown; this screen only asks it to start/stop and mirrors the
+    # "one active session" rule onto its own buttons.
+
+    @property
+    def _stopwatch(self):
+        top = self.winfo_toplevel()
+        return getattr(top, "stopwatch", None)
+
+    def _start_countdown(self, total_minutes: int) -> None:
+        """Start a real-time countdown; nothing is logged until it completes."""
+        widget = self._stopwatch
+        if widget is None:                       # headless/test fallback
+            result = self.state.record_timer_session(total_minutes)
+            if not result.ok:
+                show_error(self, result.message
+                           or "Could not start that session.")
+            return
+        if not widget.start_countdown(total_minutes):
+            show_message(
+                self.winfo_toplevel(), "Session already running",
+                "Finish or cancel the current study session before "
+                "starting a new one.")
+            return
+        show_message(
+            self.winfo_toplevel(), "Session started",
+            f"Your {format_minutes(total_minutes)} study countdown is "
+            "running in the sidebar. It will be recorded automatically "
+            "when it reaches zero \u2014 pause it if you step away.")
+        self.refresh()
+
+    def _start_preset(self, minutes: int) -> None:
+        self._start_countdown(minutes)
 
     def _open_custom_dialog(self) -> None:
-        CustomSessionDialog(self.winfo_toplevel(), self._log_custom)
-
-    def _log_custom(self, total_minutes: int) -> None:
-        result = self.state.log_custom_session(
-            total_minutes // 60, total_minutes % 60
-        )
-        if not result.ok:
-            show_error(self, result.message or "Could not log that session.")
+        CustomSessionDialog(self.winfo_toplevel(), self._start_countdown)
 
     def refresh(self) -> None:
         aggregate = self.state.get_today_summary()
@@ -236,3 +265,13 @@ class HomeScreen(BaseScreen):
             self.empty_hint.pack(fill="x", pady=(12, 0))
         else:
             self.empty_hint.pack_forget()
+
+        # Anti-cheat: while a countdown exists, starting another session is
+        # blocked at the UI level too (the widget itself also refuses).
+        busy = False
+        widget = self._stopwatch
+        if widget is not None:
+            busy = widget.countdown_active
+        for b in self.preset_buttons:
+            b.configure(state="disabled" if busy else "normal")
+        self.custom_button.configure(state="disabled" if busy else "normal")

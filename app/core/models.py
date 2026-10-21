@@ -38,7 +38,7 @@ class Session:
     end_local: datetime
     duration_minutes: int
     created_at_local: datetime
-    source: str = SOURCE_PRESET  # "preset" or "custom"
+    source: str = SOURCE_PRESET  # "preset", "custom" or "timer"
 
     # -- construction helpers ------------------------------------------------
 
