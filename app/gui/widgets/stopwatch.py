@@ -1,7 +1,9 @@
 """Sidebar stopwatch widget (compact digital timer).
 
 Sits in the left contents pane between the nav buttons and the version
-footer.  Behaviour:
+footer.  The widget has two modes:
+
+**Stopwatch mode** (the default, unchanged behaviour):
 
 - Displays elapsed time as ``H:MM:SS``; defaults to ``0:00:00`` on open.
 - Start / Stop / Reset buttons drive a monotonic-clock-based tick loop so
@@ -9,7 +11,20 @@ footer.  Behaviour:
 - On **Stop**, if the elapsed time is over 10 minutes, the session is
   logged automatically as a custom study session, rounded *down* to the
   nearest 10 minutes (e.g. 2:35:12 → 2 h 30 min), and the display resets
-  to zero.  Shorter stops keep the reading so it can be resumed.
+  to zero.  Shorter stops keep the reading so it can be resumed.  This is
+  cheat-safe: real wall-clock time must actually pass while running.
+
+**Countdown mode** (study sessions started from the Study Tracker screen):
+
+- ``start_countdown(minutes)`` switches the widget into a *decreasing*
+  timer showing the remaining time.  No XP/time is granted at start —
+  only when the countdown genuinely reaches ``0:00:00`` does the widget
+  call ``AppState.record_timer_session()`` for the full planned duration.
+- The only user control is **Pause/Resume**: pausing freezes the
+  remaining time (paused time never counts toward completion).  Cancelling
+  abandons the session and grants nothing.
+- When the session finishes (or is cancelled) the widget returns to
+  normal stopwatch mode with the display reset to ``0:00:00``.
 - Colours come from the shared theme tokens, so the widget reads clearly
   in both light and dark appearance modes.
 """
@@ -45,10 +60,20 @@ AUTO_LOG_THRESHOLD_S = 10 * 60
 # …and the logged duration is rounded DOWN to whole multiples of this.
 ROUND_TO_MINUTES = 10
 
+# Widget operating modes.
+MODE_STOPWATCH = "stopwatch"
+MODE_COUNTDOWN = "countdown"
+
 
 def format_stopwatch(elapsed_s: float) -> str:
-    """Return ``H:MM:SS`` for an elapsed-second count (e.g. ``2:35:12``)."""
-    total = max(0, int(elapsed_s))
+    """Return ``H:MM:SS`` for an elapsed-second count (e.g. ``2:35:12``).
+
+    Rounds to the nearest whole second so a freshly-started 1-hour
+    countdown displays ``1:00:00`` rather than ``0:59:59`` from the first
+    microsecond of drift; a running stopwatch never loses its final
+    partial second either.
+    """
+    total = max(0, int(round(elapsed_s)))
     hours, rem = divmod(total, 3600)
     minutes, seconds = divmod(rem, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}"
@@ -60,16 +85,25 @@ class StopwatchWidget(ctk.CTkFrame):
                          border_width=1, border_color=BORDER)
         self._app_state = app_state
 
+        # --- stopwatch-mode state ------------------------------------------
         self._running = False
         self._accumulated_s = 0.0     # completed running segments
         self._segment_start: float | None = None  # monotonic ts of current run
         self._tick_job: str | None = None
 
-        ctk.CTkLabel(
+        # --- countdown-mode state -------------------------------------------
+        self._mode = MODE_STOPWATCH
+        self._cd_total_s = 0.0            # planned length in seconds
+        self._cd_remaining_s = 0.0        # remaining time (authoritative)
+        self._cd_running = False          # counting down right now?
+        self._cd_segment_start: float | None = None  # anchor of active segment
+
+        self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=MUTED_TEXT,
-        ).pack(pady=(9, 1))
+        )
+        self._header.pack(pady=(9, 1))
 
         self._display = ctk.CTkLabel(
             self, text=self._display_text(),
@@ -79,7 +113,7 @@ class StopwatchWidget(ctk.CTkFrame):
         self._display.pack(pady=(0, 4))
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(pady=(0, 9))
+        btn_row.pack(pady=(0, 2))
 
         self._start_btn = ctk.CTkButton(
             btn_row, text="Start", width=52, height=26, corner_radius=8,
@@ -106,6 +140,25 @@ class StopwatchWidget(ctk.CTkFrame):
         )
         self._reset_btn.pack(side="left", padx=3)
 
+        # Countdown-only controls (hidden while in stopwatch mode).
+        cd_row = ctk.CTkFrame(self, fg_color="transparent")
+        cd_row.pack(pady=(0, 9))
+        self._cd_btn_row = cd_row
+
+        self._pause_btn = ctk.CTkButton(
+            cd_row, text="Pause", width=70, height=26, corner_radius=8,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ACCENT_TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_pause_toggle,
+        )
+
+        self._cancel_btn = ctk.CTkButton(
+            cd_row, text="Cancel", width=70, height=26, corner_radius=8,
+            fg_color=DANGER, hover_color=DANGER_HOVER, text_color="white",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.cancel_countdown,
+        )
+
         self._sync_buttons()
 
     # ------------------------------------------------------------------ state
@@ -116,7 +169,21 @@ class StopwatchWidget(ctk.CTkFrame):
             return self._accumulated_s + (time.monotonic() - self._segment_start)
         return self._accumulated_s
 
+    @property
+    def countdown_active(self) -> bool:
+        """True while a study-session countdown exists (running or paused)."""
+        return self._mode == MODE_COUNTDOWN
+
+    def _remaining_s(self) -> float:
+        """Remaining countdown seconds, including any currently-running leg."""
+        if self._cd_running and self._cd_segment_start is not None:
+            return self._cd_remaining_s - (time.monotonic()
+                                           - self._cd_segment_start)
+        return self._cd_remaining_s
+
     def _display_text(self) -> str:
+        if self._mode == MODE_COUNTDOWN:
+            return format_stopwatch(self._remaining_s())
         return format_stopwatch(self._elapsed_s)
 
     # ------------------------------------------------------------- tick loop
@@ -134,14 +201,26 @@ class StopwatchWidget(ctk.CTkFrame):
             self._tick_job = None
 
     def _tick(self) -> None:
+        if self._mode == MODE_COUNTDOWN:
+            if not self._cd_running:
+                return
+            if self._remaining_s() <= 0:
+                self._finish_countdown()
+                return
+            self._display.configure(text=self._display_text())
+            self._schedule_tick()
+            return
+
         if not self._running:
             return
         self._display.configure(text=self._display_text())
         self._schedule_tick()
 
-    # --------------------------------------------------------------- controls
+    # ------------------------------------------------- stopwatch-mode controls
 
     def _on_start(self) -> None:
+        if self._mode == MODE_COUNTDOWN:
+            return          # countdown owns the widget; ignore extra clicks
         if self._running:
             return
         self._running = True
@@ -151,6 +230,8 @@ class StopwatchWidget(ctk.CTkFrame):
         self._schedule_tick()
 
     def _on_stop(self) -> None:
+        if self._mode == MODE_COUNTDOWN:
+            return
         if not self._running:
             return
         self._running = False
@@ -182,6 +263,11 @@ class StopwatchWidget(ctk.CTkFrame):
                 show_message(top, "Couldn't log session", result.message)
 
     def _on_reset(self) -> None:
+        if self._mode == MODE_COUNTDOWN:
+            # Reset acts as "Cancel" during a countdown: abandon the session
+            # without granting anything.
+            self.cancel_countdown()
+            return
         # Reset works whether running or not: cancel the tick loop, drop all
         # accumulated time and return the display to 0:00:00.
         self._running = False
@@ -191,7 +277,109 @@ class StopwatchWidget(ctk.CTkFrame):
         self._display.configure(text=self._display_text())
         self._sync_buttons()
 
+    # ---------------------------------------------------- countdown-mode API
+
+    def start_countdown(self, minutes: int) -> bool:
+        """Begin a real-time study countdown of ``minutes`` minutes.
+
+        Returns False (without starting anything) when a countdown is
+        already running or the request is invalid — this is what prevents
+        users from stacking/spamming sessions.  Nothing is recorded here;
+        the session is only written when the countdown hits zero.
+        """
+        if self._mode == MODE_COUNTDOWN:
+            return False
+        if not isinstance(minutes, int) or minutes <= 0:
+            return False
+
+        # Freeze any in-progress stopwatch run so its elapsed time isn't
+        # lost silently (it can be resumed/stopped after the session).
+        if self._running:
+            self._on_stop()
+
+        self._mode = MODE_COUNTDOWN
+        self._cd_total_s = minutes * 60.0
+        self._cd_remaining_s = minutes * 60.0
+        self._cd_running = True
+        self._cd_segment_start = time.monotonic()
+        self._header.configure(text=f"Study Session ({format_minutes(minutes)})")
+        self._display.configure(text=self._display_text())
+        self._sync_buttons()
+        self._schedule_tick()
+        return True
+
+    def _on_pause_toggle(self) -> None:
+        if self._mode != MODE_COUNTDOWN:
+            return
+        if self._cd_running:
+            # Freeze: bank the running leg into the remaining balance.
+            if self._cd_segment_start is not None:
+                self._cd_remaining_s = self._remaining_s()
+                self._cd_segment_start = None
+            self._cd_running = False
+            self._cancel_tick()
+        else:
+            self._cd_running = True
+            self._cd_segment_start = time.monotonic()
+            self._schedule_tick()
+        self._display.configure(text=self._display_text())
+        self._sync_buttons()
+
+    def cancel_countdown(self) -> None:
+        """Abandon the active countdown.  Grants zero XP and zero time."""
+        if self._mode != MODE_COUNTDOWN:
+            return
+        self._cd_running = False
+        self._cd_segment_start = None
+        self._cd_remaining_s = 0.0
+        self._cd_total_s = 0.0
+        self._mode = MODE_STOPWATCH
+        self._cancel_tick()
+        self._display.configure(text=self._display_text())
+        self._sync_buttons()
+
+    def _finish_countdown(self) -> None:
+        """Countdown hit zero: record the session, then revert to stopwatch."""
+        minutes = int(round(self._cd_total_s // 60))
+        self._cd_running = False
+        self._cd_segment_start = None
+        self._cd_remaining_s = 0.0
+        self._cd_total_s = 0.0
+        self._mode = MODE_STOPWATCH
+        self._cancel_tick()
+        self._header.configure(text="Study Stopwatch")
+        self._display.configure(text=self._display_text())
+        self._sync_buttons()
+
+        top = self.winfo_toplevel()
+        result = self._app_state.record_timer_session(minutes)
+        if result.ok:
+            show_message(
+                top, "Session complete",
+                f"Your {format_minutes(minutes)} study session was "
+                "recorded and added to your study time.")
+        elif result.message:
+            show_message(top, "Couldn't record session", result.message)
+
+    # --------------------------------------------------------------- buttons
+
     def _sync_buttons(self) -> None:
+        if self._mode == MODE_COUNTDOWN:
+            # Countdown mode: only Pause/Resume + Cancel are available.
+            self._start_btn.pack_forget()
+            self._stop_btn.pack_forget()
+            self._reset_btn.pack_forget()
+            self._pause_btn.configure(
+                text="Resume" if not self._cd_running else "Pause")
+            self._pause_btn.pack(side="left", padx=3)
+            self._cancel_btn.pack(side="left", padx=3)
+            return
+
+        self._pause_btn.pack_forget()
+        self._cancel_btn.pack_forget()
+        self._start_btn.pack(side="left", padx=3)
+        self._stop_btn.pack(side="left", padx=3)
+        self._reset_btn.pack(side="left", padx=3)
         self._start_btn.configure(
             state="disabled" if self._running else "normal")
         self._stop_btn.configure(

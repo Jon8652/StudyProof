@@ -66,9 +66,12 @@ MAX_INPUT_HOURS = 12
 MIN_INPUT_MINUTES = 0
 MAX_INPUT_MINUTES = 59
 
-# --- Preset durations shown on the Home screen (FR-1 / UI-5) -----------------
-PRESET_DURATIONS_MINUTES = (30, 60, 120)
-PRESET_LABELS = {30: "30 minutes", 60: "1 hour", 120: "2 hours"}
+# --- Preset countdown durations shown on the Home screen ----------------------
+# Anti-cheat redesign: presets no longer log time instantly; they start a
+# real-time countdown of the chosen length.  Only 1 h / 2 h presets remain
+# (the 30-minute preset was dropped); custom lengths come from the dialog.
+PRESET_DURATIONS_MINUTES = (60, 120)
+PRESET_LABELS = {60: "1 Hour", 120: "2 Hours"}
 
 # --- Window ------------------------------------------------------------------
 WINDOW_TITLE = APP_NAME
@@ -80,3 +83,4 @@ WINDOW_MIN_HEIGHT = 520
 # --- Session sources ----------------------------------------------------------
 SOURCE_PRESET = "preset"
 SOURCE_CUSTOM = "custom"
+SOURCE_TIMER = "timer"   # recorded when a study countdown reaches zero

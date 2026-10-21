@@ -42,6 +42,7 @@ from app.core.stats import (
     compute_stats,
 )
 from app.core.streaks import current_streak, longest_streak
+from app.constants import SOURCE_TIMER
 from app.persistence import library, repository
 from app.persistence.schema import FRIENDLY_MESSAGES, SaveError
 
@@ -194,6 +195,16 @@ class AppState:
         self._mark_dirty_and_save()
         self._notify()
         return ActionResult(ok=True, value=session)
+
+    def record_timer_session(self, duration_minutes: int) -> ActionResult:
+        """Record a study session whose countdown just completed.
+
+        Anti-cheat redesign: sessions are only ever written *after* the
+        real-time countdown has actually elapsed (see StopwatchWidget's
+        countdown mode), never at start time.  XP and medals derive from the
+        recorded duration exactly like any other session.
+        """
+        return self._log_session(duration_minutes, SOURCE_TIMER)
 
     def delete_session(self, session_id: str) -> ActionResult:
         """Delete a session and update every derived view (FR-13..FR-15)."""
