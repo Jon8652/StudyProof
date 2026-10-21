@@ -38,6 +38,28 @@ class _PackForgetStub(_Stub):
         pass
 
 
+class _RecordingLabel:
+    """Minimal stand-in for the header CTkLabel.
+
+    The shared ``widget`` fixture stubs out CTk widget classes entirely
+    (their ``configure`` is a no-op), so tests that need to assert on the
+    header *text* swap in this object instead — it records configure()
+    kwargs and exposes them via cget(), like a real Tk widget.
+    """
+
+    def __init__(self, text=""):
+        self._text = text
+
+    def configure(self, *args, **kwargs):
+        if "text" in kwargs:
+            self._text = kwargs["text"]
+
+    def cget(self, key):
+        return self._text if key == "text" else None
+
+    pack = staticmethod(lambda *a, **k: None)
+
+
 def _make_widget(monkeypatch):
     monkeypatch.setattr(sw.ctk.CTkFrame, "__init__", _Stub.__init__)
     monkeypatch.setattr(sw.ctk.CTkFrame, "pack", _Stub.pack)
@@ -264,6 +286,47 @@ def test_stopwatch_controls_ignored_during_countdown(widget):
     assert widget._running is False
     assert widget.countdown_active
     assert widget._state.dataset.sessions == []
+
+
+def test_cancel_restores_header_text(widget):
+    """Bug fix: header must revert to 'Study Stopwatch' after cancelling."""
+    widget._header = _RecordingLabel("Study Stopwatch")
+    widget.start_countdown(60)
+    assert widget._header.cget("text").startswith("Study Session")
+    widget.cancel_countdown()
+    assert widget._header.cget("text") == "Study Stopwatch"
+
+
+def test_countdown_change_callback_fires(widget):
+    """Bug fix: listeners are notified on start/cancel/finish so other
+    screens (e.g. the Study Tracker buttons) re-sync immediately."""
+    events = []
+    widget.on_countdown_change = lambda: events.append(widget.countdown_active)
+    widget.start_countdown(60)
+    assert events == [True]                 # notified: countdown now active
+    widget.cancel_countdown()
+    assert events == [True, False]          # notified: countdown gone
+    # Reset-as-cancel also fires exactly one extra notification per cancel.
+    widget.start_countdown(30)
+    widget._on_reset()
+    assert events == [True, False, True, False]
+
+
+def test_finish_notifies_and_reverts_header(widget, monkeypatch):
+    monkeypatch.setattr("app.gui.widgets.stopwatch.show_message",
+                        lambda *a, **k: None)
+    widget._header = _RecordingLabel("Study Stopwatch")
+    widget.start_countdown(60)
+    fired = []
+    widget.on_countdown_change = lambda: fired.append(widget.countdown_active)
+    widget._cd_segment_start -= 61 * 60     # time has genuinely elapsed
+    widget._tick()                          # completes -> records session
+    assert fired == [False]                 # notified after reverting
+    assert widget._header.cget("text") == "Study Stopwatch"
+    assert len(widget._state.dataset.sessions) == 1
+
+
+
 
 
 def test_home_screen_refresh_survives_partial_harness(monkeypatch):

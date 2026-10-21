@@ -83,6 +83,14 @@ def main() -> int:
     check("cancel-grants-nothing",
           len(state.dataset.sessions) == n_before_spam
           and not sw_widget.countdown_active)
+    # Bug fixes: cancelling must re-enable the start buttons immediately
+    # (no stale greyed-out state) and restore the "Study Stopwatch" header.
+    check("cancel-re-enables-buttons",
+          str(home.preset_buttons[0].cget("state")) != "disabled"
+          and str(home.custom_button.cget("state")) != "disabled")
+    check("cancel-restores-header",
+          sw_widget._header.cget("text") == "Study Stopwatch",
+          f"(header={sw_widget._header.cget('text')!r})")
 
     # Completing a countdown records exactly one timer session with the
     # full planned duration (XP/medals derive from it).
@@ -114,7 +122,8 @@ def main() -> int:
           f"(xp={agg.total_xp if agg else None}, medal={agg.medal if agg else None})")
     check("widget-reverts-to-stopwatch",
           not sw_widget.countdown_active
-          and sw_widget._display_text() == "0:00:00")
+          and sw_widget._display_text() == "0:00:00"
+          and sw_widget._header.cget("text") == "Study Stopwatch")
 
     # Pause freezes the remaining time (paused seconds never count).
     home._start_preset(60)

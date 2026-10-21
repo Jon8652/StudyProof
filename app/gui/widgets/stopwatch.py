@@ -98,6 +98,11 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_running = False          # counting down right now?
         self._cd_segment_start: float | None = None  # anchor of active segment
 
+        # Optional callback fired whenever a countdown starts, is cancelled,
+        # or finishes — lets other screens (e.g. the Study Tracker) mirror
+        # the countdown state on their buttons without polling.
+        self.on_countdown_change = None
+
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -185,6 +190,16 @@ class StopwatchWidget(ctk.CTkFrame):
         if self._mode == MODE_COUNTDOWN:
             return format_stopwatch(self._remaining_s())
         return format_stopwatch(self._elapsed_s)
+
+    def _notify_countdown_change(self) -> None:
+        """Fire the optional ``on_countdown_change`` listener, if set."""
+        callback = getattr(self, "on_countdown_change", None)
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                # A broken listener must never take down the timer itself.
+                pass
 
     # ------------------------------------------------------------- tick loop
 
@@ -306,6 +321,7 @@ class StopwatchWidget(ctk.CTkFrame):
         self._display.configure(text=self._display_text())
         self._sync_buttons()
         self._schedule_tick()
+        self._notify_countdown_change()
         return True
 
     def _on_pause_toggle(self) -> None:
@@ -334,9 +350,11 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_remaining_s = 0.0
         self._cd_total_s = 0.0
         self._mode = MODE_STOPWATCH
+        self._header.configure(text="Study Stopwatch")
         self._cancel_tick()
         self._display.configure(text=self._display_text())
         self._sync_buttons()
+        self._notify_countdown_change()
 
     def _finish_countdown(self) -> None:
         """Countdown hit zero: record the session, then revert to stopwatch."""
@@ -350,6 +368,7 @@ class StopwatchWidget(ctk.CTkFrame):
         self._header.configure(text="Study Stopwatch")
         self._display.configure(text=self._display_text())
         self._sync_buttons()
+        self._notify_countdown_change()
 
         top = self.winfo_toplevel()
         result = self._app_state.record_timer_session(minutes)
