@@ -54,11 +54,25 @@ executable with PyInstaller.
 
 ## Study Coach
 
-Open **Coach → New session**, choose up to five notes or PDFs, and request a
-question. Submit your first answer to unlock hints and feedback. The coach
-assigns a confidence rating with feedback. Revisions keep your first answer intact;
-follow-ups start a new question in the same saved conversation. Statistics
-shows weak topics and can reopen their latest coaching session.
+Open **Coach → New session**, choose up to five notes or PDFs, and answer the
+opening question. Continue naturally: retry an answer, ask for an explanation,
+or choose another topic from your sources. The opening question retains strict
+JSON validation; later visible replies accept ordinary study prose.
+
+A separate background assessor identifies the specific question and source,
+then rates the latest answer with a number from 0–100. These private prompts and
+scores never appear in the conversation. Scores below 70 flag a topic; 85 or
+higher clears it. Intermediate answers keep an existing flag. Acknowledgments,
+explanation requests, and topic switches are not scored. Assessment errors do
+not block coach replies or erase existing weak topics.
+
+Use **Revise Weak Topics** beside **New session** and **Sessions** to choose a
+flagged topic and practise its saved question with the coach. A strong answer
+in either the original conversation or revision mode removes that topic alone.
+The `weak_topics` register stores each topic, source, question and private score
+inside the application's JSON save, using the same atomic save and backup flow.
+Deleting a conversation keeps its unresolved topics. Removed sources remain
+listed but cannot be revised until restored.
 
 The Study Coach requires a configured live AI service. Open
 **Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
@@ -70,13 +84,13 @@ masked in Settings and excluded from prompts and error messages. There is
 no telemetry. Failed turns show an error and can be retried; Cancel immediately
 restores the composer and discards late responses.
 
-All AI requirements (COACH-, GEN-, GRD-, PROV- and AIS- families) are
-implemented with live generation: bounded JSON parsing with one repair
-retry, lazy normalised quote grounding with strip-and-count, the guarded
-question state machine (unaided first answer, AI-assigned confidence with feedback, gated
-hints/feedback, follow-up child questions), saved-session management with
-resume/delete, the `urllib` Live client (30 s timeout, one retry on
-429/5xx, strict key redaction, connection testing, sub-second cancellation),
+The opening question uses bounded JSON parsing with one repair retry. Later
+coaching replies use flexible prose while private assessments have their own
+validated boundaries. Source quotations on structured replies are verified
+against the selected source pack. Sessions preserve first answers and later
+attempts, and support follow-up questions and resume/delete. The `urllib` Live
+client provides a 30 s timeout, one retry on
+429/5xx, strict key redaction, connection testing, sub-second cancellation,
 and configuration validation before requests. Missing credentials and failed
 replies leave the failed turn unsaved. Automated tests use fixed provider replies.
 

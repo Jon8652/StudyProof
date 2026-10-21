@@ -1,10 +1,11 @@
 """Headless state machine. Generation is separate from main-thread commit."""
 import copy
 import threading
+import uuid
 from datetime import datetime
 
 from app.core.result import ActionResult
-from app.core.models import CoachTurn, QuestionRecord
+from app.core.models import CoachTurn, QuestionRecord, WeakTopic
 from app.core.agent.confidence import resolve_feedback_confidence
 from app.core.agent.context import build_source_pack
 from app.core.agent.grounding import PageIndex, validate_quotes
@@ -17,6 +18,27 @@ class CoachService:
         self.state = state
         self.live_factory = live_factory
         self.pending = {}
+        self.assessments = {}
+        self._assessment_versions = {}
+        self._assessment_sequence = 0
+
+    def start_weak_topic_session(self, topic_id):
+        topic = next((w for w in self.state.dataset.weak_topics if w.id == topic_id), None)
+        if not topic:
+            return ActionResult(False, 'That topic has already been cleared.')
+        ref = self.state.source_ref_for(topic.source.kind, topic.source.id)
+        if not ref:
+            return ActionResult(False, 'This source was removed. Restore it before revising this topic.')
+        result = self.start_session([ref])
+        if result.ok:
+            session = result.value
+            question = QuestionRecord.create(topic.question)
+            session.questions.append(question)
+            session.turns.append(CoachTurn.create(
+                'coach', 'question', f'Let’s revise {topic.topic}.\n\n{topic.question}',
+                question.id, 'live'))
+            self.state.persist_coach_session(session)
+        return result
 
     def start_session(self, selection):
         refs = [self.state.source_ref_for(*s) if isinstance(s, tuple) else s for s in selection]
@@ -106,11 +128,98 @@ class CoachService:
                'question': copy.deepcopy(q), 'counter': len(s.questions),
                'history': [{'role': t.role, 'kind': t.kind, 'text': t.text}
                            for t in s.turns[-10:]], 'cancel': flag,
+               'user_turn_id': next((t.id for t in reversed(s.turns) if t.role == 'user'), None),
+               'weak_topics': [{'id': w.id, 'source_id': w.source.id,
+                                'topic': w.topic, 'question': w.question}
+                               for w in self.state.dataset.weak_topics
+                               if any(r.id == w.source.id for r in s.sources)],
                'mode': mode, 'settings': settings,
                '_session': s,
                'revision': len(s.turns), 'question_id': q.id if q else None}
         self.pending[s.id] = job
         return ActionResult(True, value=job)
+
+    def prepare_assessment(self, job):
+        if not job.get('conversational') or job['kind'] != 'feedback' or not job['user_turn_id']:
+            return False
+        self._assessment_sequence += 1
+        job['assessment_sequence'] = self._assessment_sequence
+        job['assessment_cancel'] = threading.Event()
+        self.assessments[(job['session_id'], job['user_turn_id'])] = job
+        return True
+
+    def generate_assessment(self, job):
+        """Worker-safe and independent of visible reply generation."""
+        try:
+            provider = self.live_factory(job['settings'])
+            return ActionResult(True, value=provider.assess_answer(job))
+        except Exception:
+            # Never turn an assessment/formatting failure into failed coaching
+            # or treat an unassessed answer as mastery.
+            return ActionResult(False, 'Background assessment unavailable. Weak topics were kept; send another answer to retry.')
+
+    def complete_assessment(self, job, result):
+        sid = job['session_id']
+        key = (sid, job['user_turn_id'])
+        if self.assessments.get(key) is not job:
+            return ActionResult(False, 'Assessment superseded.')
+        self.assessments.pop(key, None)
+        session = self.state.coach_session_by_id(sid)
+        if job['assessment_cancel'].is_set() or session is not job['_session']:
+            return ActionResult(False, 'Assessment cancelled.')
+        latest = next((t for t in session.turns if t.id == job['user_turn_id']), None)
+        if not latest:
+            return ActionResult(False, 'Assessment superseded.')
+        notes = {n.id: n for n in self.state.dataset.notes}
+        docs = {d.id: d for d in self.state.dataset.documents}
+        if build_source_pack([(r.kind, r.id) for r in session.sources], notes, docs) != job['pack']:
+            return ActionResult(False, 'Sources changed; weak topics were left unchanged.')
+        if not result.ok or result.value is None:
+            return result
+        rating = result.value
+        source = next((r for r in session.sources if r.id == rating.source_id), None)
+        if (not source or type(rating.score) is not int or not 0 <= rating.score <= 100
+                or not isinstance(rating.topic, str) or not rating.topic.strip()
+                or not isinstance(rating.question, str) or not rating.question.strip()):
+            return ActionResult(False, 'Invalid assessment; weak topics were left unchanged.')
+        topics = self.state.dataset.weak_topics
+        match = next((w for w in topics if w.source.id == source.id and
+                      (w.id == rating.weak_topic_id or
+                       w.topic.casefold().strip() == rating.topic.casefold().strip())), None)
+        if rating.weak_topic_id and not match:
+            if not any(w['id'] == rating.weak_topic_id and w['source_id'] == source.id
+                       and w['topic'] == rating.topic for w in job['weak_topics']):
+                return ActionResult(False, 'That weak topic changed; assessment skipped.')
+        topic_key = (source.id, (match.topic if match else rating.topic).strip().casefold())
+        version = (latest.at_local, job['assessment_sequence'])
+        if self._assessment_versions.get(topic_key, (datetime.min, 0)) > version:
+            return ActionResult(False, 'Assessment superseded.')
+        self._assessment_versions[topic_key] = version
+        q = session.question_by_id(latest.question_id)
+        if q and q.confidence is None and q.first_answer == latest.text:
+            q.prompt = rating.question
+        elif not q or q.prompt.strip().casefold() != rating.question.strip().casefold():
+            q = next((item for item in session.questions
+                      if item.prompt.strip().casefold() == rating.question.strip().casefold()), None)
+            if not q:
+                q = QuestionRecord.create(rating.question, job['pack'].as_spans_payload())
+                q.first_answer, q.first_answer_at = latest.text, latest.at_local
+                q.status, q.feedback_given = 'answered', True
+                session.questions.append(q)
+                session.questions.sort(key=lambda item: item.first_answer_at or datetime.max)
+        q.confidence = 'high' if rating.score >= 85 else 'medium' if rating.score >= 70 else 'low'
+        q.confidence_at = datetime.now()
+        latest.question_id = q.id
+        if rating.score >= 85:
+            if match:
+                topics.remove(match)
+        elif match:
+            match.score, match.updated_at = rating.score, datetime.now()
+        elif rating.score < 70:
+            topics.append(WeakTopic(str(uuid.uuid4()), source, rating.topic.strip(),
+                                    rating.question.strip(), session.id, q.id, rating.score))
+        self.state.persist_coach_session(session)
+        return ActionResult(True)
 
     def generate_turn(self, job):
         """Worker-safe: no state mutation, persistence or GUI calls."""
@@ -175,14 +284,18 @@ class CoachService:
         mode = 'live'
         s.turns.append(CoachTurn.create('coach', kind, reply.text, q.id, mode,
                                         quotes=quotes, ungrounded_count=failures,
-                                        confidence=q.confidence if kind == 'feedback' else None))
+                                        confidence=q.confidence if kind == 'feedback' and not job.get('conversational') else None))
         self.state.persist_coach_session(s)
         return ActionResult(True, value=q)
 
-    def cancel_turn(self, session_id):
+    def cancel_turn(self, session_id, cancel_assessments=True):
         job = self.pending.pop(session_id, None)
         if job:
             job['cancel'].set()
+        for key, assessment in list(self.assessments.items()):
+            if key[0] == session_id and cancel_assessments:
+                self.assessments.pop(key, None)
+                assessment['assessment_cancel'].set()
         return ActionResult(True)
 
     def _request(self, session_id, kind, question_id=None):

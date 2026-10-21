@@ -115,6 +115,15 @@ def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
             }
             for d in dataset.documents
         ],
+        # Keep the low-confidence register in the same atomic save/backup as
+        # the notes and conversations, so manual save/load cannot lose it.
+        "weak_topics": [
+            {"id": w.id, "source": w.source.as_dict(), "topic": w.topic,
+             "question": w.question, "session_id": w.session_id,
+             "question_id": w.question_id, "score": w.score,
+             "updated_at": format_dt(w.updated_at)}
+            for w in dataset.weak_topics
+        ],
         "coach_sessions": [
             {
                 "id": c.id,

@@ -8,6 +8,7 @@ from app.core.agent.provider_base import ProviderError
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
+from app.gui.dialogs.weak_topics_dialog import WeakTopicsDialog
 from app.gui.dialogs.message_dialog import show_message
 from app.gui.widgets.chat_bubble import ChatBubble
 from app.gui.widgets.tooltip import Tooltip
@@ -23,18 +24,20 @@ class CoachScreen(BaseScreen):
         self._last_action = None
         self._suggestion_job = None
         self._suggestion_question = None
+        self._assessment_notices = {}
+        self._weak_topics_dialog = None
         self.events = UIEventQueue(self)
         self.events.start()
         top = ctk.CTkFrame(self.content)
         top.pack(fill='x')
         ctk.CTkButton(top, text='New session', command=self.new_session).pack(side='left', padx=4, pady=4)
         ctk.CTkButton(top, text='Sessions…', command=self.sessions).pack(side='left', padx=4)
+        ctk.CTkButton(top, text='Revise Weak Topics', command=self.revise_weak_topics).pack(side='left', padx=4)
         self.header = ctk.CTkLabel(self.content, text='', wraplength=700, justify='left')
         self.header.pack(fill='x')
         self.thread = ctk.CTkScrollableFrame(self.content)
         self.thread.pack(fill='both', expand=True)
-        # No manual confidence buttons: the coach rates confidence itself,
-        # based on how the question was answered (see feedback turns).
+        # Private background ratings never appear in the conversation.
         self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888')
         self.confidence_note.pack(fill='x', pady=(2, 0))
         self.suggestions = ctk.CTkFrame(self.content, fg_color='transparent')
@@ -82,7 +85,7 @@ class CoachScreen(BaseScreen):
         if not self._require_connection():
             return
         if self.busy:
-            self.cancel()
+            self.cancel(cancel_assessments=False)
         dialog = SourceSelectDialog(self, self.state)
         self.wait_window(dialog)
         if dialog.result:
@@ -95,15 +98,32 @@ class CoachScreen(BaseScreen):
 
     def sessions(self):
         if self.busy:
-            self.cancel()
+            self.cancel(cancel_assessments=False)
         dialog = SessionsDialog(self, self.state, self.service)
         self.wait_window(dialog)
         if dialog.result:
             self.resume_session(dialog.result)
         self.refresh()
 
+    def revise_weak_topics(self):
+        if not self._require_connection():
+            return
+        self.cancel(cancel_assessments=False)
+        dialog = WeakTopicsDialog(self, self.state)
+        self._weak_topics_dialog = dialog
+        self.wait_window(dialog)
+        self._weak_topics_dialog = None
+        if dialog.result:
+            result = self.service.start_weak_topic_session(dialog.result)
+            if result.ok:
+                self.session_id = result.value.id
+                self.notice.configure(text='Answer in your own words, or ask for help with this topic.')
+                self.refresh()
+            else:
+                self.notice.configure(text=result.message)
+
     def resume_session(self, sid):
-        self.cancel()
+        self.cancel(cancel_assessments=False)
         self.session_id = sid
         self.refresh()
 
@@ -121,6 +141,11 @@ class CoachScreen(BaseScreen):
         self.busy = True
         self.notice.configure(text='Coach is thinking…')
         self.refresh()
+        if self.service.prepare_assessment(job):
+            def assess():
+                assessment = self.service.generate_assessment(job)
+                self.events.post(lambda: self.assessment_finished(job, assessment))
+            threading.Thread(target=assess, daemon=True).start()
         def run():
             # Poll the cancel flag while the (possibly slow) provider call is
             # in flight so Cancel returns promptly instead of waiting for the
@@ -138,16 +163,26 @@ class CoachScreen(BaseScreen):
             self.events.post(lambda: self.finished(job, run.result))
         threading.Thread(target=run, daemon=True).start()
 
+    def assessment_finished(self, job, result):
+        result = self.service.complete_assessment(job, result)
+        if self._weak_topics_dialog and self._weak_topics_dialog.winfo_exists():
+            self._weak_topics_dialog.rebuild()
+        if not result.ok and result.message.startswith('Background assessment'):
+            self._assessment_notices[job['session_id']] = result.message
+            if not self.busy and self.session_id == job['session_id']:
+                self.notice.configure(text=self._assessment_notices.pop(job['session_id']))
+        self.refresh()
+
     def finished(self, job, result):
         if self.service.pending.get(job['session_id']) is not job:
             return
         self.busy = False
         result = self.service.complete_turn(job, result)
-        self.notice.configure(text=result.message or '')
+        self.notice.configure(text=result.message or self._assessment_notices.pop(job['session_id'], ''))
         self.refresh()
 
-    def cancel(self):
-        self.service.cancel_turn(self.session_id)
+    def cancel(self, cancel_assessments=True):
+        self.service.cancel_turn(self.session_id, cancel_assessments=cancel_assessments)
         self.busy = False
         self.notice.configure(text='Turn cancelled.')
         self.refresh()
@@ -287,11 +322,8 @@ class CoachScreen(BaseScreen):
                 ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
-        # Confidence is assigned by the coach when feedback is delivered —
-        # there are no manual rating buttons any more.
-        if q and q.confidence:
-            note = f'Coach confidence rating: {q.confidence}'
-        elif q and q.first_answer is not None:
+        # Keep guidance visible while the separate assessment stays private.
+        if q and q.first_answer is not None:
             note = 'Ask a question, try again, or choose another topic from your sources.'
         else:
             note = ''
@@ -319,5 +351,6 @@ class CoachScreen(BaseScreen):
 
     def shutdown(self):
         self._hide_suggestions()
-        self.service.cancel_turn(self.session_id)
+        for sid in {self.session_id, *(key[0] for key in self.service.assessments)}:
+            self.service.cancel_turn(sid)
         self.events.stop()

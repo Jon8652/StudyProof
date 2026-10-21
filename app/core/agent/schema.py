@@ -17,3 +17,12 @@ class CoachReply:
     quotes: list[Quote] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 
+
+@dataclass
+class AnswerAssessment:
+    source_id: str
+    topic: str
+    question: str
+    score: int
+    weak_topic_id: str | None = None
+

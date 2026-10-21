@@ -9,9 +9,10 @@ from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 from app.constants import AI_TIMEOUT_S
 from app.core.agent.parser import parse_reply
-from app.core.agent.prompt import messages, connection_messages
+from app.core.agent.prompt import (messages, connection_messages,
+                                   assessment_topic_messages, assessment_score_messages)
 from app.core.agent.provider_base import ProviderError
-from app.core.agent.schema import CoachReply
+from app.core.agent.schema import CoachReply, AnswerAssessment
 
 
 def sanitize_base_url(value):
@@ -130,3 +131,40 @@ class OpenAICompatProvider:
     def test_connection(self):
         self._post(connection_messages(), threading.Event(), 10)
         return 'Connected to the AI service.'
+
+    def assess_answer(self, context):
+        """Private assessment boundary; no assessment output enters the chat."""
+        cancel = context.get('assessment_cancel', context['cancel'])
+        deadline = time.monotonic() + self.timeout
+        def post(prompt):
+            return self._post(prompt, cancel, max(0, deadline - time.monotonic()))
+        try:
+            raw = post(assessment_topic_messages(context)).strip()
+            if raw.startswith('```'):
+                raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+            value = json.loads(raw)
+            if not isinstance(value, dict) or type(value.get('is_answer')) is not bool:
+                raise ValueError()
+            if not value['is_answer']:
+                return None
+            source_id, topic, question = (value.get(k) for k in ('source_id', 'topic', 'question'))
+            if (source_id not in context['pack'].included_source_ids
+                    or not isinstance(topic, str) or not topic.strip() or len(topic) > 160
+                    or not isinstance(question, str) or not question.strip() or len(question) > 4000):
+                raise ValueError()
+            weak_id = value.get('weak_topic_id')
+            if weak_id is not None and not any(
+                    w['id'] == weak_id and w['source_id'] == source_id and w['topic'] == topic
+                    for w in context.get('weak_topics', [])):
+                raise ValueError()
+            answer = next(t['text'] for t in reversed(context['history']) if t['role'] == 'user')
+            spans = [s for s in context['pack'].as_spans_payload() if s['source_id'] == source_id]
+            raw_score = post(assessment_score_messages(question, answer, spans)).strip()
+            if not raw_score.isascii() or not raw_score.isdecimal():
+                raise ValueError()
+            score = int(raw_score)
+            if not 0 <= score <= 100:
+                raise ValueError()
+            return AnswerAssessment(source_id, topic.strip(), question.strip(), score, weak_id)
+        except (ValueError, KeyError, StopIteration, TypeError):
+            raise ProviderError('Background assessment could not be read; weak topics were left unchanged.') from None

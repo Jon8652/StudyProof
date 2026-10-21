@@ -389,6 +389,19 @@ class CoachSession:
 
 
 @dataclass
+class WeakTopic:
+    """A specific unresolved question, independent of its conversation's lifetime."""
+    id: str
+    source: SourceRef
+    topic: str
+    question: str
+    session_id: str
+    question_id: str
+    score: int
+    updated_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
 class Dataset:
     """The full in-memory dataset: settings + all collections (single source of truth)."""
 
@@ -397,6 +410,7 @@ class Dataset:
     notes: list[Note] = field(default_factory=list)
     documents: list[Document] = field(default_factory=list)
     coach_sessions: list[CoachSession] = field(default_factory=list)
+    weak_topics: list[WeakTopic] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
