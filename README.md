@@ -1,6 +1,6 @@
 # StudyProof
 
-**StudyProof** (v1.1.0) is a complete cross-platform desktop app for helping you study, supporting study sessions tracking — XP, medals, streaks, calendar, notes, stats, a PDF library, paired with an AI Study Coach, and an auto-logging stopwatch. Built with Python + CustomTkinter and packaged as a standalone Windows executable.
+**StudyProof** (v1.1.0) is a complete cross-platform desktop app for helping you study, supporting study sessions tracking — XP, medals, streaks, stopwatch, calendar, notes, stats, a PDF library, paired with an AI Study Coach. Built with Python + CustomTkinter and packaged as a standalone Windows executable.
 
 ## Features
 
