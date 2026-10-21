@@ -264,3 +264,44 @@ def test_stopwatch_controls_ignored_during_countdown(widget):
     assert widget._running is False
     assert widget.countdown_active
     assert widget._state.dataset.sessions == []
+
+
+def test_home_screen_refresh_survives_partial_harness(monkeypatch):
+    """Regression: refresh() must never crash on a partially built screen.
+
+    Some test harnesses construct HomeScreen without MainWindow's stopwatch
+    attribute and with placeholder widget refs (empty_hint / custom_button /
+    preset_buttons set to None). Previously this raised AttributeError:
+    'NoneType' object has no attribute 'configure'/'pack'.
+    """
+    import customtkinter  # noqa: F401  (importorskip already guaranteed above)
+
+    from app.gui.screens import home_screen as hs
+
+    class _FakeContent:
+        def configure(self, **kwargs):
+            pass
+
+    class _Harness(hs.HomeScreen):
+        """Build nothing; only what refresh() touches, some of it None."""
+
+        def __init__(self, state):  # deliberately skips super().__init__
+            self.state = state
+            self.time_value = _FakeContent()
+            self.xp_value = _FakeContent()
+            self.day_caption = _FakeContent()
+            self.progress_bar = type("PB", (), {"set": lambda s, v: None})()
+            self.medal_badge = type("MB", (),
+                                    {"set_medal": lambda s, m: None})()
+            self.medal_label = _FakeContent()
+            self.progress_label = _FakeContent()
+            self.empty_hint = None            # not yet created
+            self.custom_button = None         # created but assignment lost
+            self.preset_buttons = [None]      # partially populated list
+
+        def winfo_toplevel(self):             # no .stopwatch attribute
+            return type("Top", (), {})()
+
+    h = _Harness(AppState())
+    h.refresh()                               # must not raise
+    assert h.state.dataset.sessions == []     # refresh must not log anything

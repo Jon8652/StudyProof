@@ -86,19 +86,31 @@ def main() -> int:
 
     # Completing a countdown records exactly one timer session with the
     # full planned duration (XP/medals derive from it).
-    home._start_preset(60)
+    sessions_before = len(state.dataset.sessions)
+    home._start_preset(120)                      # 2 Hours preset
     app.update()
-    sw_widget._cd_segment_start -= 60 * 60      # simulate the hour passing
+    sw_widget._cd_segment_start -= 120 * 60      # simulate the two hours passing
     sw_widget._tick()                            # tick sees remaining <= 0
     app.update()
     agg = state.get_today_summary()
-    timer_sessions = [s for s in state.dataset.sessions if s.source == "timer"]
+    new_sessions = state.dataset.sessions[sessions_before:]
     check("countdown-completion-records-session",
-          len(timer_sessions) == 1
-          and timer_sessions[0].duration_minutes == 60,
-          f"(timer={len(timer_sessions)})")
+          len(new_sessions) == 1
+          and new_sessions[0].source == "timer"
+          and new_sessions[0].duration_minutes == 120,
+          f"(new={[(s.source, s.duration_minutes) for s in new_sessions]})")
+    # 120 min => 120 XP and the Bronze medal threshold is exactly 120.
+    # (XP uses floor-division per 10-minute block, so compare against the
+    # *today* sessions only — other smoke sections may have logged earlier
+    # days.)
+    from datetime import date as _date
+    from app.core.date_rules import sessions_for_day
+    today_sessions = sessions_for_day(state.dataset.sessions, _date.today())
+    expected_xp = sum((s.duration_minutes // 10) * state.settings.xp_per_10_minutes
+                      for s in today_sessions)
     check("completion-xp-medal",
-          agg is not None and agg.total_xp >= 60 and agg.medal is not None,
+          agg is not None and agg.total_xp == expected_xp
+          and agg.total_minutes >= 120 and agg.medal == "bronze",
           f"(xp={agg.total_xp if agg else None}, medal={agg.medal if agg else None})")
     check("widget-reverts-to-stopwatch",
           not sw_widget.countdown_active

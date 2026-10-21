@@ -265,19 +265,39 @@ class HomeScreen(BaseScreen):
                     text=f"{format_minutes(to_bronze)} more for Bronze",
                     text_color=MUTED_TEXT)
 
-        if minutes == 0:
-            self.empty_hint.pack(fill="x", pady=(12, 0))
-        else:
-            self.empty_hint.pack_forget()
+        hint = getattr(self, "empty_hint", None)
+        if hint is not None:
+            try:
+                if minutes == 0:
+                    hint.pack(fill="x", pady=(12, 0))
+                else:
+                    hint.pack_forget()
+            except Exception:
+                pass
 
         # Anti-cheat: while a countdown exists, starting another session is
         # blocked at the UI level too (the widget itself also refuses).
+        # Guard every lookup: refresh() can run on a partially built screen
+        # (e.g. test harnesses that construct HomeScreen without MainWindow's
+        # stopwatch attribute), and a missing piece must never crash it.
         busy = False
-        widget = self._stopwatch
+        try:
+            widget = self._stopwatch
+        except Exception:
+            widget = None
         if widget is not None:
-            busy = widget.countdown_active
-        for b in self.preset_buttons:
-            b.configure(state="disabled" if busy else "normal")
-        if self.custom_button is not None:
-            self.custom_button.configure(
-                state="disabled" if busy else "normal")
+            busy = bool(getattr(widget, "countdown_active", False))
+        for b in getattr(self, "preset_buttons", []):
+            if b is None:
+                continue
+            try:
+                b.configure(state="disabled" if busy else "normal")
+            except Exception:
+                pass
+        custom_button = getattr(self, "custom_button", None)
+        if custom_button is not None:
+            try:
+                custom_button.configure(
+                    state="disabled" if busy else "normal")
+            except Exception:
+                pass
