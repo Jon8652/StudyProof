@@ -11,6 +11,7 @@ from app.constants import AI_TIMEOUT_S
 from app.core.agent.parser import parse_reply
 from app.core.agent.prompt import messages, connection_messages
 from app.core.agent.provider_base import ProviderError
+from app.core.agent.schema import CoachReply
 
 
 def sanitize_base_url(value):
@@ -108,6 +109,17 @@ class OpenAICompatProvider:
             try:
                 raw = self._post(messages(context, repair, previous_response, validation_error), cancel,
                                  max(0, deadline - time.monotonic()))
+                if context.get('conversational'):
+                    if not raw.strip():
+                        raise ValueError('The AI reply was empty.')
+                    # Accept structured replies from compatible endpoints too, but
+                    # never require their metadata for an ordinary conversation.
+                    try:
+                        value = json.loads(raw)
+                    except ValueError:
+                        value = None
+                    text = value.get('text') if isinstance(value, dict) else None
+                    return CoachReply(context['kind'], text.strip() if isinstance(text, str) and text.strip() else raw.strip())
                 return parse_reply(raw, context['kind'])
             except ValueError as exc:
                 if repair:

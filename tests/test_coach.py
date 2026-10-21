@@ -452,3 +452,39 @@ def test_settings_default_to_live():
     assert AISettings().mode == 'live'
     assert AISettings.sanitized({}).mode == 'live'
     assert AISettings.sanitized({'mode': 'removed-mode'}).mode == 'live'
+
+
+@pytest.mark.parametrize('reply', [
+    'Exactly! Chlorophyll absorbs light. Which topic would you like to explore next?',
+    'Think about where the cell stores chemical energy. Try again.',
+    'Sure, let us switch to respiration. What do mitochondria do?',
+    '{"text": "What would you like to study next?"}',
+])
+def test_conversation_accepts_natural_replies(coach, reply):
+    _, service, session = coach
+    unlock(service, session)
+    job = service.prepare_turn(session.id, 'feedback', conversational=True).value
+    calls = []
+    def transport(request, timeout):
+        calls.append(request)
+        return Response(reply)
+    result = OpenAICompatProvider(settings(), transport).generate(job)
+    assert result.text
+    assert len(calls) == 1
+    assert service.complete_turn(job, ActionResult(True, value=result)).ok
+    assert session.questions[-1].feedback_given
+    assert session.questions[-1].confidence is None
+    payload = json.loads(messages(job)[1]['content'])
+    assert 'response_example' not in payload
+
+
+def test_conversation_keeps_latest_message_after_failed_reply(coach):
+    _, service, session = coach
+    unlock(service, session)
+    job = service.prepare_turn(session.id, 'feedback', conversational=True).value
+    assert not service.complete_turn(job, ActionResult(False, 'Try again')).ok
+    assert service.submit_message(session.id, 'Can we study respiration instead?').ok
+    job = service.prepare_turn(session.id, 'feedback', conversational=True).value
+    assert job['history'][-1]['text'] == 'Can we study respiration instead?'
+    assert session.questions[0].first_answer == 'Sunlight and energy'
+    service.cancel_turn(session.id)

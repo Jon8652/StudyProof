@@ -111,7 +111,9 @@ class CoachScreen(BaseScreen):
         if not self._require_connection():
             return
         self._last_action = kind
-        prepared = self.service.prepare_turn(self.session_id, kind)
+        session = self.state.coach_session_by_id(self.session_id)
+        prepared = self.service.prepare_turn(
+            self.session_id, kind, conversational=bool(session and session.turns))
         if not prepared.ok:
             self.notice.configure(text=prepared.message)
             return
@@ -163,7 +165,7 @@ class CoachScreen(BaseScreen):
         self._submitted(self.service.submit_revision(self.session_id, self.composer.get('1.0', 'end')))
 
     def send(self, event=None):
-        """Send an unaided answer or revision, then request coach feedback."""
+        """Send a study message and continue the source-grounded conversation."""
         if self.busy:
             return 'break'
         if not self._require_connection():
@@ -174,15 +176,11 @@ class CoachScreen(BaseScreen):
         if not q or q.status == 'closed':
             self.notice.configure(text='Choose New session and select your notes or PDFs to get a question first.')
             return 'break'
-        if q.first_answer is not None and not q.feedback_given:
-            self.request('feedback')
-            return 'break'
         if not text:
+            if q.first_answer is not None and not q.feedback_given:
+                self.request('feedback')
             return 'break'
-        if q.first_answer is None:
-            result = self.service.submit_answer(self.session_id, text)
-        elif q.feedback_given:
-            result = self.service.submit_revision(self.session_id, text)
+        result = self.service.submit_message(self.session_id, text)
         self._submitted(result)
         if result.ok:
             self.request('feedback')
@@ -294,7 +292,7 @@ class CoachScreen(BaseScreen):
         if q and q.confidence:
             note = f'Coach confidence rating: {q.confidence}'
         elif q and q.first_answer is not None:
-            note = 'Confidence is rated by the coach once you get feedback.'
+            note = 'Ask a question, try again, or choose another topic from your sources.'
         else:
             note = ''
         self.confidence_note.configure(text=note)
