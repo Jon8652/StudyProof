@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
+import tkinter as tk
+
 import customtkinter as ctk
+
+
+def _safe_focus(dialog) -> None:
+    """Give *dialog* keyboard focus, but only while it still exists.
+
+    ``focus_force`` schedules a Tk ``focus`` command against this widget; if
+    the dialog has already been destroyed by the time the deferred job runs,
+    Tcl raises ``bad window path name`` and Tkinter prints an "Exception in
+    Tkinter callback" traceback to the console.  Guarding with ``winfo_exists``
+    keeps the terminal clean without changing any visible behaviour.
+    """
+    try:
+        if dialog.winfo_exists():
+            dialog.focus_force()
+    except tk.TclError:
+        pass  # dialog vanished mid-call — nothing to focus
 
 
 def show_message(parent, title: str, message: str) -> None:
@@ -10,7 +28,11 @@ def show_message(parent, title: str, message: str) -> None:
     dialog = ctk.CTkToplevel(parent)
     dialog.title(title)
     dialog.transient(parent)
-    dialog.grab_set()
+    try:
+        dialog.grab_set()
+    except tk.TclError:
+        pass  # grab can fail on a not-yet-mapped window; the dialog itself
+              # still works and a later interaction re-targets the grab
     dialog.resizable(False, False)
 
     frame = ctk.CTkFrame(dialog, corner_radius=12)
@@ -40,7 +62,7 @@ def show_message(parent, title: str, message: str) -> None:
         dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
     except Exception:
         pass
-    dialog.after(50, lambda: dialog.focus_force())
+    dialog.after(50, lambda: _safe_focus(dialog))
 
 
 def show_error(parent, message: str, title: str = "Something went wrong") -> None:
