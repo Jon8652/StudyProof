@@ -140,8 +140,8 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_finish_job: str | None = None
 
         # Two stacked button rows: only one is ever packed; _sync_buttons()
-        # swaps which one by re-packing it *in its original slot*.  The rows
-        # are built up-front (before any other child) because CTk's
+        # swaps which one by unpacking both and re-packing the active row.
+        # The rows are built up-front (before any other child) because CTk's
         # CTkBaseClass.__init__ destroys its own pre-widget children via the
         # plain tkinter Frame.destroy — i.e. OUR destroy() override can run
         # while __init__ is still executing, so anything it touches must
@@ -151,13 +151,17 @@ class StopwatchWidget(ctk.CTkFrame):
         self._cd_btn_row = cd_row
         # Countdown-only controls (hidden while in stopwatch mode).  Packed
         # at the same position as btn_row so both modes occupy identical
-        # vertical space inside the fixed-height card.
+        # vertical space inside the fixed-height card.  NOTE: these buttons
+        # *must* be packed into cd_row — without a geometry manager they are
+        # never mapped, which made the Pause/Cancel controls invisible when
+        # a study-session countdown started.
         self._pause_btn = ctk.CTkButton(
             cd_row, text="Pause", width=70, height=26, corner_radius=8,
             fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ACCENT_TEXT,
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._on_pause_toggle,
         )
+        self._pause_btn.pack(side="left", padx=3)
 
         self._cancel_btn = ctk.CTkButton(
             cd_row, text="Cancel", width=70, height=26, corner_radius=8,
@@ -165,6 +169,7 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self.cancel_countdown,
         )
+        self._cancel_btn.pack(side="left", padx=3)
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -191,8 +196,10 @@ class StopwatchWidget(ctk.CTkFrame):
         self._display.pack(pady=0)
 
         # btn_row was created earlier as self._btn_row (see note there).
-        # 6 px bottom gap mirrors the header's 6 px top gap (see above).
-        self._btn_row.pack(pady=(0, 6))
+        # It starts unpacked; _sync_buttons() packs whichever row matches
+        # the current mode (stopwatch mode is the initial mode, so btn_row
+        # goes in on the first sync — 6 px bottom gap mirrors the header's
+        # 6 px top gap).
 
         self._start_btn = ctk.CTkButton(
             self._btn_row, text="Start", width=52, height=26, corner_radius=8,
@@ -219,10 +226,8 @@ class StopwatchWidget(ctk.CTkFrame):
         )
         self._reset_btn.pack(side="left", padx=3)
 
-        # Pack *immediately after* btn_row so the two rows are stacked in a
-        # fixed order; _sync_buttons swaps which one is visible by
-        # re-packing it in place (before= the other row).
-        cd_row.pack(after=self._btn_row, pady=(0, 6))
+        # cd_row also starts unpacked; _sync_buttons() owns which row is
+        # visible so the two modes never stack inside the fixed-height card.
 
         self._sync_buttons()
 
@@ -512,36 +517,30 @@ class StopwatchWidget(ctk.CTkFrame):
     # --------------------------------------------------------------- buttons
 
     def _sync_buttons(self) -> None:
-        if self._mode == MODE_COUNTDOWN:
-            # Countdown mode: only Pause/Resume + Cancel are available.
-            # Swap the visible rows *in place*: cd_row must go back into
-            # btn_row's original slot (before it in the packing order).
-            # A plain pack() would append to the end of the order, so after
-            # a start/cancel cycle the Start/Stop/Reset row would land
-            # *below* the countdown row and the fixed-height card would
-            # clip it off the bottom edge.  ``before=`` requires the anchor
-            # to be packed, hence the try/except fallback for the very
-            # first sync (both rows still unpacked at construction time).
+        # Unpack *both* rows first, then pack only the active one.  Packing
+        # the new row while the old row is still managed leaves stale
+        # ``before=``/``after=`` anchors behind once the old row is hidden;
+        # on later swaps the newly-packed row can end up appended below the
+        # remaining content, and because the card has a fixed height with
+        # ``pack_propagate(False)``, the button row gets clipped off the
+        # bottom edge — which made the Pause/Cancel buttons invisible during
+        # study sessions.  Forgetting both rows guarantees the active row is
+        # packed cleanly as the last item in the frame's packing order, so
+        # it always lands directly under the display in both modes.
+        for row in (self._btn_row, self._cd_btn_row):
             try:
-                self._cd_btn_row.pack(before=self._btn_row, pady=(0, 6))
-            except (tk.TclError, AttributeError):
-                self._cd_btn_row.pack(pady=(0, 6))
-            try:
-                self._btn_row.pack_forget()
+                row.pack_forget()
             except AttributeError:
                 pass  # stubbed CTkFrame without Tk internals (headless tests)
+
+        if self._mode == MODE_COUNTDOWN:
+            # Countdown mode: only Pause/Resume + Cancel are available.
+            self._cd_btn_row.pack(pady=(0, 6))
             self._pause_btn.configure(
                 text="Resume" if not self._cd_running else "Pause")
             return
 
-        try:
-            self._btn_row.pack(before=self._cd_btn_row, pady=(0, 6))
-        except (tk.TclError, AttributeError):
-            self._btn_row.pack(pady=(0, 6))
-        try:
-            self._cd_btn_row.pack_forget()
-        except AttributeError:
-            pass  # stubbed CTkFrame without Tk internals (headless tests)
+        self._btn_row.pack(pady=(0, 6))
         self._start_btn.configure(
             state="disabled" if self._running else "normal")
         self._stop_btn.configure(
