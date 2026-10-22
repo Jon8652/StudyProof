@@ -99,22 +99,52 @@ class PageViewer(ctk.CTkFrame):
         self.image_canvas = tk.Canvas(self, highlightthickness=0, bd=0,
                                       bg="#1c1c26")
         self._image_vbar = ctk.CTkScrollbar(self, command=self.image_canvas.yview)
-        self.image_canvas.configure(yscrollcommand=self._image_vbar.set)
+        # Horizontal counterpart of the vertical bar: zoomed-in pages (and
+        # landscape pages at high zoom) are wider than the stage, so without
+        # an x-scrollbar their right edge was simply unreachable.
+        self._image_hbar = ctk.CTkScrollbar(self, orientation="horizontal",
+                                            command=self.image_canvas.xview)
+        self.image_canvas.configure(yscrollcommand=self._image_vbar.set,
+                                    xscrollcommand=self._image_hbar.set)
         self.image_label = PageImageLabel(self.image_canvas)
         self._image_window = self.image_canvas.create_window(
-            (0, 0), window=self.image_label, anchor="nw")
+            (0, 0), window=self.image_label, anchor="nw", width=0)
 
         def _sync_scrollregion(_event=None):
             self.image_canvas.configure(
                 scrollregion=self.image_canvas.bbox("all") or (0, 0, 0, 0))
 
-        def _fit_width(event):
-            # Keep the label as wide as the canvas so text placeholders wrap
-            # sensibly, while taller images drive the scroll region.
-            self.image_canvas.itemconfigure(self._image_window,
-                                            width=max(event.width - 4, 1))
-
         self.image_label.bind("<Configure>", _sync_scrollregion)
+
+        def _reset_x_scroll(_event=None):
+            # Whenever the image itself changes size (new page, zoom swap),
+            # start it flush with the left edge instead of keeping a stale
+            # horizontal offset from the previous render.
+            try:
+                self.image_canvas.xview_moveto(0.0)
+            except tk.TclError:
+                pass
+
+        self.image_label.bind("<Configure>", _reset_x_scroll, add=True)
+        # Re-evaluate the window-item width as soon as an image lands (the
+        # label's own Configure fires before any canvas resize can re-force
+        # it) so wide pages are never clipped to the viewport width.
+        self.image_label.bind("<Configure>",
+                              lambda e: self._fit_viewport(), add=True)
+
+        def _fit_width(event):
+            # The canvas window item is only forced to the viewport width
+            # while a text placeholder is showing, so messages wrap nicely.
+            # Once a real page image is on screen the item reverts to
+            # width=0 (the label's own requested size), letting a zoomed or
+            # landscape page exceed the viewport and drive the horizontal
+            # scrollbar instead of being clipped in place.
+            if self.image_label.has_image:
+                self.image_canvas.itemconfigure(self._image_window, width=0)
+            else:
+                self.image_canvas.itemconfigure(
+                    self._image_window, width=max(event.width - 4, 1))
+
         self.image_canvas.bind("<Configure>", _fit_width)
         # Scroll wheel support for Windows/macOS (delta) and Linux (button-4/5).
         # NOTE: plain tk.Canvas has no yview_scroll_units (that is a
@@ -125,6 +155,12 @@ class PageViewer(ctk.CTkFrame):
             except tk.TclError:
                 pass
 
+        def _wheel_scroll_x(delta):
+            try:
+                self.image_canvas.xview("scroll", delta, "units")
+            except tk.TclError:
+                pass
+
         self.image_canvas.bind_all(
             "<MouseWheel>",
             lambda e: _wheel_scroll(-3 if getattr(e, "delta", 0) > 0 else 3))
@@ -132,6 +168,15 @@ class PageViewer(ctk.CTkFrame):
                                    lambda e: _wheel_scroll(-3))
         self.image_canvas.bind_all("<Button-5>",
                                    lambda e: _wheel_scroll(3))
+        # Shift + wheel scrolls horizontally (Windows/macOS deltas; Linux
+        # reports the same shift state on button-4/5 events).
+        self.image_canvas.bind_all(
+            "<Shift-MouseWheel>",
+            lambda e: _wheel_scroll_x(-3 if getattr(e, "delta", 0) > 0 else 3))
+        self.image_canvas.bind_all("<Shift-Button-4>",
+                                   lambda e: _wheel_scroll_x(-3))
+        self.image_canvas.bind_all("<Shift-Button-5>",
+                                   lambda e: _wheel_scroll_x(3))
         self.apply_appearance(theme_is_dark(self))
 
         # Text stage: also created up-front but only packed in text mode.
@@ -376,13 +421,19 @@ class PageViewer(ctk.CTkFrame):
         if stage == "image":
             self.text_box.pack_forget()
             if not self._is_packed(self.image_canvas):
-                self.image_canvas.pack(side="left", fill="both", expand=True,
-                                       padx=(8, 0), pady=8)
+                # Pack order matters: the horizontal bar claims the full
+                # bottom strip first, the vertical bar the full right strip,
+                # and only then does the canvas expand into what is left.
+                self._image_hbar.pack(side="bottom", fill="x",
+                                      padx=(8, 12), pady=(0, 8))
                 self._image_vbar.pack(side="right", fill="y", padx=(2, 8),
-                                      pady=8)
+                                      pady=(8, 10))
+                self.image_canvas.pack(side="left", fill="both", expand=True,
+                                       padx=(8, 0), pady=(8, 10))
         else:
             self.image_canvas.pack_forget()
             self._image_vbar.pack_forget()
+            self._image_hbar.pack_forget()
             if not self._is_packed(self.text_box):
                 self.text_box.pack(fill="both", expand=True,
                                    padx=8, pady=8)
