@@ -63,7 +63,11 @@ class NoteEditorDialog(SafeDialog):
         self.body_text.grid(row=3, column=0, sticky="nsew")
         form.grid_rowconfigure(3, weight=1)
 
-        # Day association row.
+        # Day association row.  The button is state-driven: notes without a
+        # day offer "Add date" (attaches today), notes that already carry a
+        # day (e.g. created from the calendar, or dated via this dialog)
+        # offer "Remove date".  Previously it was always "Remove date",
+        # which made no sense for brand-new undated notes.
         day_row = ctk.CTkFrame(container, fg_color="transparent")
         day_row.pack(fill="x", padx=6, pady=(10, 4))
         self.day_label = ctk.CTkLabel(
@@ -71,11 +75,12 @@ class NoteEditorDialog(SafeDialog):
             text_color=("gray40", "gray65"), anchor="w",
         )
         self.day_label.pack(side="left")
-        ctk.CTkButton(
+        self._day_button = ctk.CTkButton(
             day_row, text="Remove date", width=110, height=26,
             fg_color="gray30", hover_color="gray25",
-            command=self._clear_day,
-        ).pack(side="right")
+            command=self._toggle_day,
+        )
+        self._day_button.pack(side="right")
 
         self._current_day: date | None = None
         if note is not None:
@@ -104,15 +109,21 @@ class NoteEditorDialog(SafeDialog):
         self._current_day = day
         self._update_day_label()
 
-    def _clear_day(self) -> None:
-        self.set_day(None)
+    def _toggle_day(self) -> None:
+        if self._current_day is None:
+            # "Add date": attach today's date automatically.
+            self.set_day(date.today())
+        else:
+            self.set_day(None)
 
     def _update_day_label(self) -> None:
         if self._current_day is not None:
             self.day_label.configure(
                 text=f"Attached to: {format_date_long(self._current_day)}")
+            self._day_button.configure(text="Remove date")
         else:
             self.day_label.configure(text="Not attached to any day")
+            self._day_button.configure(text="Add date")
 
     def _save(self) -> None:
         title = self.title_entry.get()

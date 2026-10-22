@@ -70,7 +70,10 @@ class PageImageLabel(tk.Label):
                 self._retired_photos.append(self._photo)
             self._photo = photo
             self._last_image_key = key
-        self._safe_configure(image=self._photo, text="")
+        # Undo any forced width from _fit_width so a zoomed/landscape page
+        # wider than the viewport keeps its native size and drives the
+        # horizontal scroll region instead of being clipped in place.
+        self._safe_configure(image=self._photo, text="", width=0)
 
     @property
     def has_image(self) -> bool:

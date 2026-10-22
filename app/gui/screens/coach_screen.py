@@ -33,10 +33,18 @@ class CoachScreen(BaseScreen):
         ctk.CTkButton(top, text='New session', command=self.new_session).pack(side='left', padx=4, pady=4)
         ctk.CTkButton(top, text='Sessions…', command=self.sessions).pack(side='left', padx=4)
         ctk.CTkButton(top, text='Revise Weak Topics', command=self.revise_weak_topics).pack(side='left', padx=4)
-        self.header = ctk.CTkLabel(self.content, text='', wraplength=700, justify='left')
+        self.header = ctk.CTkLabel(self.content, text='', wraplength=650, justify='left')
         self.header.pack(fill='x')
         self.thread = ctk.CTkScrollableFrame(self.content)
         self.thread.pack(fill='both', expand=True)
+        # Responsive wrapping for the coach text: the header/notice labels
+        # pack fill='x', so their <Configure> width tracks the window.  The
+        # wraplength follows it (clamped), making the text column slightly
+        # narrower in a small windowed layout and wider when maximised —
+        # matching how ChatBubble wraps its messages.
+        self._wrap_job = None
+        self._responsive_labels = []
+        self.content.bind('<Configure>', self._schedule_wrap_update, add='+')
         # Private background ratings never appear in the conversation.
         self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888')
         self.confidence_note.pack(fill='x', pady=(2, 0))
@@ -77,9 +85,49 @@ class CoachScreen(BaseScreen):
             button = ctk.CTkButton(row, text=label, width=90, command=command)
             self.buttons[key] = button
             button.gate_tip = Tooltip(button, '')
-        self.notice = ctk.CTkLabel(self.content, text='', wraplength=700)
+        self.notice = ctk.CTkLabel(self.content, text='', wraplength=650)
         self.notice.pack(fill='x')
+        self._responsive_labels = [self.header, self.notice]
         self.refresh()
+
+    # ------------------------------------------------------------------
+    # Responsive coach-text wrapping
+
+    def _schedule_wrap_update(self, event=None):
+        # Debounce resize storms: only the last Configure in a burst does
+        # the (cheap, guarded) relayout work.
+        if event is not None and event.widget is not self.content:
+            return
+        if self._wrap_job is not None:
+            try:
+                self.after_cancel(self._wrap_job)
+            except Exception:
+                pass
+        self._wrap_job = self.after(50, self._apply_responsive_wrapping)
+
+    def _apply_responsive_wrapping(self):
+        self._wrap_job = None
+        try:
+            width = self.content.winfo_width()
+        except Exception:
+            return
+        if width <= 1 or not self.winfo_exists():
+            return                        # not mapped yet; wait for Configure
+        scaling = 1.0
+        try:
+            scaling = float(self._get_widget_scaling()) or 1.0
+        except Exception:
+            pass
+        # Tk reports physical pixels; CTk wraplength uses unscaled ones.
+        logical = max(1, int(width / scaling))
+        from app.gui.widgets.chat_bubble import MAX_WRAPLENGTH, MIN_WRAPLENGTH
+        target = max(MIN_WRAPLENGTH, min(MAX_WRAPLENGTH, logical - 8))
+        for label in self._responsive_labels:
+            try:
+                if label.winfo_exists() and label.cget('wraplength') != target:
+                    label.configure(wraplength=target)
+            except Exception:
+                pass                      # widget torn down mid-resize
 
     def new_session(self):
         if not self._require_connection():
