@@ -137,7 +137,7 @@ def check_v2(check, work_dir):
         sessions.append(session)
     metrics, seconds = timed(lambda: compute_review_metrics(sessions))
     assert metrics.activity.questions_answered == 5000
-    assert len(metrics.all_sources) == 50
+    assert metrics.activity.sessions == 100
     check('review_5000_attempts', seconds)
 
 

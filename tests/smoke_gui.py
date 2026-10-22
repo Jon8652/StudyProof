@@ -320,7 +320,7 @@ def main() -> int:
           f"(confidence={q.confidence!r})")
     check('coach-revision', coach.service.submit_revision(sid, 'My revised explanation').ok)
     check('coach-followup', coach.service.request_followup(sid).ok)
-    check('coach-review-updates', bool(state.get_review_metrics().weak_sources))
+    check('coach-review-updates', state.get_review_metrics().activity.questions_answered == 1)
 
     # 16. Source pack builds within budget (SEL-2).
     pack = state.build_pack_for_selection(sel_result)
@@ -334,8 +334,8 @@ def main() -> int:
         app.update()
         metrics = state.get_review_metrics()
         check("stats-review-section",
-              hasattr(metrics, "weak_sources") and hasattr(metrics, "activity"),
-              f"(weak={len(metrics.weak_sources)}, "
+              hasattr(metrics, "weak_topics") and hasattr(metrics, "activity"),
+              f"(weak={len(metrics.weak_topics)}, "
               f"activity={metrics.activity.sessions} sessions)")
     except Exception as exc:  # noqa: BLE001
         check("stats-review-section", False, repr(exc))

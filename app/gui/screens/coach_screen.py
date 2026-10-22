@@ -162,13 +162,20 @@ class CoachScreen(BaseScreen):
         self.wait_window(dialog)
         self._weak_topics_dialog = None
         if dialog.result:
-            result = self.service.start_weak_topic_session(dialog.result)
-            if result.ok:
-                self.session_id = result.value.id
-                self.notice.configure(text='Answer in your own words, or ask for help with this topic.')
-                self.refresh()
-            else:
-                self.notice.configure(text=result.message)
+            self.revise_topic(dialog.result)
+
+    def revise_topic(self, topic_id):
+        """Open the same topic revision from the picker or Statistics."""
+        if not self._require_connection():
+            return
+        self.cancel(cancel_assessments=False)
+        result = self.service.start_weak_topic_session(topic_id)
+        if result.ok:
+            self.session_id = result.value.id
+            self.notice.configure(text='Answer in your own words, or ask for help with this topic.')
+            self.refresh()
+        else:
+            self.notice.configure(text=result.message)
 
     def resume_session(self, sid):
         self.cancel(cancel_assessments=False)

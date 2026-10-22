@@ -752,8 +752,8 @@ class AppState:
     # -- v2: review metrics (REV-1..REV-3) ---------------------------------------
 
     def get_review_metrics(self) -> ReviewMetrics:
-        """Weak-topic + coach-activity derivation over the coaching log."""
-        return compute_review_metrics(self.dataset.coach_sessions)
+        """Coach activity and the same saved topics offered for revision."""
+        return compute_review_metrics(self.dataset.coach_sessions, self.dataset.weak_topics)
 
     # -- derived views --------------------------------------------------------------
 

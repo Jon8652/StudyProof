@@ -1,10 +1,9 @@
 """Statistics screen (Part H).
 
 Sections: period totals (today/week/month/lifetime XP + time), streaks,
-medal counts, general activity, and — since v2 — a Review section (UI-24)
-showing coach activity (REV-3) and the weakest topics per source (REV-1 /
-REV-2). All values come from the stats engine so they always match
-calendar/home derivations, and refresh on any change. Cards are
+medal counts, general activity, coach activity, and the Coach's saved weak
+topics. All values come from shared state so they always match
+the other screens, and refresh on any change. Cards are
 colour-coded per metric family (time = blue, XP = gold, streaks = accent
 blue, medals = bronze/silver/gold) for quick visual scanning.
 """
@@ -13,7 +12,6 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from app.core.stats import WEAK_SCORE_THRESHOLD
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.theme import CARD_PAD_X, MUTED_TEXT
 from app.gui.widgets.summary_card import SummaryCard
@@ -121,9 +119,7 @@ class StatsScreen(BaseScreen):
         ).pack(side="left")
         self._weak_empty = ctk.CTkLabel(
             self._weak_container,
-            text="No weak topics flagged yet \u2014 work through the Study Coach "
-                 f"and sources scoring {WEAK_SCORE_THRESHOLD}+ weak points "
-                 "will appear here.",
+            text="No weak topics to revise yet. Topics will appear here as you study with the Coach.",
             font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
             wraplength=520, justify="left",
         )
@@ -200,30 +196,17 @@ class StatsScreen(BaseScreen):
         cards["coach_hints"].set_value(str(activity.hints_used), "Hints used")
         cards["coach_revisions"].set_value(str(activity.revisions),
                                            "Revisions requested")
-        if not hasattr(self, '_confidence_summary'):
-            self._confidence_summary = ctk.CTkLabel(self.scroll, text='', text_color=MUTED_TEXT)
-            self._confidence_summary.pack(fill='x')
-        counts = activity.confidence_counts
-        self._confidence_summary.configure(text=(f"Confidence: Guessed {counts['low']} · "
-            f"Unsure {counts['medium']} · Confident {counts['high']}"))
-
         # Drop everything inside the container except the header row, then
         # re-add the empty-state label / weak-topic rows.
         for child in list(self._weak_container.winfo_children()):
             if child is not self._weak_header_row:
                 child.destroy()
 
-        weak = metrics.weak_sources
+        weak = metrics.weak_topics
         if not weak:
             self._weak_empty = ctk.CTkLabel(
                 self._weak_container,
-                text=("No weak topics flagged yet \u2014 work through the Study "
-                      f"Coach and sources scoring {WEAK_SCORE_THRESHOLD}+ weak "
-                      "points will appear here."
-                      if metrics.has_coach_data else
-                      "No coaching sessions yet \u2014 start the Study Coach "
-                      "from the Library or Notes screen and weak topics will "
-                      "appear here."),
+                text="No weak topics to revise yet. Topics will appear here as you study with the Coach.",
                 font=ctk.CTkFont(size=13), text_color=MUTED_TEXT,
                 wraplength=520, justify="left",
             )
@@ -234,33 +217,25 @@ class StatsScreen(BaseScreen):
             row = ctk.CTkFrame(self._weak_container, corner_radius=8,
                                fg_color=("gray85", "gray17"))
             row.pack(fill="x", pady=3)
-            matching = [s for s in self.state.dataset.coach_sessions
-                        if any(r.id == entry.source_id for r in s.sources)]
-            if matching:
-                latest = max(matching, key=lambda s: s.updated_at_local)
-                ctk.CTkButton(row, text='Resume', width=70,
-                             command=lambda sid=latest.id: self._resume_coach(sid)).pack(side='right', padx=4)
-            kind_tag = "\U0001F4C4" if entry.kind == "document" else "\U0001F4DD"
+            row.grid_columnconfigure(0, weight=1)
+            row.grid_columnconfigure(1, weight=1)
+            source = self.state.source_ref_for(entry.source.kind, entry.source.id)
+            ctk.CTkButton(row, text='Resume', width=70,
+                         state='normal' if source else 'disabled',
+                         command=lambda tid=entry.id: self._resume_topic(tid)).grid(
+                             row=0, column=2, padx=8, pady=8)
             ctk.CTkLabel(
-                row, text=f"{kind_tag}  {entry.label}",
+                row, text=source.label if source else entry.source.label,
                 font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
-            ).pack(side="left", padx=(12, 6), pady=8)
-
-            conf_text = ""
-            if entry.average_confidence is not None:
-                conf_text = f"avg confidence {entry.average_confidence:.1f}/2 \u00b7 "
+                wraplength=240, justify='left',
+            ).grid(row=0, column=0, sticky='w', padx=(12, 6), pady=8)
             ctk.CTkLabel(
-                row,
-                text=f"{conf_text}{entry.question_count} question"
-                     f"{'s' if entry.question_count != 1 else ''}",
-                font=ctk.CTkFont(size=12), text_color=MUTED_TEXT, anchor="e",
-            ).pack(side="right", padx=(6, 4), pady=8)
-            ctk.CTkLabel(
-                row, text=f"weak points: {entry.score}",
-                font=ctk.CTkFont(size=12, weight="bold"), anchor="e",
-            ).pack(side="right", padx=(6, 12), pady=8)
+                row, text=entry.topic,
+                font=ctk.CTkFont(size=13), anchor="e",
+                wraplength=240, justify='right',
+            ).grid(row=0, column=1, sticky='e', padx=(6, 4), pady=8)
 
-    def _resume_coach(self, session_id):
+    def _resume_topic(self, topic_id):
         root = self.winfo_toplevel()
         root.show_screen('coach')
-        root.screens['coach'].resume_session(session_id)
+        root.screens['coach'].revise_topic(topic_id)
