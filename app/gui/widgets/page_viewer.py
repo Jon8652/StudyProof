@@ -28,16 +28,28 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-from app.constants import PAGE_RENDER_CACHE_SIZE, ZOOM_LEVELS
-from app.gui.theme import MUTED_TEXT
+from app.constants import (
+    PAGE_RENDER_CACHE_SIZE,
+    ZOOM_LEVELS,
+    ZOOM_MAX,
+    ZOOM_MIN,
+    ZOOM_STEP,
+)
+from app.gui.theme import (
+    CHIP_MUTED,
+    MUTED_TEXT,
+    PANE_BG,
+    PANE_HOVER,
+    ROW_BORDER,
+)
 from app.gui.widgets.page_image import PageImageLabel, theme_is_dark
 from app.gui.workers import UIEventQueue
 
 
 class PageViewer(ctk.CTkFrame):
     def __init__(self, master, events: UIEventQueue):
-        super().__init__(master, corner_radius=12, fg_color=("white", "#1c1c26"),
-                         border_width=1, border_color=("gray75", "gray28"))
+        super().__init__(master, corner_radius=12, fg_color=PANE_BG,
+                         border_width=1, border_color=ROW_BORDER)
         # NOTE: do NOT enable pack/grid propagation here.  The library screen
         # grids this frame with sticky="nsew"; letting children propagate
         # their requested size overrode that and shrank the whole viewer to
@@ -48,10 +60,13 @@ class PageViewer(ctk.CTkFrame):
         self._path: Path | None = None
         self._page_number = 1
         self._page_count = 0
-        try:                            # default view is 1.0×, not the first entry
-            self._zoom_index = ZOOM_LEVELS.index(1.0)
-        except ValueError:
-            self._zoom_index = 0
+        # Continuous zoom factor (change request: Ctrl+wheel / pinch zoom).
+        # The toolbar button still cycles the discrete ZOOM_LEVELS presets;
+        # the wheel moves in fine ZOOM_STEP increments between ZOOM_MIN and
+        # ZOOM_MAX.  Values are always snapped to whole tenths so cache keys
+        # stay stable across repeated gestures.
+        self._zoom = 1.0
+        self._zoom_job: str | None = None   # debounced re-render after wheel
         self._text_by_page: dict[int, str] = {}
         self._show_text = False
         self._render_seq = 0            # drop stale async render results
@@ -78,9 +93,12 @@ class PageViewer(ctk.CTkFrame):
         self.next_button.pack(side="left")
 
         self.zoom_button = ctk.CTkButton(
-            bar, text=self._zoom_text(), width=70, fg_color=MUTED_TEXT[1],
+            bar, text=self._zoom_text(), width=70,
             command=self._cycle_zoom)
-        self.zoom_button.configure(fg_color=("gray80", "gray28"),
+        # Blue-tinted "pill" instead of the old neutral grey chip (change
+        # request: no grey surfaces in light mode).
+        self.zoom_button.configure(fg_color=CHIP_MUTED,
+                                   hover_color=PANE_HOVER,
                                    text_color=("gray10", "gray90"))
         self.zoom_button.pack(side="right", padx=(6, 0))
 
@@ -97,7 +115,8 @@ class PageViewer(ctk.CTkFrame):
         # switches and zoom changes.  The canvas gives us native scrolling
         # for tall/zoomed pages without any of that redraw coupling.
         self.image_canvas = tk.Canvas(self, highlightthickness=0, bd=0,
-                                      bg="#1c1c26")
+                                      bg=self._canvas_stage_bg(
+                                          theme_is_dark(self)))
         self._image_vbar = ctk.CTkScrollbar(self, command=self.image_canvas.yview)
         # Horizontal counterpart of the vertical bar: zoomed-in pages (and
         # landscape pages at high zoom) are wider than the stage, so without
@@ -147,22 +166,64 @@ class PageViewer(ctk.CTkFrame):
             except tk.TclError:
                 pass
 
-        self.image_canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: _wheel_scroll(-3 if getattr(e, "delta", 0) > 0 else 3))
-        self.image_canvas.bind_all("<Button-4>",
-                                   lambda e: _wheel_scroll(-3))
-        self.image_canvas.bind_all("<Button-5>",
-                                   lambda e: _wheel_scroll(3))
-        # Shift + wheel scrolls horizontally (Windows/macOS deltas; Linux
-        # reports the same shift state on button-4/5 events).
-        self.image_canvas.bind_all(
-            "<Shift-MouseWheel>",
-            lambda e: _wheel_scroll_x(-3 if getattr(e, "delta", 0) > 0 else 3))
-        self.image_canvas.bind_all("<Shift-Button-4>",
-                                   lambda e: _wheel_scroll_x(-3))
-        self.image_canvas.bind_all("<Shift-Button-5>",
-                                   lambda e: _wheel_scroll_x(3))
+        # --- zoom with mouse wheel / touchpad pinch --------------------------
+        # Change request: a convenient alternative to clicking the 0.5/1.0/…
+        # preset button.  Ctrl/Cmd + wheel (every platform) and macOS-style
+        # two-finger *pinch* — plain scroll events that carry a non-zero
+        # `granularDeltaY` — scale the page continuously in ZOOM_STEP
+        # increments between ZOOM_MIN and ZOOM_MAX.  A real mouse wheel
+        # without Ctrl keeps scrolling vertically, so normal reading is never
+        # hijacked.  Zooming handlers return "break" so one gesture never
+        # both zooms and scrolls the stage underneath it.
+        def _is_pinch(event) -> bool:
+            try:
+                return abs(float(event.granularDeltaY)) >= 0.01
+            except Exception:
+                return False
+
+        def _zoom_from_event(event):
+            """Translate a wheel/pinch event into whole ZOOM_STEP notches."""
+            if getattr(event, "num", None) == 4:      # Linux: up = zoom in
+                self._nudge_zoom(1)
+                return "break"
+            if getattr(event, "num", None) == 5:      # Linux: down = zoom out
+                self._nudge_zoom(-1)
+                return "break"
+            delta = getattr(event, "delta", 0) or 0
+            if delta == 0:
+                return None
+            steps = int(round(abs(delta) / 10.0)) or 1   # fine trackpad ticks
+            self._nudge_zoom(steps if delta > 0 else -steps)
+            return "break"
+
+        def _wheel(event):
+            """Plain wheel handler: pinch → zoom, ordinary scroll → scroll."""
+            if _is_pinch(event):
+                return _zoom_from_event(event)
+            _wheel_scroll(-3 if getattr(event, "delta", 0) > 0 else 3)
+            return None
+
+        def _wheel_x(event):
+            if _is_pinch(event):
+                return _zoom_from_event(event)
+            _wheel_scroll_x(-3 if getattr(event, "delta", 0) > 0 else 3)
+            return None
+
+        # Re-bind the original vertical/horizontal scroll bindings through
+        # the pinch-aware wrappers above (bind_all replaces the same-event
+        # binding rather than stacking a second handler).
+        self.image_canvas.bind_all("<MouseWheel>", _wheel)
+        self.image_canvas.bind_all("<Button-4>", _wheel)
+        self.image_canvas.bind_all("<Button-5>", _wheel)
+        self.image_canvas.bind_all("<Shift-MouseWheel>", _wheel_x)
+        self.image_canvas.bind_all("<Shift-Button-4>", _wheel_x)
+        self.image_canvas.bind_all("<Shift-Button-5>", _wheel_x)
+        # Ctrl/Meta + wheel always zooms (Windows ChromeOS-style pinch,
+        # macOS Cmd-scroll, Linux Ctrl-scroll, plain mouse-wheel users).
+        for seq in ("<Control-MouseWheel>", "<Meta-MouseWheel>",
+                    "<Control-Button-4>", "<Control-Button-5>",
+                    "<Meta-Button-4>", "<Meta-Button-5>"):
+            self.image_canvas.bind_all(seq, _zoom_from_event)
         self.apply_appearance(theme_is_dark(self))
 
         # Text stage: also created up-front but only packed in text mode.
@@ -174,7 +235,18 @@ class PageViewer(ctk.CTkFrame):
         # though the extracted text was correctly inserted into the widget.
         self.text_box = ctk.CTkTextbox(
             self, wrap="word", font=ctk.CTkFont(size=13),
-            fg_color=("white", "#1c1c26"))
+            fg_color=PANE_BG)
+
+    @staticmethod
+    def _canvas_stage_bg(is_dark: bool) -> str:
+        """Plain-Tk colour for the image stage behind the page.
+
+        ``tk.Canvas`` takes a single literal colour (no CTk light/dark
+        tuple), so resolve it from the appearance mode here; refreshed on
+        every theme switch by :meth:`apply_appearance`.  The dark value
+        matches PageImageLabel's dark placeholder background exactly.
+        """
+        return "#1c1c26" if is_dark else PANE_BG[0]
 
     # ------------------------------------------------------------------------
     # Public API (main thread only)
@@ -273,10 +345,63 @@ class PageViewer(ctk.CTkFrame):
             self.show_current()
 
     def _cycle_zoom(self) -> None:
-        self._zoom_index = (self._zoom_index + 1) % len(ZOOM_LEVELS)
+        """Toolbar button: walk the discrete ZOOM_LEVELS presets as before."""
+        try:
+            index = min(range(len(ZOOM_LEVELS)),
+                        key=lambda i: abs(ZOOM_LEVELS[i] - self._zoom))
+            nxt = ZOOM_LEVELS[(index + 1) % len(ZOOM_LEVELS)]
+        except ValueError:
+            nxt = float(ZOOM_LEVELS[0])
+        self._retire_cache()             # cached images are per-zoom
+        self._apply_zoom(nxt)
+
+    def _nudge_zoom(self, steps: int) -> None:
+        """Wheel/pinch entry point: queue *steps* ZOOM_STEP notches.
+
+        Trackpads fire dozens of events per gesture; instead of re-rendering
+        on every one we accumulate the requested steps and let a short
+        debounce timer apply the final value (one render per gesture).
+        """
+        if self._document_id is None or self._page_count <= 0:
+            return
+        self._pending_zoom_steps = getattr(self, "_pending_zoom_steps", 0) \
+            + int(steps)
+        if self._zoom_job is not None:
+            try:
+                self.after_cancel(self._zoom_job)
+            except Exception:
+                pass
+        try:
+            self._zoom_job = self.after(90, self._apply_pending_zoom)
+        except Exception:
+            self._zoom_job = None
+            self._apply_pending_zoom()
+
+    def _apply_pending_zoom(self) -> None:
+        self._zoom_job = None
+        steps = getattr(self, "_pending_zoom_steps", 0)
+        self._pending_zoom_steps = 0
+        if not steps:
+            return
+        target = round(self._zoom + steps * ZOOM_STEP, 2)
+        if target == self._zoom:
+            return
+        self._retire_cache()             # cached images are per-zoom
+        self._apply_zoom(target)
+
+    def _apply_zoom(self, value: float) -> None:
+        """Set the zoom factor (clamped + snapped) and re-render once."""
+        value = min(ZOOM_MAX, max(ZOOM_MIN, round(float(value), 2)))
+        if value == self._zoom:
+            self.zoom_button.configure(text=self._zoom_text())
+            return
+        self._zoom = value
         self.zoom_button.configure(text=self._zoom_text())
-        self._retire_cache()         # cached images are per-zoom
-        self.show_current()
+        if not self._show_text:
+            # show_current() bumps _render_seq (invalidating any in-flight
+            # render) and requests the page at the new scale; a cache hit
+            # from an earlier gesture paints instantly.
+            self.show_current()
 
     def _toggle_text(self) -> None:
         self._show_text = not self._show_text
@@ -285,11 +410,11 @@ class PageViewer(ctk.CTkFrame):
         self.show_current()
 
     def _zoom_text(self) -> str:
-        return f"{self.zoom:.1f}×"
+        return f"{self._zoom:.1f}×"
 
     @property
     def zoom(self) -> float:
-        return ZOOM_LEVELS[self._zoom_index]
+        return self._zoom
 
     # ------------------------------------------------------------------------
     # Rendering (background thread + LRU cache, A-30/LIB-3)
@@ -412,6 +537,11 @@ class PageViewer(ctk.CTkFrame):
         """Pack exactly one of the two stages (image / text)."""
         if stage == "image":
             self.text_box.pack_forget()
+            # While the image stage is visible the canvas *is* the pane
+            # surface; when only the text pane shows, the frame's own blue
+            # PANE_BG must show through instead of the old hard-coded dark
+            # navy (visible as a grey/navy slab in light mode).
+            self.configure(fg_color=PANE_BG)
             if not self._is_packed(self.image_canvas):
                 # Pack order matters: the horizontal bar claims the full
                 # bottom strip first, the vertical bar the full right strip,
@@ -426,6 +556,10 @@ class PageViewer(ctk.CTkFrame):
             self.image_canvas.pack_forget()
             self._image_vbar.pack_forget()
             self._image_hbar.pack_forget()
+            # The plain tk canvas (hard-coded stage colour) would otherwise
+            # show through around the rounded CTkTextbox; hide it by making
+            # this frame paint the blue pane surface itself.
+            self.configure(fg_color="transparent")
             if not self._is_packed(self.text_box):
                 self.text_box.pack(fill="both", expand=True,
                                    padx=8, pady=8)
@@ -443,6 +577,21 @@ class PageViewer(ctk.CTkFrame):
 
     def apply_appearance(self, is_dark: bool) -> None:
         self.image_label.apply_appearance(is_dark)
+        try:
+            self.image_canvas.configure(bg=self._canvas_stage_bg(is_dark))
+        except tk.TclError:
+            pass
+
+    def destroy(self):
+        # Cancel the debounced zoom timer before Tk tears the widget down so
+        # the pending `after` callback can never fire against dead widgets.
+        if self._zoom_job is not None:
+            try:
+                self.after_cancel(self._zoom_job)
+            except Exception:
+                pass
+            self._zoom_job = None
+        super().destroy()
 
     def _update_nav(self) -> None:
         self.page_label.configure(
