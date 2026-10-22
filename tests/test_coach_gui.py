@@ -112,7 +112,7 @@ def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
         pump(app, lambda: not screen.busy)
         assert session.questions[0].revisions
         pump(app, lambda: not screen.service.assessments)
-        assert state.get_review_metrics().weak_sources
+        assert state.get_review_metrics().weak_topics
         screen.request('followup')
         pump(app, lambda: not screen.busy)
         assert session.questions[-1].parent_id == session.questions[0].id
@@ -212,8 +212,80 @@ def test_revise_weak_topics_picker_and_hidden_background_score(monkeypatch, scri
         screen.send()
         pump(app, lambda: not screen.busy and not screen.service.assessments)
         assert not state.dataset.weak_topics
+        app.show_screen('stats')
+        stats = app.screens['stats']
+        assert not state.get_review_metrics().weak_topics
+        assert stats._weak_empty.winfo_exists()
         assert all(t.confidence is None for t in revision.turns)
         assert 'confidence rating' not in screen.confidence_note.cget('text').lower()
+    finally:
+        for screen in app.screens.values():
+            if hasattr(screen, 'shutdown'):
+                screen.shutdown()
+        app.destroy()
+
+
+def test_statistics_uses_coach_topics_and_resumes_exact_revision(monkeypatch):
+    import customtkinter as ctk
+    from app.core.models import QuestionRecord, WeakTopic
+
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    note = state.create_note('AI notes', 'Transformers use self-attention.').value
+    source = state.source_ref_for('note', note.id)
+    session = state.create_coach_session([source]).value
+    question = QuestionRecord.create('How do transformers work?')
+    question.first_answer, question.confidence, question.hints_seen = 'I am unsure.', 'low', 3
+    session.questions.append(question)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.withdraw()
+        app.show_screen('stats')
+        stats = app.screens['stats']
+        # Legacy confidence and hint totals never flag extra topics.
+        assert state.get_review_metrics().weak_topics == []
+        assert stats._weak_empty.winfo_exists()
+        assert not hasattr(stats, '_confidence_summary')
+
+        transformer = WeakTopic('transformer', source, 'Transformers',
+                                question.prompt, session.id, question.id, 20)
+        attention = WeakTopic('attention', source, 'Self-attention',
+                              'What does self-attention do?', session.id, question.id, 30)
+        state.dataset.weak_topics = [transformer, attention]
+        stats.refresh()
+        rows = [child for child in stats._weak_container.winfo_children()
+                if child is not stats._weak_header_row]
+        assert len(rows) == 2
+        for row, topic in zip(rows, state.get_review_metrics().weak_topics):
+            labels = [child for child in row.winfo_children() if isinstance(child, ctk.CTkLabel)]
+            assert [label.cget('text') for label in labels] == ['AI notes', topic.topic]
+            assert [int(label.grid_info()['column']) for label in labels] == [0, 1]
+        target = state.get_review_metrics().weak_topics[0]
+        # Resume starts this exact topic's revision even without the original chat.
+        assert state.delete_coach_session(session.id).ok
+        rows = [child for child in stats._weak_container.winfo_children()
+                if child is not stats._weak_header_row]
+        button = next(child for child in rows[0].winfo_children() if isinstance(child, ctk.CTkButton))
+        assert int(button.grid_info()['column']) == 2
+        button.invoke()
+        coach = app.screens['coach']
+        revision = state.coach_session_by_id(coach.session_id)
+        assert app.current_screen_key == 'coach'
+        assert revision.questions[0].prompt == target.question
+        assert target.topic in revision.turns[0].text
+
+        state.delete_note(note.id)
+        app.show_screen('stats')
+        rows = [child for child in stats._weak_container.winfo_children()
+                if child is not stats._weak_header_row]
+        assert len(rows) == 2
+        for row in rows:
+            button = next(child for child in row.winfo_children() if isinstance(child, ctk.CTkButton))
+            assert button.cget('state') == 'disabled'
     finally:
         for screen in app.screens.values():
             if hasattr(screen, 'shutdown'):

@@ -32,13 +32,13 @@
 - **PDF Library** — import local PDFs, extract page text in the background,
   and browse pages with zoom and a text view. Files are copied into the local
   library. Protected, oversized and textless files receive friendly guidance.
-- **Study Coach** — live AI questions, confidence ratings, grounded hints
+- **Study Coach** — live AI questions, grounded hints
   and feedback, immutable first answers, revisions, follow-ups and saved
-  conversations. Review highlights weak sources and links back to coaching.
+  conversations. Statistics lists the same specific weak topics as Revise Weak
+  Topics and opens their revision sessions without showing scores or confidence ratings.
   Includes the accessibility touches from the v2 spec: role prefixes
   ("Coach:"/"You:") and textual verified ticks, tooltips explaining disabled
-  gated buttons, and a "General guidance" badge for turns with zero verified
-  quotes (ACC-3/ACC-4/ACC-5, GRD-5).
+  gated buttons (ACC-3/ACC-4/ACC-5).
 - **Settings** — dark/light theme (persisted), manual save, and a safe
   "Load from file" flow (validate → confirm → backup → replace).
 - **Study Stopwatch** — a digital stopwatch in the sidebar (underneath the Settings nav button, above the version label) with **Start / Stop / Reset** controls. It shows elapsed time as `H:MM:SS` and defaults to `0:00:00` when the app opens. Stopping only pauses the run (the reading is kept so you can resume). **Resetting** a run of **10 minutes or more** automatically logs it as a custom study session, rounded *down* to the nearest 10 minutes (e.g. `2:35:12` → 2 hours 30 minutes); shorter runs are discarded without logging, and Reset always returns the display to zero. Timing uses a monotonic clock for accuracy, and the widget is themed for both light and dark modes with distinct colors in each.

@@ -7,9 +7,8 @@ Computes every required statistic from the session list alone:
 - Bronze / Silver / Gold day counts using highest-medal-per-day only
   (A-11 / FR-46)
 
-v2 additions (pure derivation over the coaching log — no AI needed):
-- ``compute_review_metrics``: weak-topic scores per source (REV-1), coach
-  activity totals (REV-3) — used by the Stats "Review" section (UI-24).
+Coach activity totals are derived from the coaching log. Weak topics come
+directly from the Coach's saved revision list, without separate scoring.
 
 All period math uses local dates and the same start-day attribution rule.
 """
@@ -23,7 +22,7 @@ from typing import Iterable
 from app.constants import STREAK_QUALIFYING_MIN_MINUTES
 from app.core.medals import BRONZE, DayAggregate, GOLD, SILVER, \
     build_day_aggregates
-from app.core.models import CoachSession, Note, Session, Settings
+from app.core.models import CoachSession, Note, Session, Settings, WeakTopic
 from app.core.streaks import current_streak, longest_streak
 from app.utils.date_utils import month_bounds, week_bounds
 
@@ -148,34 +147,7 @@ def compute_stats(
     return result
 
 
-# --- v2: Review metrics (REV-1..REV-3, UI-24) --------------------------------
-# Pure arithmetic over the coaching log — works with zero AI code and shows
-# a friendly empty state while ``coach_sessions`` is still empty.
-
-WEAK_SCORE_THRESHOLD = 2      # REV-1: sources with score >= 2 list in Review
-_CONFIDENCE_PENALTY = {"low": 2, "medium": 1, "high": 0}   # REV-1 weights
-_CONFIDENCE_VALUE = {"low": 0, "medium": 1, "high": 2}     # for averages
-
-
-@dataclass
-class WeakSource:
-    """One Review row (UI-24): per-source weak-topic totals (REV-1/REV-2)."""
-
-    source_id: str
-    kind: str                  # "note" | "document"
-    label: str
-    score: int = 0             # summed weak points over its questions
-    question_count: int = 0
-    confidence_sum: int = 0    # sum of numeric confidences (rated only)
-    rated_count: int = 0       # questions with a confidence rating
-    latest_session_id: str | None = None   # REV-2 click target
-
-    @property
-    def average_confidence(self) -> float | None:
-        """Mean confidence 0..2 (None when nothing was ever rated)."""
-        if self.rated_count == 0:
-            return None
-        return self.confidence_sum / self.rated_count
+# --- Coach activity and saved revision topics --------------------------------
 
 
 @dataclass
@@ -187,8 +159,6 @@ class CoachActivity:
     questions_answered: int = 0
     hints_used: int = 0
     revisions: int = 0
-    confidence_counts: dict[str, int] = field(
-        default_factory=lambda: {"low": 0, "medium": 0, "high": 0})
 
     @property
     def answered_ratio(self) -> float:
@@ -201,8 +171,7 @@ class CoachActivity:
 class ReviewMetrics:
     """Everything the Stats Review section needs (UI-24)."""
 
-    weak_sources: list[WeakSource] = field(default_factory=list)  # score >= 2
-    all_sources: list[WeakSource] = field(default_factory=list)   # sorted desc
+    weak_topics: list[WeakTopic] = field(default_factory=list)
     activity: CoachActivity = field(default_factory=CoachActivity)
 
     @property
@@ -210,50 +179,17 @@ class ReviewMetrics:
         return self.activity.sessions > 0
 
 
-def _question_weak_points(question) -> int:
-    """REV-1 per-question weak points.
-
-    confidence low +2, medium +1; revisions >= 1 adds +1; hints >= 2 adds +1.
-    """
-    score = _CONFIDENCE_PENALTY.get(question.confidence or "", 0)
-    if len(question.revisions) >= 1:
-        score += 1
-    if question.hints_seen >= 2:
-        score += 1
-    return score
-
-
 def compute_review_metrics(
     coach_sessions: Iterable[CoachSession],
+    weak_topics: Iterable[WeakTopic] = (),
 ) -> ReviewMetrics:
-    """Derive weak-topic scores and coach activity from the coaching log.
-
-    Pure function (INT-2): no file access, no AI.  Sources are keyed by the
-    selection snapshot stored inside each session (SEL-3), so labels stay
-    readable even after the underlying note/document was deleted (ERR-33).
-    Follow-up child questions count toward their parent's source set, since
-    they share the same pack (COACH-8).
-    """
-    metrics = ReviewMetrics()
+    """Count coach activity and expose the Coach's unresolved topics, newest first."""
+    metrics = ReviewMetrics(weak_topics=sorted(
+        weak_topics, key=lambda topic: topic.updated_at, reverse=True))
     activity = metrics.activity
-    per_source: dict[tuple[str, str], WeakSource] = {}
-    # Latest session containing each source key (REV-2 click target).
-    latest_by_source: dict[tuple[str, str], tuple[date, str]] = {}
 
     for session in coach_sessions:
         activity.sessions += 1
-        keys = [(ref.kind, ref.id) for ref in session.sources]
-        for ref in session.sources:
-            key = (ref.kind, ref.id)
-            entry = per_source.get(key)
-            if entry is None:
-                entry = WeakSource(source_id=ref.id, kind=ref.kind,
-                                   label=ref.label)
-                per_source[key] = entry
-            stamp = session.updated_at_local.date()
-            known = latest_by_source.get(key)
-            if known is None or known[0] <= stamp:
-                latest_by_source[key] = (stamp, session.id)
 
         for question in session.questions:
             activity.questions_asked += 1
@@ -261,27 +197,4 @@ def compute_review_metrics(
                 activity.questions_answered += 1
             activity.hints_used += max(0, question.hints_seen)
             activity.revisions += len(question.revisions)
-            if question.confidence in _CONFIDENCE_VALUE:
-                activity.confidence_counts[question.confidence] += 1
-
-            weak = _question_weak_points(question)
-            for key in keys:
-                entry = per_source[key]
-                entry.question_count += 1
-                entry.score += weak
-                if question.confidence in _CONFIDENCE_VALUE:
-                    entry.confidence_sum += _CONFIDENCE_VALUE[
-                        question.confidence]
-                    entry.rated_count += 1
-
-    ordered = sorted(per_source.values(),
-                     key=lambda s: (-s.score, s.label.lower()))
-    for entry in ordered:
-        latest = latest_by_source.get((entry.kind, entry.source_id))
-        if latest is not None:
-            entry.latest_session_id = latest[1]
-
-    metrics.all_sources = ordered
-    metrics.weak_sources = [s for s in ordered
-                            if s.score >= WEAK_SCORE_THRESHOLD]
     return metrics

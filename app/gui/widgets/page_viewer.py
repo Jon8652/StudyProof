@@ -130,22 +130,8 @@ class PageViewer(ctk.CTkFrame):
         # label's own Configure fires before any canvas resize can re-force
         # it) so wide pages are never clipped to the viewport width.
         self.image_label.bind("<Configure>",
-                              lambda e: self._fit_viewport(), add=True)
-
-        def _fit_width(event):
-            # The canvas window item is only forced to the viewport width
-            # while a text placeholder is showing, so messages wrap nicely.
-            # Once a real page image is on screen the item reverts to
-            # width=0 (the label's own requested size), letting a zoomed or
-            # landscape page exceed the viewport and drive the horizontal
-            # scrollbar instead of being clipped in place.
-            if self.image_label.has_image:
-                self.image_canvas.itemconfigure(self._image_window, width=0)
-            else:
-                self.image_canvas.itemconfigure(
-                    self._image_window, width=max(event.width - 4, 1))
-
-        self.image_canvas.bind("<Configure>", _fit_width)
+                              self._fit_viewport, add=True)
+        self.image_canvas.bind("<Configure>", self._fit_viewport)
         # Scroll wheel support for Windows/macOS (delta) and Linux (button-4/5).
         # NOTE: plain tk.Canvas has no yview_scroll_units (that is a
         # CTkScrollableFrame API); use the native yview("scroll", n, "units").
@@ -192,6 +178,12 @@ class PageViewer(ctk.CTkFrame):
 
     # ------------------------------------------------------------------------
     # Public API (main thread only)
+
+    def _fit_viewport(self, _event=None) -> None:
+        """Fit placeholders to the canvas while keeping page images scrollable."""
+        width = 0 if self.image_label.has_image else max(
+            self.image_canvas.winfo_width() - 4, 1)
+        self.image_canvas.itemconfigure(self._image_window, width=width)
 
     def set_document(self, document_id: str | None, path: "str | Path | None",
                      page_count: int, text_pages: dict[int, str]) -> None:
