@@ -6,6 +6,7 @@ from app.core.agent.grounding import PageIndex
 from app.core.agent.provider_openai import sanitize_base_url
 from app.core.agent.provider_base import ProviderError
 from app.gui.screens.base_screen import BaseScreen
+from app.gui.theme import BORDER, CARD_FG, PANE_BG
 from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.dialogs.weak_topics_dialog import WeakTopicsDialog
@@ -28,14 +29,21 @@ class CoachScreen(BaseScreen):
         self._weak_topics_dialog = None
         self.events = UIEventQueue(self)
         self.events.start()
-        top = ctk.CTkFrame(self.content)
+        # Pane 1 of three (change request: no grey surfaces).  Previously an
+        # unstyled CTkFrame, which fell back to customtkinter's default grey
+        # — very visible in light mode.  Now the blue PANE_BG surface with a
+        # subtle border so it reads as a card around the top buttons.
+        top = ctk.CTkFrame(self.content, corner_radius=12, fg_color=PANE_BG,
+                           border_width=1, border_color=BORDER)
         top.pack(fill='x')
         ctk.CTkButton(top, text='New session', command=self.new_session).pack(side='left', padx=4, pady=4)
         ctk.CTkButton(top, text='Sessions…', command=self.sessions).pack(side='left', padx=4)
         ctk.CTkButton(top, text='Revise Weak Topics', command=self.revise_weak_topics).pack(side='left', padx=4)
         self.header = ctk.CTkLabel(self.content, text='', wraplength=650, justify='left')
         self.header.pack(fill='x')
-        self.thread = ctk.CTkScrollableFrame(self.content)
+        # Pane 2: the chat thread.  Unstyled CTkScrollableFrame used to show
+        # customtkinter's default grey; now the same blue pane surface.
+        self.thread = ctk.CTkScrollableFrame(self.content, fg_color=PANE_BG)
         self.thread.pack(fill='both', expand=True)
         # Responsive wrapping for the coach text: the header/notice labels
         # pack fill='x', so their <Configure> width tracks the window.  The

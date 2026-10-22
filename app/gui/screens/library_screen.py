@@ -30,12 +30,22 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from app.constants import MAX_PDF_BYTES, ZOOM_LEVELS
+from app.constants import MAX_PDF_BYTES
 from app.core.models import Document
 from app.gui.dialogs.confirm_dialog import ask_yes_no
 from app.gui.dialogs.message_dialog import show_error, show_message
 from app.gui.screens.base_screen import BaseScreen
-from app.gui.theme import ACCENT, CARD_PAD_X, MUTED_TEXT, danger_button, neutral_button
+from app.gui.theme import (
+    ACCENT,
+    CARD_PAD_X,
+    CHIP_MUTED,
+    MUTED_TEXT,
+    PANE_BG,
+    ROW_BORDER,
+    SELECTED_ROW_BG,
+    danger_button,
+    neutral_button,
+)
 from app.gui.widgets.page_viewer import PageViewer
 from app.gui.workers import ExtractionWorker, UIEventQueue
 from app.persistence import library
@@ -341,9 +351,8 @@ class LibraryScreen(BaseScreen):
             if existing_id:
                 self.select_document(existing_id)
 
-        ctk.CTkButton(buttons, text="Close", width=100,
-                      fg_color=("gray30", "gray25"),
-                      command=_close).pack(side="left", padx=6)
+        neutral_button(buttons, text="Close", width=100,
+                       command=_close).pack(side="left", padx=6)
         if existing_id:
             ctk.CTkButton(buttons, text="Open existing", width=120,
                           command=_open).pack(side="left", padx=6)
@@ -574,8 +583,8 @@ class LibraryScreen(BaseScreen):
 
     def _build_row(self, document: Document) -> ctk.CTkFrame:
         row = ctk.CTkFrame(self.list_scroll, corner_radius=10,
-                           fg_color=("gray90", "#232331"), border_width=1,
-                           border_color=("gray75", "gray28"))
+                           fg_color=PANE_BG, border_width=1,
+                           border_color=ROW_BORDER)
         name = ctk.CTkLabel(row, text=document.display_label(),
                             font=ctk.CTkFont(size=13, weight="bold"),
                             anchor="w", wraplength=220)
@@ -616,12 +625,11 @@ class LibraryScreen(BaseScreen):
         chip.configure(text=STATUS_LABELS.get(document.status,
                                               document.status),
                        fg_color=STATUS_CHIP_COLORS.get(
-                           document.status, ("gray80", "gray28")))
+                           document.status, CHIP_MUTED))
         selected = document.id == self._selected_id
         widgets["row"].configure(
-            border_color=ACCENT if selected else ("gray75", "gray28"),
-            fg_color=("#dbe7f5", "#2b3a52") if selected
-            else ("gray90", "#232331"))
+            border_color=ACCENT if selected else ROW_BORDER,
+            fg_color=SELECTED_ROW_BG if selected else PANE_BG)
 
     def _sync_viewer(self) -> None:
         document = self._current_document()
