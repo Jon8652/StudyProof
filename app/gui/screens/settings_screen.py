@@ -90,7 +90,7 @@ class SettingsScreen(BaseScreen):
         self.light_button.pack(side="left")
 
         ai_card = _section_card(self.content, 'AI', 'Study Coach (AI)',
-            'Your key stays on this device and is sent only to the base URL above.')
+            'Your key stays on this device and is sent only to the base URL below.')
         self.ai_entries = {}
         for key, label in [('base_url', 'Base URL'), ('api_key', 'API key')]:
             row = ctk.CTkFrame(ai_card, fg_color='transparent')
