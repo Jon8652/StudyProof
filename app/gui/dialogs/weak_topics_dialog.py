@@ -28,10 +28,7 @@ class WeakTopicsDialog(SafeDialog):
             row = ctk.CTkFrame(scroll)
             row.pack(fill='x', pady=5)
             available = state.source_ref_for(topic.source.kind, topic.source.id) is not None
-            text = f'{topic.topic}\n{topic.source.label}\n{topic.question}'
-            if not available:
-                text += '\nSource removed — restore it to revise this topic.'
-            ctk.CTkLabel(row, text=text, wraplength=490, justify='left').pack(side='left', padx=10, pady=8)
+            ctk.CTkLabel(row, text=topic.topic, wraplength=490, justify='left').pack(side='left', padx=10, pady=8)
             ctk.CTkButton(row, text='Revise', width=90,
                           state='normal' if available else 'disabled',
                           command=lambda tid=topic.id: self.choose(tid)).pack(side='right', padx=8)
