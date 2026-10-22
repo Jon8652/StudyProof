@@ -133,6 +133,14 @@ class StopwatchWidget(ctk.CTkFrame):
         # with a "finished" countdown that no longer exists.
         self._cd_finish_job: str | None = None
 
+        # Named button-row frames.  _sync_buttons() re-packs *into* these,
+        # so the rows always stay in their original stacking order (btn_row
+        # above cd_row).  Without names, pack_forget + pack(side="left")
+        # appends the row to the END of the packing order every time the
+        # mode flips back to stopwatch — after a start/cancel cycle the
+        # Start/Stop/Reset row lands *below* the (empty) countdown row and
+        # the fixed-height card clips it off the bottom edge.
+        self._btn_row = ctk.CTkFrame(self, fg_color="transparent")
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -153,12 +161,12 @@ class StopwatchWidget(ctk.CTkFrame):
         )
         self._display.pack(pady=(0, 3))
 
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        # btn_row was created earlier as self._btn_row (see note there).
         # 6 px bottom gap mirrors the header's 6 px top gap (see above).
-        btn_row.pack(pady=(0, 6))
+        self._btn_row.pack(pady=(0, 6))
 
         self._start_btn = ctk.CTkButton(
-            btn_row, text="Start", width=52, height=26, corner_radius=8,
+            self._btn_row, text="Start", width=52, height=26, corner_radius=8,
             fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ACCENT_TEXT,
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._on_start,
