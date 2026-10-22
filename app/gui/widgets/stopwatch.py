@@ -34,6 +34,7 @@ footer.  The widget has two modes:
 from __future__ import annotations
 
 import time
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -77,7 +78,7 @@ MODE_COUNTDOWN = "countdown"
 # paddings below the button rows' bottom edge gap is *equal* to the header's
 # top gap (6 px unscaled each side), so nothing spills over the rounded
 # corner_radius=12 base of the card any more.
-CARD_HEIGHT = 124
+CARD_HEIGHT = 116
 
 
 def format_stopwatch(elapsed_s: float) -> str:
@@ -133,13 +134,14 @@ class StopwatchWidget(ctk.CTkFrame):
         # with a "finished" countdown that no longer exists.
         self._cd_finish_job: str | None = None
 
-        # Named button-row frames.  _sync_buttons() re-packs *into* these,
-        # so the rows always stay in their original stacking order (btn_row
-        # above cd_row).  Without names, pack_forget + pack(side="left")
-        # appends the row to the END of the packing order every time the
-        # mode flips back to stopwatch — after a start/cancel cycle the
-        # Start/Stop/Reset row lands *below* the (empty) countdown row and
-        # the fixed-height card clips it off the bottom edge.
+        # Named button-row frames.  _sync_buttons() swaps which row is
+        # visible and re-packs it *in its original slot* (btn_row before
+        # cd_row in the packing order).  Without explicit placement,
+        # pack_forget + pack appends the row to the END of the packing
+        # order every time the mode flips back to stopwatch — after a
+        # start/cancel cycle the Start/Stop/Reset row lands *below* the
+        # (empty) countdown row and the fixed-height card clips it off
+        # the bottom edge.
         self._btn_row = ctk.CTkFrame(self, fg_color="transparent")
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
@@ -149,9 +151,10 @@ class StopwatchWidget(ctk.CTkFrame):
         # Compact paddings inside the trimmed fixed-height card.  Symmetry
         # rule for the request "bottom gap == top gap": the header keeps a
         # 6 px top gap and the button rows end with a matching 6 px bottom
-        # gap; every remaining pixel belongs to the widgets themselves, so
-        # the card is as short as its content allows without the buttons
-        # overlapping the rounded base edge.
+        # gap.  CARD_HEIGHT is pinned to exactly the stacked content height
+        # (6 + header + 2 + display + row + 6) so pack leaves no slack at
+        # the base — measured on Xvfb this puts the visible digits-to-
+        # buttons gap at ~7 px and the button-to-edge gap at 6 px.
         self._header.pack(pady=(6, 2))
 
         self._display = ctk.CTkLabel(
@@ -159,7 +162,11 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=22, weight="bold", family="Consolas"),
             text_color=TIME_BLUE,
         )
-        self._display.pack(pady=(0, 3))
+        # Tight stack: pack only pads *between* widgets, so every pixel of
+        # slack left in the fixed-height card would otherwise pool beneath
+        # the last row and make the base look too long.  The display keeps
+        # zero outer pad; the rows below carry the real gaps.
+        self._display.pack(pady=0)
 
         # btn_row was created earlier as self._btn_row (see note there).
         # 6 px bottom gap mirrors the header's 6 px top gap (see above).
@@ -174,7 +181,7 @@ class StopwatchWidget(ctk.CTkFrame):
         self._start_btn.pack(side="left", padx=3)
 
         self._stop_btn = ctk.CTkButton(
-            btn_row, text="Stop", width=52, height=26, corner_radius=8,
+            self._btn_row, text="Stop", width=52, height=26, corner_radius=8,
             fg_color=NEUTRAL, hover_color=NEUTRAL_HOVER,
             text_color=NEUTRAL_TEXT,
             font=ctk.CTkFont(size=12, weight="bold"),
@@ -183,7 +190,7 @@ class StopwatchWidget(ctk.CTkFrame):
         self._stop_btn.pack(side="left", padx=3)
 
         self._reset_btn = ctk.CTkButton(
-            btn_row, text="Reset", width=58, height=26, corner_radius=8,
+            self._btn_row, text="Reset", width=58, height=26, corner_radius=8,
             fg_color=DANGER, hover_color=DANGER_HOVER, text_color="white",
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._on_reset,
@@ -194,7 +201,10 @@ class StopwatchWidget(ctk.CTkFrame):
         # at the same position as btn_row so both modes occupy identical
         # vertical space inside the fixed-height card.
         cd_row = ctk.CTkFrame(self, fg_color="transparent")
-        cd_row.pack(pady=(0, 6))   # same bottom gap as btn_row (mode swap keeps geometry)
+        # Pack *immediately after* btn_row so the two rows are stacked in a
+        # fixed order; _sync_buttons swaps which one is visible by
+        # re-packing it in place (after=self._btn_row / before=cd_row).
+        cd_row.pack(after=self._btn_row, pady=(0, 6))  # same bottom gap as btn_row (mode swap keeps geometry)
         self._cd_btn_row = cd_row
 
         self._pause_btn = ctk.CTkButton(
@@ -501,20 +511,28 @@ class StopwatchWidget(ctk.CTkFrame):
     def _sync_buttons(self) -> None:
         if self._mode == MODE_COUNTDOWN:
             # Countdown mode: only Pause/Resume + Cancel are available.
-            self._start_btn.pack_forget()
-            self._stop_btn.pack_forget()
-            self._reset_btn.pack_forget()
+            # Swap the visible rows *in place*: cd_row must go back into
+            # btn_row's original slot (before it in the packing order).
+            # A plain pack() would append to the end of the order, so after
+            # a start/cancel cycle the Start/Stop/Reset row would land
+            # *below* the countdown row and the fixed-height card would
+            # clip it off the bottom edge.  ``before=`` requires the anchor
+            # to be packed, hence the try/except fallback for the very
+            # first sync (both rows still unpacked at construction time).
+            try:
+                self._cd_btn_row.pack(before=self._btn_row, pady=(0, 6))
+            except tk.TclError:
+                self._cd_btn_row.pack(pady=(0, 6))
+            self._btn_row.pack_forget()
             self._pause_btn.configure(
                 text="Resume" if not self._cd_running else "Pause")
-            self._pause_btn.pack(side="left", padx=3)
-            self._cancel_btn.pack(side="left", padx=3)
             return
 
-        self._pause_btn.pack_forget()
-        self._cancel_btn.pack_forget()
-        self._start_btn.pack(side="left", padx=3)
-        self._stop_btn.pack(side="left", padx=3)
-        self._reset_btn.pack(side="left", padx=3)
+        try:
+            self._btn_row.pack(before=self._cd_btn_row, pady=(0, 6))
+        except tk.TclError:
+            self._btn_row.pack(pady=(0, 6))
+        self._cd_btn_row.pack_forget()
         self._start_btn.configure(
             state="disabled" if self._running else "normal")
         self._stop_btn.configure(
