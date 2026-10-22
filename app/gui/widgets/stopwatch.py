@@ -72,9 +72,10 @@ MODE_COUNTDOWN = "countdown"
 # and countdown mode (Pause/Cancel row), and stretches oddly when the window
 # is maximised / fullscreen because the packed "side=bottom" block grows with
 # the taller layout.  Pinning an explicit height (with pack_propagate off)
-# makes the card render identically in windowed and fullscreen layouts; the
-# internal paddings below are balanced so the content sits evenly inside it.
-CARD_HEIGHT = 158
+# makes the card render identically in windowed and fullscreen layouts.
+# Trimmed from 158 -> 136: the excess bottom whitespace was removed so the
+# Start/Stop/Reset row now sits close to the bottom edge of the card.
+CARD_HEIGHT = 136
 
 
 def format_stopwatch(elapsed_s: float) -> str:
@@ -135,9 +136,9 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=MUTED_TEXT,
         )
-        # Balanced paddings inside the fixed-height card: equal top/bottom
-        # gaps (9 px) keep the content vertically centred in both modes.
-        self._header.pack(pady=(9, 2))
+        # Compact paddings inside the trimmed fixed-height card: small top
+        # gap, and the button rows hug the bottom edge (4 px below them).
+        self._header.pack(pady=(6, 2))
 
         self._display = ctk.CTkLabel(
             self, text=self._display_text(),
