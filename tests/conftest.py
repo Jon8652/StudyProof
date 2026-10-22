@@ -6,9 +6,42 @@ tests never touch the real user folder (Part C test plan).
 
 from __future__ import annotations
 
+import gc
+import tkinter as tk
+
 import pytest
 
-from app.utils import paths
+from app.utils import paths, resources
+
+
+@pytest.fixture(autouse=True)
+def isolated_gui_runtime(monkeypatch):
+    """Keep Tk images and partially built roots within their own test.
+
+    Cached CTkImages contain PhotoImages owned by one Tcl interpreter and
+    cannot be reused after that test's root is destroyed.
+    """
+    destroy = tk.Tk.destroy
+
+    def destroy_without_pending_callbacks(root):
+        # CTk's appearance/DPI timers can otherwise outlive a destroyed
+        # root and run while the next test initializes its interpreter.
+        for job in root.tk.splitlist(root.tk.call("after", "info")):
+            # Let each owning widget delete its callback command on destroy.
+            root.tk.call("after", "cancel", job)
+        destroy(root)
+
+    monkeypatch.setattr(tk.Tk, "destroy", destroy_without_pending_callbacks)
+    resources._IMAGE_CACHE.clear()
+    yield
+    root = tk._default_root
+    if root is not None:
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+    resources._IMAGE_CACHE.clear()
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)

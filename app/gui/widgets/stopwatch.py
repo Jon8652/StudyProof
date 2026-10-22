@@ -131,12 +131,8 @@ class StopwatchWidget(ctk.CTkFrame):
         # the countdown state on their buttons without polling.
         self.on_countdown_change = None
 
-        # Countdowns are driven by a *deferred* finish job (``after``), never
-        # only by the 200 ms tick loop: Tk ``after`` callbacks do not run
-        # while a modal dialog holds the grab (grab_set + wait_window).  A
-        # scheduled job still fires once the mainloop resumes, so completion
-        # can never be missed and start-buttons can never stay greyed out
-        # with a "finished" countdown that no longer exists.
+        # The finish job checks completion independently of display ticks.
+        # Both use Tk's event loop, including a modal wait_window loop.
         self._cd_finish_job: str | None = None
 
         # Two stacked button rows: only one is ever packed; _sync_buttons()
@@ -268,13 +264,9 @@ class StopwatchWidget(ctk.CTkFrame):
 
     # ------------------------------------------------------------- tick loop
 
-    # Long countdowns (the 1 h / 2 h presets) must not park a single
-    # ``after(3_600_000, finish)`` job: some Tk event loops — notably when the
-    # interpreter is only serviced intermittently by ``update()`` polling, as
-    # in automated test harnesses — never dispatch such far-future timers.
-    # The finish leg is therefore split into short hops that re-arm while they
-    # run; each hop also refreshes the display, so the countdown stays alive
-    # even if the separate 200 ms tick loop is starved.
+    # Recheck the monotonic balance in bounded hops, independently of the
+    # display tick loop. Tk's timer delays remain real milliseconds even
+    # when a test substitutes an accelerated monotonic clock.
     _CD_MAX_HOP_MS = 5_000
 
     def _schedule_tick(self) -> None:
@@ -293,16 +285,9 @@ class StopwatchWidget(ctk.CTkFrame):
         """Arm a deferred finish check at (or before) the moment remaining
         hits 0.
 
-        The tick loop also watches for zero, but ``after`` callbacks are
-        *not* dispatched while a modal dialog (grab_set + wait_window) is
-        open — whereas scheduled jobs still run once the mainloop resumes.
-        Scheduling the finish explicitly guarantees completion always fires
-        (recording the session and re-enabling the start buttons), even if
-        the countdown "ran out" behind an open dialog.
-
-        The wait is chopped into hops of at most ``_CD_MAX_HOP_MS`` which
-        re-arm from inside the callback chain, so a multi-hour countdown is
-        never represented by one long-future timer that could be dropped.
+        The tick loop also watches for zero. This independent callback
+        checks the same monotonic balance at most every ``_CD_MAX_HOP_MS``
+        milliseconds and re-arms if there is still time remaining.
         """
         self._cancel_cd_finish()
         delay_ms = max(0, int(round(self._remaining_s() * 1000)))

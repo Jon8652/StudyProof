@@ -83,27 +83,29 @@ class TestNeutraliseGlobalFocus:
 
     def test_other_button1_handlers_survive(self, root):
         """Only the library's set_focus chunks are dropped, nothing else."""
-        marker_cmd = []
+        clicks = []
 
         def other_handler(event):
-            pass
+            clicks.append(event.widget)
 
-        root.bind_all("<Button-1>", other_handler, add=True)
-        marker_cmd.append(repr(other_handler))
+        handler_id = root.bind_all("<Button-1>", other_handler, add=True)
         script_before = root.tk.call("bind", "all", "<Button-1>")
+        assert _set_focus_chunks(root) >= 1
+        handler_chunk = next(chunk.strip() for chunk in script_before.split("\n\n")
+                             if handler_id in chunk)
         dlg = SafeDialog(root)
-        root.update()
-        script_after = root.tk.call("bind", "all", "<Button-1>") or ""
-        # our own handler's command id must still be bound
-        cmd_ids_before = {tok for tok in script_before.replace("\n", " ").split()
-                          if tok[0].isdigit()}
-        cmd_ids_after = {tok for tok in script_after.replace("\n", " ").split()
-                         if tok[0].isdigit()}
-        assert cmd_ids_before - cmd_ids_after  # something was removed...
-        # ...and what remains includes every non-set_focus command id
-        assert cmd_ids_after != set() or _set_focus_chunks(root) == 0
-        dlg.destroy()
-        root.unbind_all("<Button-1>")
+        try:
+            root.update()
+            script_after = root.tk.call("bind", "all", "<Button-1>") or ""
+            assert _set_focus_chunks(root) == 0
+            assert handler_chunk in script_after
+            # Execute the surviving binding too, independent of Tcl quoting.
+            dlg.event_generate("<Button-1>", x=5, y=5)
+            root.update()
+            assert clicks == [dlg]
+        finally:
+            dlg.destroy()
+            root.unbind_all("<Button-1>")
 
     def test_entry_click_focus_still_works(self, root):
         """Removing the global handler must not break normal entry focus."""
@@ -113,6 +115,10 @@ class TestNeutraliseGlobalFocus:
         dlg.update_idletasks()
         dlg.update()
         inner = next(w for w in entry.winfo_children() if isinstance(w, tk.Entry))
+        # CTk briefly withdraws Windows dialogs while styling their titlebar.
+        # Focus requests only take effect once the entry is mapped again.
+        if not inner.winfo_viewable():
+            inner.wait_visibility()
         inner.focus_force()
         root.update()
         inner.event_generate("<Button-1>", x=5, y=5)

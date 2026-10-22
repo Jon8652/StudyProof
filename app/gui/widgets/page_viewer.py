@@ -517,6 +517,7 @@ class PageViewer(ctk.CTkFrame):
     def _display_image(self, pil_image) -> None:
         self._show_stage("image")
         self.image_label.set_image(pil_image)
+        self._fit_viewport()
 
     def _fallback_to_text(self, notice: str) -> None:
         self._show_text = True
@@ -600,6 +601,7 @@ class PageViewer(ctk.CTkFrame):
     def _set_placeholder(self, message: str) -> None:
         self._show_stage("image")
         self.image_label.set_message(message)
+        self._fit_viewport()
 
     def apply_appearance(self, is_dark: bool) -> None:
         self.image_label.apply_appearance(is_dark)

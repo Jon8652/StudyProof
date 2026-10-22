@@ -35,6 +35,8 @@ def test_viewport_resize_and_image_changes_keep_pages_scrollable():
             viewer.image_canvas.winfo_width() - 4, 1)
 
         viewer._display_image(Image.new('RGB', (1600, 300), 'white'))
+        # Image changes must update the item before any Configure event.
+        assert int(viewer.image_canvas.itemcget(viewer._image_window, 'width')) == 0
         settle()
         assert viewer.image_label.has_image
         assert int(viewer.image_canvas.itemcget(viewer._image_window, 'width')) == 0
@@ -44,6 +46,8 @@ def test_viewport_resize_and_image_changes_keep_pages_scrollable():
         settle()
         assert int(viewer.image_canvas.itemcget(viewer._image_window, 'width')) == 0
         viewer.clear()
+        assert int(viewer.image_canvas.itemcget(viewer._image_window, 'width')) == max(
+            viewer.image_canvas.winfo_width() - 4, 1)
         settle()
         assert not viewer.image_label.has_image
         assert int(viewer.image_canvas.itemcget(viewer._image_window, 'width')) == max(
