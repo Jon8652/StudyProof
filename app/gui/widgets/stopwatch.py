@@ -108,6 +108,11 @@ class StopwatchWidget(ctk.CTkFrame):
             pass  # headless/stub masters (tests) may not have a geometry mgr
         self._app_state = app_state
 
+        # IMPORTANT: all state attributes must be assigned *before* any child
+        # widget is constructed.  The headless test harness stubs CTk widget
+        # __init__ with a bare object (no .tk), so if super().__init__'s
+        # internal destroy() ever fell through to our destroy() override,
+        # referencing unset attributes would raise AttributeError mid-build.
         # --- stopwatch-mode state ------------------------------------------
         self._running = False
         self._accumulated_s = 0.0     # completed running segments
@@ -134,15 +139,32 @@ class StopwatchWidget(ctk.CTkFrame):
         # with a "finished" countdown that no longer exists.
         self._cd_finish_job: str | None = None
 
-        # Named button-row frames.  _sync_buttons() swaps which row is
-        # visible and re-packs it *in its original slot* (btn_row before
-        # cd_row in the packing order).  Without explicit placement,
-        # pack_forget + pack appends the row to the END of the packing
-        # order every time the mode flips back to stopwatch — after a
-        # start/cancel cycle the Start/Stop/Reset row lands *below* the
-        # (empty) countdown row and the fixed-height card clips it off
-        # the bottom edge.
+        # Two stacked button rows: only one is ever packed; _sync_buttons()
+        # swaps which one by re-packing it *in its original slot*.  The rows
+        # are built up-front (before any other child) because CTk's
+        # CTkBaseClass.__init__ destroys its own pre-widget children via the
+        # plain tkinter Frame.destroy — i.e. OUR destroy() override can run
+        # while __init__ is still executing, so anything it touches must
+        # already exist by then.
         self._btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        cd_row = ctk.CTkFrame(self, fg_color="transparent")
+        self._cd_btn_row = cd_row
+        # Countdown-only controls (hidden while in stopwatch mode).  Packed
+        # at the same position as btn_row so both modes occupy identical
+        # vertical space inside the fixed-height card.
+        self._pause_btn = ctk.CTkButton(
+            cd_row, text="Pause", width=70, height=26, corner_radius=8,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ACCENT_TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_pause_toggle,
+        )
+
+        self._cancel_btn = ctk.CTkButton(
+            cd_row, text="Cancel", width=70, height=26, corner_radius=8,
+            fg_color=DANGER, hover_color=DANGER_HOVER, text_color="white",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.cancel_countdown,
+        )
         self._header = ctk.CTkLabel(
             self, text="Study Stopwatch",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -197,29 +219,10 @@ class StopwatchWidget(ctk.CTkFrame):
         )
         self._reset_btn.pack(side="left", padx=3)
 
-        # Countdown-only controls (hidden while in stopwatch mode).  Packed
-        # at the same position as btn_row so both modes occupy identical
-        # vertical space inside the fixed-height card.
-        cd_row = ctk.CTkFrame(self, fg_color="transparent")
         # Pack *immediately after* btn_row so the two rows are stacked in a
         # fixed order; _sync_buttons swaps which one is visible by
-        # re-packing it in place (after=self._btn_row / before=cd_row).
-        cd_row.pack(after=self._btn_row, pady=(0, 6))  # same bottom gap as btn_row (mode swap keeps geometry)
-        self._cd_btn_row = cd_row
-
-        self._pause_btn = ctk.CTkButton(
-            cd_row, text="Pause", width=70, height=26, corner_radius=8,
-            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ACCENT_TEXT,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=self._on_pause_toggle,
-        )
-
-        self._cancel_btn = ctk.CTkButton(
-            cd_row, text="Cancel", width=70, height=26, corner_radius=8,
-            fg_color=DANGER, hover_color=DANGER_HOVER, text_color="white",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=self.cancel_countdown,
-        )
+        # re-packing it in place (before= the other row).
+        cd_row.pack(after=self._btn_row, pady=(0, 6))
 
         self._sync_buttons()
 
@@ -521,18 +524,24 @@ class StopwatchWidget(ctk.CTkFrame):
             # first sync (both rows still unpacked at construction time).
             try:
                 self._cd_btn_row.pack(before=self._btn_row, pady=(0, 6))
-            except tk.TclError:
+            except (tk.TclError, AttributeError):
                 self._cd_btn_row.pack(pady=(0, 6))
-            self._btn_row.pack_forget()
+            try:
+                self._btn_row.pack_forget()
+            except AttributeError:
+                pass  # stubbed CTkFrame without Tk internals (headless tests)
             self._pause_btn.configure(
                 text="Resume" if not self._cd_running else "Pause")
             return
 
         try:
             self._btn_row.pack(before=self._cd_btn_row, pady=(0, 6))
-        except tk.TclError:
+        except (tk.TclError, AttributeError):
             self._btn_row.pack(pady=(0, 6))
-        self._cd_btn_row.pack_forget()
+        try:
+            self._cd_btn_row.pack_forget()
+        except AttributeError:
+            pass  # stubbed CTkFrame without Tk internals (headless tests)
         self._start_btn.configure(
             state="disabled" if self._running else "normal")
         self._stop_btn.configure(
@@ -541,9 +550,27 @@ class StopwatchWidget(ctk.CTkFrame):
     # ------------------------------------------------------------- lifecycle
 
     def destroy(self):
-        self._cancel_tick()
-        self._cancel_cd_finish()
-        super().destroy()
+        # getattr-guarded: CTk's internal __init__ teardown can invoke the
+        # overridden destroy() on a half-built instance (and headless test
+        # stubs have no Tk at all) — never let cleanup raise during build.
+        job = getattr(self, "_tick_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._tick_job = None
+        job = getattr(self, "_cd_finish_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._cd_finish_job = None
+        try:
+            super().destroy()
+        except AttributeError:
+            pass  # stubbed/headless instance without Tk internals
 
 
 def format_minutes(minutes: int) -> str:
