@@ -1,3 +1,4 @@
 __pycache__/
 *.pyc
-/_tmp/test-deps
+/_tmp/
+.pytest_cache/
