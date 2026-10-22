@@ -198,9 +198,24 @@ class PageViewer(ctk.CTkFrame):
             return "break"
 
         def _wheel(event):
-            """Plain wheel handler: pinch → zoom, ordinary scroll → scroll."""
+            """Plain wheel handler: pinch → zoom, ordinary scroll → scroll.
+
+            Ordinary (non-pinch) scrolling must only be handled when the
+            pointer is actually over the image stage: this binding is global
+            (bind_all), and swallowing every wheel event used to hijack the
+            text pane's own scrolling too.  When the cursor is elsewhere we
+            return None so Tk's normal widget bindings still run.
+            """
             if _is_pinch(event):
                 return _zoom_from_event(event)
+            try:
+                over_image = self.image_canvas.winfo_containing(
+                    event.x_root, event.y_root) in (
+                        self.image_canvas, self.image_label)
+            except (KeyError, tk.TclError):
+                over_image = False
+            if not over_image:
+                return None
             _wheel_scroll(-3 if getattr(event, "delta", 0) > 0 else 3)
             return None
 
@@ -393,17 +408,21 @@ class PageViewer(ctk.CTkFrame):
 
     def _apply_zoom(self, value: float) -> None:
         """Set the zoom factor (clamped + snapped) and re-render once."""
-        value = min(ZOOM_MAX, max(ZOOM_MIN, round(float(value), 2)))
-        if value == self._zoom:
-            self.zoom_button.configure(text=self._zoom_text())
+        value = min(ZOOM_MAX, max(ZOOM_MIN, round(float(value), 1)))
+        changed = value != self._zoom
+        self._zoom = value
+        # Refresh the pill even when the value didn't change: callers like
+        # _cycle_zoom may pass a preset that equals the current continuous
+        # zoom (e.g. wheel-zoom to 1.5 then press the button), and the label
+        # must still reflect the new state.
+        self.zoom_button.configure(text=self._zoom_text())
+        if not changed:
             return
         # Cached page bitmaps are keyed by (page, zoom), so a new scale
         # invalidates them — retire *before* the re-render kicks off.  (The
         # LRU only drops our PIL copies; Tk-visible PhotoImages stay alive
         # in PageImageLabel, so this is safe even mid-gesture.)
         self._retire_cache()
-        self._zoom = value
-        self.zoom_button.configure(text=self._zoom_text())
         if not self._show_text:
             # show_current() bumps _render_seq (invalidating any in-flight
             # render) and requests the page at the new scale; a cache hit
