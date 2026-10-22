@@ -66,6 +66,16 @@ ROUND_TO_MINUTES = 10
 MODE_STOPWATCH = "stopwatch"
 MODE_COUNTDOWN = "countdown"
 
+# Fixed card height (px).  The sidebar packs this widget with fill="x" but
+# never constrains its height, so the card used to size itself to its
+# children — which *changes* between stopwatch mode (Start/Stop/Reset row)
+# and countdown mode (Pause/Cancel row), and stretches oddly when the window
+# is maximised / fullscreen because the packed "side=bottom" block grows with
+# the taller layout.  Pinning an explicit height (with pack_propagate off)
+# makes the card render identically in windowed and fullscreen layouts; the
+# internal paddings below are balanced so the content sits evenly inside it.
+CARD_HEIGHT = 158
+
 
 def format_stopwatch(elapsed_s: float) -> str:
     """Return ``H:MM:SS`` for an elapsed-second count (e.g. ``2:35:12``).
@@ -83,8 +93,15 @@ def format_stopwatch(elapsed_s: float) -> str:
 
 class StopwatchWidget(ctk.CTkFrame):
     def __init__(self, master, app_state: AppState):
-        super().__init__(master, corner_radius=12, fg_color=CARD_FG,
+        super().__init__(master, corner_radius=12, height=CARD_HEIGHT,
+                         fg_color=CARD_FG,
                          border_width=1, border_color=BORDER)
+        # Fixed-size card: children never resize the frame, so the widget is
+        # pixel-identical in windowed and maximised/fullscreen layouts.
+        try:
+            self.pack_propagate(False)
+        except Exception:
+            pass  # headless/stub masters (tests) may not have a geometry mgr
         self._app_state = app_state
 
         # --- stopwatch-mode state ------------------------------------------
@@ -118,17 +135,19 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=MUTED_TEXT,
         )
-        self._header.pack(pady=(9, 1))
+        # Balanced paddings inside the fixed-height card: equal top/bottom
+        # gaps (9 px) keep the content vertically centred in both modes.
+        self._header.pack(pady=(9, 2))
 
         self._display = ctk.CTkLabel(
             self, text=self._display_text(),
             font=ctk.CTkFont(size=22, weight="bold", family="Consolas"),
             text_color=TIME_BLUE,
         )
-        self._display.pack(pady=(0, 4))
+        self._display.pack(pady=(0, 6))
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(pady=(0, 2))
+        btn_row.pack(pady=(0, 0))
 
         self._start_btn = ctk.CTkButton(
             btn_row, text="Start", width=52, height=26, corner_radius=8,
@@ -155,9 +174,11 @@ class StopwatchWidget(ctk.CTkFrame):
         )
         self._reset_btn.pack(side="left", padx=3)
 
-        # Countdown-only controls (hidden while in stopwatch mode).
+        # Countdown-only controls (hidden while in stopwatch mode).  Packed
+        # at the same position as btn_row so both modes occupy identical
+        # vertical space inside the fixed-height card.
         cd_row = ctk.CTkFrame(self, fg_color="transparent")
-        cd_row.pack(pady=(0, 9))
+        cd_row.pack(pady=(0, 0))
         self._cd_btn_row = cd_row
 
         self._pause_btn = ctk.CTkButton(

@@ -19,6 +19,13 @@ MAX_PDF_PAGES = 2000                  # PDF-2: page cap (ERR-30)
 MAX_PAGE_CHARS = 200_000              # §14.1: defensive per-page clamp
 PAGE_RENDER_CACHE_SIZE = 5            # A-30 / LIB-3: LRU page-image cache
 ZOOM_LEVELS = (0.5, 1.0, 1.5, 2.0)    # UI-20 viewer zoom steps (start at 1.0×)
+# Continuous wheel/pinch zoom (change request: zoom with touchpad/mouse in the
+# PDF view).  The cycle button still walks ZOOM_LEVELS; Ctrl+wheel / two-finger
+# pinch scales smoothly between ZOOM_MIN and ZOOM_MAX in ZOOM_STEP increments
+# so rendered pages stay cache-friendly (keys are rounded to whole steps).
+ZOOM_MIN = 0.5                          # == min(ZOOM_LEVELS)
+ZOOM_MAX = 2.0                          # == max(ZOOM_LEVELS)
+ZOOM_STEP = 0.1                         # one notch of the wheel/pinch
 EXTRACTION_PROGRESS_HZ = 10           # NFR-12: at most ~10 progress updates/s
 
 # --- Study Coach context (v2) -------------------------------------------------

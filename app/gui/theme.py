@@ -83,6 +83,20 @@ DETAIL_CARD_FG = ("#e7eff9", "#232331")
 # surface; selection is still conveyed by the accent border + ACCENT title.
 NOTE_ROW_BG = ("#e7eff9", "#242430")
 
+# --- Blue pane surfaces (change request: no grey panes) ------------------------
+# Replacement for the neutral *greys* that still crept into three places:
+# the Library document rows/status chips, the PageViewer toolbar chrome, and
+# the Coach screen's three panels (top-button bar, chat thread, composer).
+# Light mode uses a lighter blue than the sidebar (#e3ecf6) so the panes read
+# as soft blue surfaces against the pale-blue window; dark mode uses a darker
+# navy than CARD_FG (#242430) so they recede instead of glowing grey.
+PANE_BG = ("#dce9f7", "#1a2333")          # primary pane / row surface
+PANE_BG_ALT = ("#e8f0fa", "#202a3c")      # softer variant (chat bubbles)
+PANE_HOVER = ("#d0e1f3", "#243149")       # hover/pressed step on PANE_BG
+ROW_BORDER = ("#c5d7ea", "#2c3a52")       # blue-tinted outline for rows/panes
+CHIP_MUTED = ("#cfdff1", "#2b3850")       # neutral status chips & toolbar pills
+SELECTED_ROW_BG = NAV_ACTIVE_BG           # accent-tinted selected list row
+
 # --- "All notes" header chip ---------------------------------------------------
 # CTkScrollableFrame's default label chip is grey (#c4c9ce / #3a3d41), which
 # clashes with the blue accents used everywhere else.  These tints sit closer to
