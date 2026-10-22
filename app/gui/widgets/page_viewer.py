@@ -67,6 +67,7 @@ class PageViewer(ctk.CTkFrame):
         # stay stable across repeated gestures.
         self._zoom = 1.0
         self._zoom_job: str | None = None   # debounced re-render after wheel
+        self._pending_zoom_steps = 0        # notches accumulated this gesture
         self._text_by_page: dict[int, str] = {}
         self._show_text = False
         self._render_seq = 0            # drop stale async render results
@@ -364,8 +365,7 @@ class PageViewer(ctk.CTkFrame):
         """
         if self._document_id is None or self._page_count <= 0:
             return
-        self._pending_zoom_steps = getattr(self, "_pending_zoom_steps", 0) \
-            + int(steps)
+        self._pending_zoom_steps += int(steps)
         if self._zoom_job is not None:
             try:
                 self.after_cancel(self._zoom_job)
@@ -383,7 +383,11 @@ class PageViewer(ctk.CTkFrame):
         self._pending_zoom_steps = 0
         if not steps:
             return
-        target = round(self._zoom + steps * ZOOM_STEP, 2)
+        # Snap to whole tenths *before* comparing/clamping: floating-point
+        # drift (1.0 + 3*0.1 == 1.3000000000000002) would otherwise leak
+        # unrounded values into the zoom state and the per-zoom cache keys.
+        target = round(self._zoom + steps * ZOOM_STEP, 1)
+        target = min(ZOOM_MAX, max(ZOOM_MIN, target))
         if target == self._zoom:
             return
         self._retire_cache()             # cached images are per-zoom

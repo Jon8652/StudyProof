@@ -66,9 +66,14 @@ class CoachScreen(BaseScreen):
             ctk.CTkButton(self.suggestions, text=label, height=28,
                           command=lambda text=starter: self.use_suggestion(text)).pack(
                               side='left', padx=3, pady=3)
-        composer_row = ctk.CTkFrame(self.content, corner_radius=18)
+        # Blue pane surface for the input area (was default grey, very visible
+        # in light mode).  The textbox itself sits slightly lighter on the pane.
+        composer_row = ctk.CTkFrame(self.content, corner_radius=18,
+                                    fg_color=PANE_BG, border_width=1,
+                                    border_color=BORDER)
         composer_row.pack(fill='x', pady=(4, 0))
-        self.composer = ctk.CTkTextbox(composer_row, height=85, border_width=0)
+        self.composer = ctk.CTkTextbox(composer_row, height=85, border_width=0,
+                                       fg_color=CARD_FG)
         self.composer.pack(side='left', fill='x', expand=True, padx=6, pady=6)
         self.composer.bind('<Return>', self.send)
         self.composer.bind('<Shift-Return>', lambda event: None)
