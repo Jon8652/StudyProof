@@ -353,7 +353,6 @@ class PageViewer(ctk.CTkFrame):
             nxt = ZOOM_LEVELS[(index + 1) % len(ZOOM_LEVELS)]
         except ValueError:
             nxt = float(ZOOM_LEVELS[0])
-        self._retire_cache()             # cached images are per-zoom
         self._apply_zoom(nxt)
 
     def _nudge_zoom(self, steps: int) -> None:
@@ -390,7 +389,6 @@ class PageViewer(ctk.CTkFrame):
         target = min(ZOOM_MAX, max(ZOOM_MIN, target))
         if target == self._zoom:
             return
-        self._retire_cache()             # cached images are per-zoom
         self._apply_zoom(target)
 
     def _apply_zoom(self, value: float) -> None:
@@ -399,6 +397,11 @@ class PageViewer(ctk.CTkFrame):
         if value == self._zoom:
             self.zoom_button.configure(text=self._zoom_text())
             return
+        # Cached page bitmaps are keyed by (page, zoom), so a new scale
+        # invalidates them — retire *before* the re-render kicks off.  (The
+        # LRU only drops our PIL copies; Tk-visible PhotoImages stay alive
+        # in PageImageLabel, so this is safe even mid-gesture.)
+        self._retire_cache()
         self._zoom = value
         self.zoom_button.configure(text=self._zoom_text())
         if not self._show_text:

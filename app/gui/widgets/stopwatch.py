@@ -73,9 +73,11 @@ MODE_COUNTDOWN = "countdown"
 # is maximised / fullscreen because the packed "side=bottom" block grows with
 # the taller layout.  Pinning an explicit height (with pack_propagate off)
 # makes the card render identically in windowed and fullscreen layouts.
-# Trimmed from 158 -> 136: the excess bottom whitespace was removed so the
-# Start/Stop/Reset row now sits close to the bottom edge of the card.
-CARD_HEIGHT = 136
+# Trimmed from 158 -> 136 (bottom whitespace), then 136 -> 124: with the
+# paddings below the button rows' bottom edge gap is *equal* to the header's
+# top gap (6 px unscaled each side), so nothing spills over the rounded
+# corner_radius=12 base of the card any more.
+CARD_HEIGHT = 124
 
 
 def format_stopwatch(elapsed_s: float) -> str:
@@ -136,8 +138,12 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=MUTED_TEXT,
         )
-        # Compact paddings inside the trimmed fixed-height card: small top
-        # gap, and the button rows hug the bottom edge (4 px below them).
+        # Compact paddings inside the trimmed fixed-height card.  Symmetry
+        # rule for the request "bottom gap == top gap": the header keeps a
+        # 6 px top gap and the button rows end with a matching 6 px bottom
+        # gap; every remaining pixel belongs to the widgets themselves, so
+        # the card is as short as its content allows without the buttons
+        # overlapping the rounded base edge.
         self._header.pack(pady=(6, 2))
 
         self._display = ctk.CTkLabel(
@@ -145,10 +151,11 @@ class StopwatchWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=22, weight="bold", family="Consolas"),
             text_color=TIME_BLUE,
         )
-        self._display.pack(pady=(0, 6))
+        self._display.pack(pady=(0, 3))
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(pady=(0, 0))
+        # 6 px bottom gap mirrors the header's 6 px top gap (see above).
+        btn_row.pack(pady=(0, 6))
 
         self._start_btn = ctk.CTkButton(
             btn_row, text="Start", width=52, height=26, corner_radius=8,
@@ -179,7 +186,7 @@ class StopwatchWidget(ctk.CTkFrame):
         # at the same position as btn_row so both modes occupy identical
         # vertical space inside the fixed-height card.
         cd_row = ctk.CTkFrame(self, fg_color="transparent")
-        cd_row.pack(pady=(0, 0))
+        cd_row.pack(pady=(0, 6))   # same bottom gap as btn_row (mode swap keeps geometry)
         self._cd_btn_row = cd_row
 
         self._pause_btn = ctk.CTkButton(

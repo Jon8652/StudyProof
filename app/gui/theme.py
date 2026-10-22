@@ -78,7 +78,7 @@ CARD_PAD_X = SCREEN_PAD_X
 # The right-hand detail card sits on a soft blue (a slightly deeper tint of the
 # sidebar blue) instead of near-white grey, so it harmonises with the light-blue
 # sidebar in light mode and stays cohesive in dark mode.
-DETAIL_CARD_FG = ("#e7eff9", "#232331")
+DETAIL_CARD_FG = ("#e7eff9", "#2c3547")   # dark: lighter than the navy panes
 # Unselected note-row fill: matches the detail card so the two panes read as one
 # surface; selection is still conveyed by the accent border + ACCENT title.
 NOTE_ROW_BG = ("#e7eff9", "#242430")

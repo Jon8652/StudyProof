@@ -1,6 +1,6 @@
 """Text-labelled coach and learner messages."""
 import customtkinter as ctk
-from app.gui.theme import CARD_FG, DETAIL_CARD_FG, ACCENT, MUTED_TEXT
+from app.gui.theme import DETAIL_CARD_FG, ACCENT, MUTED_TEXT
 from app.gui.widgets.citation_chip import CitationChip
 from app.core.agent.grounding import validate_quotes
 
@@ -14,8 +14,13 @@ MAX_WRAPLENGTH = 900
 
 class ChatBubble(ctk.CTkFrame):
     def __init__(self, master, turn, sources, index, navigate):
+        # Both bubbles use DETAIL_CARD_FG, which is deliberately *lighter*
+        # than the navy PANE_BG thread behind them in dark mode (and a soft
+        # blue on the pale pane in light mode), so coach/user messages read
+        # as raised cards.  Coach turns keep the accent border to stay
+        # distinguishable from learner turns.
         super().__init__(master, corner_radius=12,
-                         fg_color=CARD_FG if turn.role == 'coach' else DETAIL_CARD_FG,
+                         fg_color=DETAIL_CARD_FG,
                          border_width=1 if turn.role == 'coach' else 0, border_color=ACCENT)
         content = ctk.CTkFrame(self, fg_color='transparent')
         content.pack(fill='x', padx=12, pady=12)
