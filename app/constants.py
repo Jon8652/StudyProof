@@ -3,7 +3,7 @@
 # --- Application identity ---------------------------------------------------
 APP_NAME = "StudyProof"
 APP_SLUG = "StudyProof"
-APP_VERSION = "1.1.0"            # v2 release train (req doc §4)
+APP_VERSION = "1.2.0"            # v2 release train (req doc §4)
 
 # --- Persistence ------------------------------------------------------------
 SAVE_FILE_NAME = "studyproof_save.json"

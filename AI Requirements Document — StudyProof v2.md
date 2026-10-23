@@ -7,7 +7,7 @@
 **Assumptions:** All v1 decisions A-1…A-20 remain in force except where corrected in §4; new decisions A-21…A-37 are added below.
 
 **Implementation status (19 October 2026):** The seven implementation phases
-are delivered for v1.1.0. `run_build.ps1` passed 122 automated tests, the full
+are delivered for v1.2.0. `run_build.ps1` passed 122 automated tests, the full
 PDF/coaching/Review GUI smoke flow, the performance gates and 32 diagnostic
 checks in the actual frozen Windows executable. PyMuPDF code and required
 package resources are bundled. Output: `dist/StudyProof/StudyProof.exe`
@@ -117,7 +117,7 @@ Only the clauses below change; every other v1 requirement stands.
 | UI-15 | Live coach controls shall show configuration or connection errors with friendly guidance. |
 | NFR-3 | No telemetry. | Unchanged and **reinforced**: the live turn payload contains only system prompt + source pack + conversation turns; the key travels only in the `Authorization` header; nothing else leaves the machine (NFR-15). | Privacy. |
 | UI-1 | Five navigation destinations. | **Seven**: Home, Calendar, Notes, **Library**, **Coach**, Statistics, Settings. | New screens. |
-| §5.1 sidebar description | Five nav buttons + stopwatch + version. | Seven nav buttons (icon + label), stopwatch and `v1.1.0` version label unchanged in position. | Consistency. |
+| §5.1 sidebar description | Five nav buttons + stopwatch + version. | Seven nav buttons (icon + label), stopwatch and `v1.2.0` version label unchanged in position. | Consistency. |
 | FR-76 / FR-77 | Ten PNG assets. | **Twelve**: add `library_icon`, `coach_icon` (same fallback rules: missing icon → text label). | New destinations. |
 | FR-70 / DATA-1 | `schema_version` written as 1. | `schema_version` written as **2**; v2 reads v1 (migration adds empty `documents`, `coach_sessions`, `settings.ai`); a v1 build opening a v2 file raises `FutureSchemaError` and never overwrites it (existing FR-72 behaviour now protects the new collections). | Forward safety. |
 | FR-57 | Autosave fires on session/note/theme/load mutations. | Autosave additionally fires on every coach turn, question mutation, document import/re-extract/delete, and AI-settings change. | New first-class data. |
@@ -126,7 +126,7 @@ Only the clauses below change; every other v1 requirement stands.
 | NFR-6 / NFR-7 | Performance budgets. | Unchanged; **extended** by NFR-12…NFR-14 (extraction, coach latency, page render) and wired into the same perf gate. | New subsystems. |
 | A-5 / A-19 | App-data directory contents. | App-data dir additionally contains `library/` (PDF binary copies) beside the save/backup/quarantine files. | Library storage. |
 | ARCH-2 | Core usable without GUI. | Extended by ARCH-5 (agent core GUI-free and provider-agnostic) and ARCH-6 (network code confined to one module). | Testability/offline rule. |
-| APP_VERSION | `1.0.0`. | `1.1.0` for the v2 release train. | Versioning. |
+| APP_VERSION | `1.0.0`. | `1.2.0` for the v2 release train. | Versioning. |
 
 ---
 
@@ -514,7 +514,7 @@ app/gui/screens/stats_screen.py, settings_screen.py       EXTENDED (Review secti
 app/gui/dialogs/source_select.py, sessions_dialog.py      NEW
 app/gui/widgets/chat_bubble.py, citation_chip.py,
                 confidence_picker.py, page_viewer.py      NEW
-app/constants.py           EXTENDED (schema 2, caps, AI_TIMEOUT_S, APP_VERSION 1.1.0, nav/icons)
+app/constants.py           EXTENDED (schema 2, caps, AI_TIMEOUT_S, APP_VERSION 1.2.0, nav/icons)
 tests/                     EXTENDED (see §17)
 scripts/perf_check.py      EXTENDED (NFR-12..NFR-14 budgets)
 StudyProof.spec         EXTENDED (PyMuPDF hidden imports; assets unchanged + 2 icons)
