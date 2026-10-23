@@ -1,0 +1,94 @@
+F
+=================================== FAILURES ===================================
+_________ test_button_clicks_never_move_the_view_even_with_new_content _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0088937140>
+
+    def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch):
+        """Regression: auto-scroll is event-driven, never render-driven.
+    
+        "Sessions…" closing without switching and the weak-topics picker churn
+        end in refresh() calls that rebuild the thread — used to arm a fresh pin
+        window on every click and yank the viewport back down mid-manual-scroll
+        (with a blank-flash glitch while Tk clamped against stale geometry).
+        Only three events may move the view: opening/resuming/switching a
+        session, a message the user sent, and a new coach reply.  Even if the
+        thread's content somehow changed underneath, a button-triggered
+        re-render must leave the viewport *exactly* where the user parked it —
+        not one pixel, and no scheduled auto work at all.
+        """
+        state = AppState()
+        monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+        note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+        state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+        session = _seed_long_session(state, note, turns=25)
+        try:
+            app = MainWindow(app_state=state)
+        except tkinter.TclError as exc:
+            pytest.skip(f'Tk display unavailable: {exc}')
+        try:
+            app.geometry('+3000+3000')
+            app.deiconify()
+            app.geometry('700x400')
+            app.show_screen('coach')
+            screen = app.screens['coach']
+            canvas = screen._thread_canvas
+            # Opening a session IS an event: land at its newest message.
+            screen.resume_session(session.id)
+            pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
+            assert _settle(app, screen)
+            assert screen._thread_at_bottom()
+            # User scrolls up into history...
+            canvas.yview_scroll(-5000, 'units')
+            assert not screen._stick_to_bottom
+            parked = canvas.yview()[0]
+            # ...then buttons whose handlers end in refresh() fire.  Even with
+            # brand-new turns appended behind the scenes, the click itself is
+            # not a conversation event — nothing may arm a pin window.
+            from app.core.models import CoachTurn
+            session.turns.append(CoachTurn.create('coach', 'question', 'Sneaky background change.'))
+            screen.refresh()
+            screen.refresh()
+            assert screen._pin_job is None and screen._settle_job is None, \
+                'a button-triggered re-render must not schedule any auto-scroll work'
+            assert not screen._stick_to_bottom, 'button churn must not re-engage stickiness'
+            for _ in range(10):
+                app.update()
+                time.sleep(.02)
+            assert abs(canvas.yview()[0] - parked) < 0.02, \
+                'a same-content refresh dragged the view back to the bottom'
+            # The real path: clicking "Sessions…" but picking nothing ends in
+            # refresh() too — still must not move anything.
+            monkeypatch.setattr(screen, 'wait_window', lambda dialog: None)
+            screen.sessions()
+            assert screen._pin_job is None and screen._settle_job is None
+            for _ in range(10):
+                app.update()
+                time.sleep(.02)
+            assert abs(canvas.yview()[0] - parked) < 0.02
+            # Sanity: the genuine events through the very same choke point DO
+            # arm a window and land at the bottom again — first a coach reply
+            # delivered via finished(), then a session switch.  The scripted
+            # provider turns a prepared job into a real appended bubble, exactly
+            # like the live path does.
+            screen.composer.insert('1.0', 'Energy from sunlight')
+            screen.send()
+            pump(app, lambda: not screen.busy)
+>           assert screen._stick_to_bottom, 'a coach reply must re-engage stickiness'
+E           AssertionError: a coach reply must re-engage stickiness
+E           assert False
+E            +  where False = <app.gui.screens.coach_screen.CoachScreen object .!ctkframe2.!coachscreen>._stick_to_bottom
+
+tests/test_coach_gui.py:839: AssertionError
+----------------------------- Captured stdout call -----------------------------
+REFRESH follow=False stick=True seq=0 base=0 pos=0.0000 <- test_coach_gui.py:795:test_button_clicks_never_move_the_view_even_with_new_content <- main_window.py:230:show_screen <- main_window.py:223:_get_screen <- main_window.py:200:<lambda> <- coach_screen.py:314:__init__
+REFRESH follow=False stick=True seq=0 base=0 pos=0.0000 <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:799:test_button_clicks_never_move_the_view_even_with_new_content <- coach_screen.py:426:resume_session <- coach_screen.py:499:cancel
+REFRESH follow=True stick=True seq=0 base=0 pos=0.0000 <- _manager.py:183:_hookexec <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:799:test_button_clicks_never_move_the_view_even_with_new_content <- coach_screen.py:431:resume_session
+  RELEASE stick->False <- _manager.py:183:_hookexec <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:804:test_button_clicks_never_move_the_view_even_with_new_content <- coach_screen.py:200:tracked_yview_scroll <- coach_screen.py:187:tracked_yview
+REFRESH follow=False stick=False seq=1 base=0 pos=0.1186 <- _caller.py:197:__call__ <- _manager.py:183:_hookexec <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:812:test_button_clicks_never_move_the_view_even_with_new_content
+REFRESH follow=False stick=False seq=1 base=0 pos=0.1186 <- _caller.py:197:__call__ <- _manager.py:183:_hookexec <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:813:test_button_clicks_never_move_the_view_even_with_new_content
+REFRESH follow=False stick=False seq=1 base=0 pos=0.1174 <- _manager.py:183:_hookexec <- _execution.py:147:_multicall <- python.py:167:pytest_pyfunc_call <- test_coach_gui.py:825:test_button_clicks_never_move_the_view_even_with_new_content <- coach_screen.py:396:sessions
+=========================== short test summary info ============================
+FAILED tests/test_coach_gui.py::test_button_clicks_never_move_the_view_even_with_new_content
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 2.22s
