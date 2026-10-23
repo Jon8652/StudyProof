@@ -21,6 +21,9 @@ def main() -> int:
         print("StudyProof requires CustomTkinter. Install dependencies "
               "with: pip install -r requirements.txt")
         return 1
+    # Defensive shim for the customtkinter 6.0.0 CTkScrollbar
+    # _motion_center_offset bug (see app/gui/ctk_patch.py).
+    from app.gui import ctk_patch  # noqa: F401
 
     from app.gui.main_window import MainWindow
     from app.state.app_state import AppState
