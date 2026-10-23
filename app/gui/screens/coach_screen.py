@@ -29,13 +29,6 @@ SETTLE_MAX_TICKS = 12   # ~0.7 s worst case; stops early once the height stabili
 # leaving the viewport parked off-bottom.  A short time-based settle keeps
 # re-pinning until the extent has genuinely been quiet.
 SETTLE_QUIET_MS = 300
-# Post-deadline rescue window (ms).  On Windows the deferred CTk geometry
-# pass can land *after* the settle poll's hard ceiling expires, leaving the
-# viewport parked a few pixels short of the newest bubble with nobody left
-# to correct it.  A <Configure> burst inside this short tail still re-pins
-# (bounded by its own deadline); beyond it, ordinary layout churn — window
-# resizes, hover effects, suggestion popups — must never move the view.
-SETTLE_RESCUE_MS = 250
 # Window (ms) in which a pointer event must have been seen for a ``yview``
 # write to count as a user gesture (see tracked_yview / _last_gesture_ms).
 GESTURE_EVIDENCE_MS = 250
@@ -83,7 +76,6 @@ class CoachScreen(BaseScreen):
         self._settle_job = None
         self._settle_ticks = 0
         self._settle_deadline = 0.0
-        self._settle_rescue_deadline = 0.0
         self._last_extent_change = 0.0
         self._last_thread_height = -1
         self._thread_needs_pin = False
@@ -700,7 +692,7 @@ class CoachScreen(BaseScreen):
             # Configure burst, and the settle poll + <Configure> hook below
             # then keep re-pinning while async bubble re-wraps land.
             self._schedule_thread_pin()
-            self._start_settle_poll(rescue_ms=SETTLE_RESCUE_MS)
+            self._start_settle_poll()
 
     def _refresh_thread(self, session, index):
         """Keep the unchanged prefix mapped; append only the new bubbles.
@@ -885,22 +877,6 @@ class CoachScreen(BaseScreen):
             except Exception:
                 self._manual_scroll_to_bottom(canvas)   # legacy fallback
             self._note_auto_move()
-            # Re-measure: Tk clamps unit scrolls against the scrollregion,
-            # and on Windows the CTk scrollbar callback can recompute that
-            # region *during* the write (deferred ``scrollregion=bbox(all)``
-            # Tcl scripts fire inside tk commands).  A stale region makes
-            # the clamp land short by a fixed few pixels — exactly the
-            # ~8 px residual the pixel-exactness tests catch.  With fresh
-            # geometry the remaining gap gets closed right here instead of
-            # waiting for a settle tick that may never arrive after the
-            # poll's hard deadline has passed.
-            residual = self._bottom_gap(canvas)
-            if residual is not None and residual > 0:
-                try:
-                    canvas.yview_scroll(int(round(residual)), 'units')
-                except Exception:
-                    pass
-                self._note_auto_move()
 
     def _schedule_thread_pin(self):
         """Collapse all pin requests in one event-loop cycle into one idle callback."""
@@ -993,7 +969,7 @@ class CoachScreen(BaseScreen):
         """Record one automatic viewport write (instrumentation for tests)."""
         self._auto_move_count = getattr(self, '_auto_move_count', 0) + 1
 
-    def _start_settle_poll(self, rescue_ms=0.0):
+    def _start_settle_poll(self):
         self._stop_settle_poll()
         self._last_thread_height = -1
         self._settle_ticks = 0
@@ -1002,9 +978,6 @@ class CoachScreen(BaseScreen):
         # keeps churning.  The quiet window below normally ends it far
         # earlier; the ceiling bounds pathological resize loops.
         self._settle_deadline = now + (SETTLE_MAX_TICKS * SETTLE_POLL_MS) / 1000.0
-        # Tail window after the ceiling in which a late <Configure> burst
-        # may still arm one corrective pin (see _on_thread_configure).
-        self._settle_rescue_deadline = self._settle_deadline + rescue_ms / 1000.0
         self._last_extent_change = now
         try:
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
@@ -1085,37 +1058,13 @@ class CoachScreen(BaseScreen):
         # viewport back down while the user is browsing history.  Sticking
         # resumes only via a fresh rebuild (refresh) or an explicit manual
         # return to the bottom (_check_bottom_after_scroll).
-        if self._settle_job is not None:
-            if time.monotonic() >= self._settle_deadline:
-                return                  # hard ceiling reached: window closed
-            if self._stick_to_bottom and not self._thread_needs_pin \
-                    and not self._is_superseded_by_manual_scroll():
-                self._schedule_thread_pin()
+        if self._settle_job is None:
             return
-        # The poll already ended its normal window.  On Windows CTk's
-        # deferred geometry pass can still land *after* that, leaving the
-        # viewport parked a few pixels short of the newest bubble with no
-        # live job left to correct it.  Within the short rescue tail — and
-        # only when this burst actually changed the content extent — arm
-        # one corrective pin; beyond the tail, inert (see constants).
-        if time.monotonic() >= self._settle_rescue_deadline:
-            return
-        if not self.winfo_exists() or not self._stick_to_bottom:
-            return
-        if self._is_superseded_by_manual_scroll():
-            return                      # the user holds the view
-        canvas = self._thread_canvas
-        if canvas is None or not canvas.winfo_exists():
-            return
-        try:
-            extent = self._content_bottom()
-        except Exception:
-            return
-        if extent != self._last_thread_height:
-            # Late geometry landed: close the gap now, while the event is
-            # being processed — no second round of churn to chase.
-            self._last_thread_height = extent
-            self._scroll_thread_to_bottom()
+        if time.monotonic() >= self._settle_deadline:
+            return                      # hard ceiling reached: window closed
+        if self._stick_to_bottom and not self._thread_needs_pin \
+                and not self._is_superseded_by_manual_scroll():
+            self._schedule_thread_pin()
 
     def _on_thread_wheel_event(self, event=None):
         # Wheel motion over the thread hands control to the user at once,
