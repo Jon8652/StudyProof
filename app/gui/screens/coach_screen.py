@@ -55,11 +55,20 @@ class CoachScreen(BaseScreen):
         # always kept in view unless the user deliberately scrolls away to
         # read history.  All values are main-thread only; nothing touches Tk
         # from a worker (turn results already arrive via UIEventQueue).
-        # User agency preserved: the wheel/scrollbar observers below only
-        # ever *release* the pin, and every automatic pass re-checks for a
-        # newer manual gesture before touching the view (see
-        # _is_superseded_by_manual_scroll).  Auto-scroll therefore follows
-        # new content only — never fights a manual scroll.
+        # User agency preserved: auto-scroll fires ONLY inside a bounded
+        # "settle window" opened by refresh() when new content is built into
+        # the thread.  Outside that window nothing ever moves the view on a
+        # timer, so ordinary layout churn (window resizes, hover effects,
+        # suggestion popups) can never fight a manual scroll.  Manual input
+        # is detected on two channels:
+        #   * wheel events over the thread (scoped via Enter/Leave), and
+        #   * the canvas ``yview`` command, which CTk routes *every* scroll
+        #     request through — CTk's own bind_all wheel handler AND the
+        #     scrollbar thumb/clicks.  Tagging each request with a sequence
+        #     number lets any auto pass veto itself when a newer user gesture
+        #     landed since it was armed (see _is_superseded_by_manual_scroll).
+        # Once the user scrolls away, sticking stays off until they return to
+        # the bottom or the next rebuild arms a fresh window.
         self._stick_to_bottom = True    # False only while the user browses history
         self._pin_job = None            # pending after_idle pin callback
         self._settle_job = None         # periodic settle-poll after a rebuild
@@ -68,13 +77,12 @@ class CoachScreen(BaseScreen):
         self._thread_needs_pin = False  # set by refresh(); consumed at idle time
         self._thread_canvas = None
         self._in_sync_region = False    # re-entrancy guard for the sync drain
-        self._manual_scroll_seq = 0     # id of the newest manual scroll request
-        self._pending_manual_seqs = []  # seqs observed but not yet acted upon
-        # Highest sequence an automatic pass has already acted on.  A pending
-        # sequence *above* this line can only come from a genuine user gesture
-        # (our own pins always consume everything up to the current seq), so
-        # it vetoes any auto-pin scheduled before it.
-        self._manual_scroll_seq_consumed = 0
+        self._manual_scroll_seq = 0     # id of the newest scroll request seen
+        self._auto_scroll_depth = 0     # >0 while an automatic pin is executing
+        # Sequence number the current stick-to-bottom era began at.  Only
+        # requests *after* this line are user gestures; earlier ones were part
+        # of (or before) the automatic pass that established the pin.
+        self._manual_scroll_baseline = 0
         canvas = getattr(self.thread, '_parent_canvas', None)
         if canvas is not None:
             self._thread_canvas = canvas
@@ -92,58 +100,85 @@ class CoachScreen(BaseScreen):
             # last bubble's bottom edge instead of CTk's default 30 px
             # Linux / Windows yscrollincrement.
             canvas.configure(yscrollincrement=1)
-            # Any wheel motion over the thread hands control to the user for
-            # the current event-loop cycle; whether stickiness resumes is
-            # decided from the *settled* position afterwards (see
-            # _check_bottom_after_scroll, driven from the yview wrapper).
-            # The bind_all observer is scoped by Enter/Leave so sibling panes
+            # Observe wheel motion over the thread so the pointer-local
+            # gesture releases the pin *before* CTk's bind_all handler moves
+            # the canvas (bind_all callbacks run after widget-bindings, so
+            # doing it here is what keeps our own yview wrapper from
+            # mis-reading the resulting scroll as an automatic write).
+            # The bind_all observer is Enter/Leave-scoped so sibling panes
             # never lose their wheel events to this screen.
             canvas.bind('<Enter>', lambda e: canvas.bind_all(
                 '<MouseWheel>', self._on_thread_wheel_event, add='+'), add='+')
             canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'), add='+')
             for button_seq in ('<Button-4>', '<Button-5>'):   # Linux/Xvfb wheels
                 canvas.bind(button_seq, self._on_thread_wheel_event, add='+')
-            # Every manual scroll gesture (wheel, scrollbar-thumb drag,
-            # trackbar click) routes through the canvas's ``yview`` command,
-            # because CTk wires both `_scrollbar.command` and its own wheel
-            # handler to it.  Wrapping it gives us one reliable observer for
-            # all of them: each *request* is tagged with a sequence number so
-            # any auto-pin scheduled before it can never clobber the user's
-            # newest gesture, upward motion releases the stick-to-bottom pin
-            # immediately, and downward motion re-decides from the settled
-            # position (see _check_bottom_after_scroll).
+            # Wrap the canvas's ``yview`` command.  CTk wires BOTH the
+            # scrollbar (``_scrollbar.command = canvas.yview``) and its own
+            # ``bind_all`` wheel handler (``self._parent_canvas.yview(...)``)
+            # to this method, so the wrapper is the one reliable observer of
+            # every scroll request — including thumb drags and trackbar
+            # clicks, which produce no wheel event at all.  Requests made by
+            # our own automatic pins are tagged via ``_auto_scroll_depth``
+            # and never treated as user gestures.
             orig_yview = canvas.yview
 
             def tracked_yview(*args, **kw):
-                if args and args[0] in ('scroll', 'moveto'):
+                requested = bool(args) and str(args[0]).lower() in ('scroll', 'moveto')
+                if requested and self._auto_scroll_depth == 0:
+                    # Genuine user gesture (wheel, thumb drag, trackbar
+                    # click): hand the viewport to the user immediately and
+                    # cancel every pending auto-pin/settle job.  Downward
+                    # gestures additionally schedule a deferred verdict from
+                    # the settled position, so scrolling back to the newest
+                    # message re-engages stickiness.
                     self._manual_scroll_seq += 1
                     seq = self._manual_scroll_seq
-                    self._pending_manual_seqs.append(seq)
-                    delta = None
-                    if args[0] == 'scroll':
+                    direction_up = True
+                    if str(args[0]).lower() == 'scroll':
                         try:
-                            delta = -int(args[1])   # CTk sign: up = negative
+                            direction_up = int(args[1]) < 0   # CTk sign: up = negative
                         except (ValueError, TypeError):
-                            delta = None
-                    elif len(args) >= 2:
-                        try:
-                            frac = float(args[1])
-                            start = canvas.yview()[0]
-                            delta = start - frac    # moveto lower on page = up
-                        except Exception:
-                            delta = None
-                    if delta is not None and delta < 0:
-                        # User scrolled down: remember the exact request so
-                        # the settled position decides whether they returned
-                        # to the bottom (re-stick) or not.
-                        self._check_bottom_after_scroll(seq)
+                            direction_up = True
                     else:
-                        # Upward gesture: hand control to the user at once
-                        # and cancel every pending auto-pin/settle job.  The
-                        # view must stay exactly where the gesture left it.
-                        self._release_pin_for_manual_scroll()
+                        try:
+                            start = canvas.yview()[0]
+                            direction_up = float(args[1]) < start - 1e-9
+                        except Exception:
+                            direction_up = True
+                    # Hand control over *before* the scroll executes: CTk's
+                    # scrollbar wheel handler calls this command without any
+                    # separate wheel observer, so releasing first is what
+                    # keeps the resulting motion from being vetoed away.
+                    self._release_pin_for_manual_scroll()
+                    if not direction_up:
+                        self.after_idle(lambda: self._check_bottom_after_scroll(seq))
                 return orig_yview(*args, **kw)
             canvas.yview = tracked_yview
+        # customtkinter's own bind_all wheel handler (``_mouse_wheel_all``)
+        # scrolls via ``self._parent_canvas.yview_scroll(...)`` — the bound
+        # *method*, captured before our wrapper existed — so a plain mouse
+        # wheel would move the view invisibly to the observer above and the
+        # pin would yank it back on the next content change.  Patch that
+        # method for this frame: scroll requests made while the pointer is
+        # over OUR canvas are genuine user gestures, so release the pin
+        # first (the actual scroll then runs through the tracked ``yview``
+        # command, which schedules the re-stick verdict for downward
+        # motion).  Wheels landing on other scrollable frames pass through
+        # untouched.
+        _orig_wheel_all = self.thread._mouse_wheel_all
+
+        def _tracked_mouse_wheel_all(event):
+            try:
+                over_us = event.widget is canvas or (
+                    self.thread.winfo_containing(event.x_root, event.y_root)
+                    in (canvas, self.thread))
+            except Exception:
+                over_us = False
+            if over_us and self._auto_scroll_depth == 0 \
+                    and self.winfo_exists() and self._stick_to_bottom:
+                self._release_pin_for_manual_scroll()
+            return _orig_wheel_all(event)
+        self.thread._mouse_wheel_all = _tracked_mouse_wheel_all
         # Bubbles re-wrap their text asynchronously via their own Configure
         # handlers, so the thread keeps growing *after* refresh() has packed
         # everything; CTk's deferred scrollregion rewrite lands in the same
@@ -558,7 +593,7 @@ class CoachScreen(BaseScreen):
             # direction never matters.
             self._stick_to_bottom = True
             self._thread_needs_pin = True
-            self._consume_manual_seqs()
+            self._reset_manual_scroll_baseline()
             # Defer the pin until Tk's geometry manager has laid out the
             # freshly packed bubbles.  In this very cycle every extent we
             # could measure (canvas bbox, frame height) still describes the
@@ -650,16 +685,20 @@ class CoachScreen(BaseScreen):
     def _viewport_top(self, canvas=None):
         """Current top edge of the visible area, in canvas coordinates.
 
-        Never ``canvasy(0)`` or raw ``yview()`` fractions alone: they are
-        computed by Tk against the canvas's *current* scrollregion, which
-        lags a fresh rebuild by an event cycle and reports positions derived
-        from the old content — the exact source of the spurious "already at
-        bottom" short-circuits.  CTk mirrors every scroll into its custom
-        scrollbar (``yscrollcommand=self._scrollbar.set`` stores the same
-        fractions synchronously), so cross-checking the two sources gives a
-        trustworthy position: if the mirrored scrollbar disagrees with what
-        ``canvasy(0)`` implies, the region is stale and the fractional read
-        is meaningless — fall back to the settled extent instead.
+        ``canvasy(0)`` is Tk's own pixel truth for the yview origin — it
+        always describes where the viewport actually is (against the current
+        scrollregion).  The one unreliable case is a *stationary* viewport
+        while the scrollregion grows underneath it (async bubble re-wraps
+        lengthen the thread without any scroll request): Tk's fractions then
+        still describe the pre-growth region and ``canvasy(0)`` reads too low.
+        CTk mirrors every genuine scroll into its custom scrollbar
+        synchronously, so when the mirrored window ends short of the *current*
+        region there really is content below the fold — take the deeper of
+        the two readings.  This must never fall back to raw content extents:
+        after switching to a shorter session those still describe the old
+        (taller) thread for an event cycle, and a stale-high read makes an
+        upward manual gesture look like "still at the bottom", silently
+        re-engaging stickiness and yanking the view back down.
         """
         canvas = canvas if canvas is not None else self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
@@ -667,35 +706,10 @@ class CoachScreen(BaseScreen):
         try:
             height = canvas.winfo_height()
             region = canvas.bbox('all')
-            scrollbar = getattr(self.thread, '_scrollbar', None)
-            start, _end = canvas.yview()
-            if scrollbar is not None:
-                mirror = getattr(scrollbar, 'get', lambda: (None, None))()
-                if (mirror and mirror[0] is not None
-                        and abs(mirror[0] - start) > 0.02):
-                    # Scrollbar callback hasn't fired for this region yet
-                    # (or the region shrank under us): yview() is describing
-                    # the previous thread.  Treat the view as parked at the
-                    # settled content bottom — the pin recomputes the true
-                    # offset right after, so this only prevents false
-                    # "at bottom" verdicts between rebuild passes.
-                    return self._content_bottom() - height
             top = float(canvas.canvasy(0))
             if height > 1 and region is not None and region[3] - region[1] > 0:
                 span = region[3] - region[1]
-                implied = start * span
-                if abs(canvas.canvasy(0) - implied) > max(4.0, height * 0.05):
-                    return self._content_bottom() - height
-                # A scrollregion that grew under a *stationary* viewport
-                # leaves Tk's own fractions stale too — they still describe
-                # the pre-growth region even though ``bbox('all')`` has
-                # already updated (this fires every time async bubble
-                # re-wraps lengthens the thread while the user waits at the
-                # bottom).  CTk mirrors every genuine scroll into its custom
-                # scrollbar synchronously, so when the mirrored window ends
-                # short of the *current* region there really is content below
-                # the fold: convert those fresh fractions to pixels instead
-                # of trusting the stale read.
+                scrollbar = getattr(self.thread, '_scrollbar', None)
                 mirror = getattr(scrollbar, 'get', lambda: (None, None))()
                 if mirror and mirror[1] is not None and mirror[1] < 0.995:
                     top = max(top, mirror[1] * span - height)
@@ -751,61 +765,72 @@ class CoachScreen(BaseScreen):
         the exact top-edge offset from our synchronous content estimate and
         drive the view there directly with ``yview_moveto``, refreshing the
         scrollregion afterwards so the scrollbar geometry stays consistent.
+
+        The whole pass runs inside ``_auto_scroll_depth`` so the wrapped
+        ``yview`` command recognises its own writes as automatic instead of
+        mis-reading them as user gestures, and bails out if a genuine gesture
+        landed since this pass was armed.
         """
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return
+        if self._is_superseded_by_manual_scroll():
+            # The user scrolled after this pin was scheduled — leave the
+            # viewport exactly where they put it.
+            self._release_pin_for_manual_scroll()
+            return
+        self._auto_scroll_depth += 1
         try:
-            height = canvas.winfo_height()
-            if height <= 1:
-                # Un-mapped viewport (e.g. the screen has never been shown):
-                # no meaningful fraction exists, so clamp against whatever
-                # region we do have and let later passes refine.
-                self._manual_scroll_to_bottom(canvas)
-                self._consume_manual_seqs()
-                return
-            bottom = self._content_bottom()
-            region = canvas.bbox('all')
-            span = max((region[3] - region[1]) if region else 0, bottom)
-            if bottom <= 0 or span <= height:
-                # Empty thread or everything fits: yview at the top shows
-                # all content; moveto(0) also survives a stale-high region.
-                canvas.yview_moveto(0.0)
-                self._sync_scrollregion()
-                self._consume_manual_seqs()
-                return
-            # Fraction such that the viewport's bottom edge sits exactly on
-            # the estimated content bottom — independent of how stale the
-            # current scrollregion is.
-            target = max(0.0, min(1.0, (bottom - height) / span))
-            if abs(canvas.canvasy(0) - (bottom - height)) <= BOTTOM_EPSILON_PX:
-                # Pixel truth beats fractions here: after a scrollregion
-                # rewrite Tk's own yview() values can lag one cycle behind
-                # the real position, and a fraction-based "already pinned"
-                # check would then short-circuit genuine re-pins while the
-                # settle window is still open.  The viewport bottom already
-                # covers the newest content — consume our own earlier writes
-                # (so they never look like user gestures to
-                # _is_superseded_by_manual_scroll) and leave the view alone.
-                self._consume_manual_seqs()
-                return
-            canvas.yview_moveto(target)
-            self._sync_scrollregion()
-            self._consume_manual_seqs()
+            self._pin_viewport(canvas)
         except Exception:
             try:
                 self._manual_scroll_to_bottom(canvas)   # legacy fallback
             except Exception:
                 pass
+        finally:
+            self._auto_scroll_depth -= 1
+
+    def _pin_viewport(self, canvas):
+        """Geometry half of the pin (see _scroll_thread_to_bottom)."""
+        height = canvas.winfo_height()
+        if height <= 1:
+            # Un-mapped viewport (e.g. the screen has never been shown):
+            # no meaningful fraction exists, so clamp against whatever
+            # region we do have and let later passes refine.
+            self._manual_scroll_to_bottom(canvas)
+            return
+        bottom = self._content_bottom()
+        region = canvas.bbox('all')
+        span = max((region[3] - region[1]) if region else 0, bottom)
+        if bottom <= 0 or span <= height:
+            # Empty thread or everything fits: yview at the top shows
+            # all content; moveto(0) also survives a stale-high region.
+            canvas.yview_moveto(0.0)
+            self._sync_scrollregion()
+            return
+        # Fraction such that the viewport's bottom edge sits exactly on
+        # the estimated content bottom — independent of how stale the
+        # current scrollregion is.
+        target = max(0.0, min(1.0, (bottom - height) / span))
+        if abs(canvas.canvasy(0) - (bottom - height)) <= BOTTOM_EPSILON_PX:
+            # Pixel truth beats fractions here: after a scrollregion
+            # rewrite Tk's own yview() values can lag one cycle behind
+            # the real position, and a fraction-based "already pinned"
+            # check would then short-circuit genuine re-pins while the
+            # settle window is still open.  The viewport bottom already
+            # covers the newest content — leave the view alone.
+            return
+        canvas.yview_moveto(target)
+        self._sync_scrollregion()
 
     def _schedule_thread_pin(self):
         """Collapse all pin requests in one event-loop cycle into one idle callback."""
         if self._pin_job is not None:
             return
-        # A manual gesture observed this cycle outranks any pending auto-pin:
-        # the view must stay exactly where the user put it until the next
-        # rebuild arms a fresh pin.
-        if self._pending_manual_seqs:
+        # A manual gesture observed since this era began outranks any pending
+        # auto-pin: the view must stay exactly where the user put it until the
+        # next rebuild arms a fresh window.
+        if self._is_superseded_by_manual_scroll():
             self._thread_needs_pin = False
             return
         try:
@@ -830,29 +855,25 @@ class CoachScreen(BaseScreen):
         self._scroll_thread_to_bottom()
 
     def _is_superseded_by_manual_scroll(self):
-        """True when a manual scroll request landed after the last pin ran.
+        """True when a genuine user scroll landed after the current pin era began.
 
-        Every automatic write goes through ``_scroll_thread_to_bottom``,
-        which marks every sequence observed so far as *consumed*.  A pending
-        sequence above that line therefore can only come from a genuine user
-        gesture (wheel over the thread, scrollbar thumb drag, trackbar click),
-        and once one exists no previously scheduled pin/settle pass may move
-        the view again — auto-scroll only ever follows *new* content.
+        Automatic writes are tagged with ``_auto_scroll_depth`` inside the
+        wrapped ``yview`` command and never bump the sequence counter, so any
+        request above the era baseline can only come from the user (wheel over
+        the thread, scrollbar thumb drag, trackbar click).  Once one exists,
+        no previously scheduled pin/settle pass may move the view again —
+        auto-scroll only ever follows *new* content.
         """
-        if not self._pending_manual_seqs:
-            return False
-        newest = self._pending_manual_seqs[-1]
-        if newest > self._manual_scroll_seq_consumed:
-            return True
-        # Everything queued here has already been acted upon by an automatic
-        # pass — drop the backlog so the list stays bounded.
-        self._pending_manual_seqs.clear()
-        return False
+        return self._manual_scroll_seq > self._manual_scroll_baseline
 
-    def _consume_manual_seqs(self):
-        """Mark every observed scroll request as acted on by this automatic pass."""
-        self._manual_scroll_seq_consumed = self._manual_scroll_seq
-        del self._pending_manual_seqs[:]
+    def _reset_manual_scroll_baseline(self):
+        """Start a new stick-to-bottom era (rebuild or re-engaged pin).
+
+        Any gesture that happened *before* this point relates to the previous
+        layout; the rebuild below legitimately replaces the viewport target,
+        so those older requests must not veto the fresh pins.
+        """
+        self._manual_scroll_baseline = self._manual_scroll_seq
 
     def _release_pin_for_manual_scroll(self):
         """Hand the viewport to the user: unstick and cancel pending auto jobs."""
@@ -865,6 +886,14 @@ class CoachScreen(BaseScreen):
             except Exception:
                 pass
             self._pin_job = None
+        # The settle poll used to be what kept the canvas scrollregion in
+        # sync with the content (CTk only rewrites it from a deferred
+        # <Configure> script).  Now that auto passes stop here, refresh the
+        # region once at handover so the *user's* next wheel notch or thumb
+        # drag clamps against fresh geometry instead of a stale region —
+        # otherwise manual scrolling glitches (jumps/short-stops) until some
+        # later event happens to fix the numbers.
+        self._sync_scrollregion()
 
     def _start_settle_poll(self):
         self._stop_settle_poll()
@@ -910,30 +939,37 @@ class CoachScreen(BaseScreen):
             # correction, DPI/geometry settle): re-pin and keep watching.
             self._scroll_thread_to_bottom()
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
-        elif self._settle_ticks < SETTLE_MAX_TICKS:
-            # Stable and pinned, but Tk may still hold queued Configure
-            # events (e.g. a wraplength burst). One extra quiet tick, then stop.
-            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
-        # else: settled — polling stops entirely (zero idle cost between messages)
+        else:
+            # Settled — polling stops entirely.  From here on *nothing* moves
+            # the view automatically until the next refresh() arms a new
+            # window, which is what keeps manual scrolling free outside of
+            # content changes.
+            self._stop_settle_poll()
 
     def _on_thread_configure(self, event=None):
-        # Reactive hook for growth *after* the settle window (rare, e.g. a
-        # resize re-wrap while stuck at bottom).  Only ever fires while the
-        # user has NOT taken over (``_stick_to_bottom``), so ordinary layout
-        # churn can never fight a manual scroll; and a gesture observed this
-        # cycle suppresses the pin outright (see _schedule_thread_pin).
+        # Reactive hook for growth *inside* the settle window opened by
+        # refresh() (async bubble re-wraps land as Configure bursts after the
+        # rebuild).  Deliberately ignores everything once the window has
+        # closed: ordinary layout churn — window resizes, hover effects,
+        # suggestion popups packing into the thread — must never drag the
+        # viewport back down while the user is browsing history.  Sticking
+        # resumes only via a fresh rebuild (refresh) or an explicit manual
+        # return to the bottom (_check_bottom_after_scroll).
+        if self._settle_job is None or self._settle_ticks >= SETTLE_MAX_TICKS:
+            return
         if self._stick_to_bottom and not self._thread_needs_pin \
-                and not self._pending_manual_seqs:
+                and not self._is_superseded_by_manual_scroll():
             self._schedule_thread_pin()
 
     def _on_thread_wheel_event(self, event=None):
-        # Wheel motion over the thread hands control to the user for this
-        # event-loop cycle: cancel any pending auto-pin so the wheel delta
-        # lands untouched.  Whether stickiness resumes is decided from the
-        # settled position by _check_bottom_after_scroll (invoked from the
-        # yview wrapper for downward gestures).  The bind_all observer is
-        # Enter/Leave-scoped, so this only runs while the pointer is over
-        # the chat thread.
+        # Wheel motion over the thread hands control to the user at once,
+        # *before* CTk's bind_all handler scrolls the canvas (widget bindings
+        # run first, so this also prevents our yview wrapper from mis-reading
+        # the resulting scroll as an automatic write).  Whether stickiness
+        # resumes is decided from the settled position by
+        # _check_bottom_after_scroll (invoked from the yview wrapper for
+        # downward gestures).  The bind_all observer is Enter/Leave-scoped,
+        # so this only runs while the pointer is over the chat thread.
         if not self.winfo_exists():
             return
         self._release_pin_for_manual_scroll()
@@ -950,6 +986,10 @@ class CoachScreen(BaseScreen):
             return
         if self._thread_at_bottom():
             self._stick_to_bottom = True
+            # New era: gestures up to and including this one belong to the
+            # user's return-to-bottom, not to any pending auto pass.  Only
+            # *future* scrolls can veto the pins armed below.
+            self._reset_manual_scroll_baseline()
             self._thread_needs_pin = True
             self._schedule_thread_pin()
             self._start_settle_poll()
