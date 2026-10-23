@@ -110,10 +110,18 @@ class NotesScreen(BaseScreen):
         )
         # CTkScrollableFrame hard-codes the header label's corner_radius to the
         # frame's value; zero it so no rounded background can appear behind the
-        # text even if the theme overrides label_fg_color.
+        # text even if the theme overrides label_fg_color.  The label is also
+        # re-gridded with a *bottom-heavy* pady: by default the header gets a
+        # symmetric border_spacing (corner_radius + border_width = 12 px) pad
+        # on all sides, which leaves a large blank band between the "All notes"
+        # text and the first note row below it.  Pulling the top pad up to
+        # 14 px and shrinking the bottom pad to 2 px keeps the header at the
+        # same visual height while closing most of that gap.
+        self._ALL_NOTES_LABEL_PADY = (14, 2)
         for _child in self.list_frame._parent_frame.winfo_children():
             if isinstance(_child, ctk.CTkLabel):
                 _child.configure(corner_radius=0)
+                _child.grid(pady=self._ALL_NOTES_LABEL_PADY)
         # The two panes are flush with the screen's left/right padded edges
         # (no outer padx), so only a single CARD_PAD_X-wide gap sits between
         # them — identical to the gaps used everywhere else.
