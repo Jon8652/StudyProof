@@ -83,7 +83,19 @@ class CoachScreen(BaseScreen):
         # snapshot differs from the previous one.  The sentinel starts
         # mismatched so the very first build of a session still lands at the
         # newest message (opening/resuming/switching sessions).
-        self._last_content_key = None   # (session_id, turn_count, last_turn_text)
+        # ``_thread_rendered`` distinguishes "never built yet" from "already
+        # showing exactly this content": the first render of a session is a
+        # *view* change (legitimately pins), every later identical rebuild is
+        # pure button churn (must not move anything).
+        self._last_content_key = None   # (session_id, turn_count, last_turn_id, last_turn_text)
+        self._thread_rendered = False
+        # Session id whose view-change pin has already been consumed.  The
+        # FIRST render of a session legitimately lands at its newest message;
+        # a later refresh() that finds no new turns is pure button churn
+        # ("Sessions…" closing without switching, the weak-topics picker,
+        # redundant re-renders) and must leave the viewport completely
+        # untouched — no pin passes, no scrollregion syncs, no blank flash.
+        self._pinned_view_session = None
         self._pin_job = None            # pending after_idle pin callback
         self._settle_job = None         # periodic settle-poll after a rebuild
         self._settle_ticks = 0
@@ -564,6 +576,40 @@ class CoachScreen(BaseScreen):
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
+        # --- Auto-scroll decision (BEFORE any teardown of the old view) ---
+        # Every state change that rebuilds the thread funnels through here:
+        # user send (_submitted), coach reply (finished), session start /
+        # resume / switch (resume_session, sessions, revise_topic), cancel
+        # and background assessment completion.  But auto-scroll must follow
+        # *content*, not rendering: buttons like "Sessions…" or "Revise Weak
+        # Topics" end their handlers with a refresh() that re-renders an
+        # identical thread.  Deciding up front — from the live session state,
+        # before the destroy-and-repack wipes the previous layout — means a
+        # pure re-render is detected while the numbers still describe the
+        # *current* thread, so it arms nothing at all: zero pin passes, zero
+        # scrollregion syncs, zero viewport movement.  That is what removes
+        # the click-time glitch (blank flash + snap-back) entirely.
+        new_key = self._thread_content_key(session) if session is not None else None
+        content_changed = bool(new_key) and (
+            not self._thread_rendered or new_key != self._last_content_key)
+        # Has this session's *view* already been opened with a pin?  The
+        # first render of a session legitimately lands at its newest message.
+        # Once that happened, later refresh() calls that find no new turns
+        # are button churn ("Sessions…" closing without switching, opening/
+        # cancelling the weak-topics picker, redundant re-renders) and must
+        # be completely inert — not even a scrollregion sync, which during
+        # Tk's settle burst clamps yview against a stale bbox and produces
+        # the blank-flash/snap-back glitch on click.
+        view_already_opened = (session is not None
+                               and self._pinned_view_session == session.id)
+        if not content_changed and view_already_opened:
+            # Pure re-render of an already-opened view: cancel any auto work
+            # still in flight so nothing moves while the bubbles repack.
+            self._stop_settle_poll()
+        if session is not None:
+            self._pinned_view_session = session.id
+        self._last_content_key = new_key
+        self._thread_rendered = bool(new_key)
         # Dismiss any visible tooltip before re-laying out the thread; stale
         # popups must never survive a state change or a moved pointer.  The
         # shared popup window is only hidden (never destroyed) here, which is
@@ -614,21 +660,15 @@ class CoachScreen(BaseScreen):
         can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
-        # --- Auto-scroll arming (single choke point) ---------------------
-        # Every state change that rebuilds the thread funnels through here:
-        # user send (_submitted), coach reply (finished), session start /
-        # resume / switch (resume_session, sessions, revise_topic), cancel
-        # and background assessment completion.  Arming at the end of
-        # refresh() therefore covers all current and future call paths with
-        # no per-callsite hooks to forget.  BUT arming must follow *content*,
-        # not rendering: some buttons re-render an identical thread ("Sessions…"
-        # closing without switching, picker churn, redundant refreshes).  A
-        # snapshot of the newest turn decides whether anything new actually
-        # landed; only then may auto-scroll move the viewport.
+        # --- Auto-scroll arming (uses the decision taken at refresh() top) -
+        # The content snapshot above already decided whether anything new
+        # actually landed.  Only then may auto-scroll move the viewport;
+        # otherwise the rebuild must be completely inert — no pin passes, no
+        # settle poll, and crucially NO scrollregion churn while Tk is still
+        # settling the freshly repacked bubbles (a sync during that window
+        # clamps yview against a stale bbox and produces the blank flash +
+        # snap-back glitch on button clicks).
         if session is not None:
-            content_key = self._thread_content_key(session)
-            content_changed = content_key != self._last_content_key
-            self._last_content_key = content_key
             if content_changed:
                 # New conversation content (a sent message, a coach reply, a
                 # cancel/assessment notice) or a freshly built session view.
@@ -665,10 +705,17 @@ class CoachScreen(BaseScreen):
         cancel/assessment notice, revision edit) changes the key; a button
         click that merely rebuilds the identical thread does not — so
         auto-scroll windows are armed by new content alone.
+
+        Turn ids are included because they change even when the visible text
+        does not: ``complete_turn`` rewrites the coach bubble in place (e.g.
+        attaching a confidence rating after the background assessment), and
+        that late *mutation* is exactly the kind of layout churn that must
+        never re-arm a pin window on its own.
         """
         visible = [t for t in session.turns if t.kind != 'confidence']
         last = visible[-1] if visible else None
-        return (self.session_id, len(visible), getattr(last, 'text', None))
+        return (self.session_id, len(visible), getattr(last, 'id', None),
+                getattr(last, 'text', None))
 
     # ------------------------------------------------------------------
     # Auto-scroll ("stick to bottom")
@@ -868,6 +915,7 @@ class CoachScreen(BaseScreen):
             # Empty thread or everything fits: yview at the top shows
             # all content; moveto(0) also survives a stale-high region.
             canvas.yview_moveto(0.0)
+            self._note_auto_move()
             self._sync_scrollregion()
             return
         # Fraction such that the viewport's bottom edge sits exactly on
@@ -883,6 +931,7 @@ class CoachScreen(BaseScreen):
             # covers the newest content — leave the view alone.
             return
         canvas.yview_moveto(target)
+        self._note_auto_move()
         self._sync_scrollregion()
 
     def _schedule_thread_pin(self):
@@ -956,6 +1005,10 @@ class CoachScreen(BaseScreen):
         # otherwise manual scrolling glitches (jumps/short-stops) until some
         # later event happens to fix the numbers.
         self._sync_scrollregion()
+
+    def _note_auto_move(self):
+        """Record one automatic viewport write (instrumentation for tests)."""
+        self._auto_move_count = getattr(self, '_auto_move_count', 0) + 1
 
     def _start_settle_poll(self):
         self._stop_settle_poll()
