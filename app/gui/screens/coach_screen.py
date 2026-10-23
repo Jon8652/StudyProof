@@ -15,6 +15,11 @@ from app.gui.widgets.chat_bubble import ChatBubble, target_wraplength, MIN_WRAPL
 from app.gui.widgets.tooltip import Tooltip
 from app.gui.workers import UIEventQueue
 
+# Auto-scroll tuning (see the "Auto-scroll" section below).
+BOTTOM_EPSILON_PX = 4   # tolerance so sub-pixel rounding/DPI scaling doesn't unstick the view
+SETTLE_POLL_MS = 60     # interval of the post-rebuild settle poll
+SETTLE_MAX_TICKS = 12   # ~0.7 s worst case; stops early once the height stabilises
+
 
 class CoachScreen(BaseScreen):
     def __init__(self, master, state):
@@ -45,6 +50,50 @@ class CoachScreen(BaseScreen):
         # customtkinter's default grey; now the same blue pane surface.
         self.thread = ctk.CTkScrollableFrame(self.content, fg_color=PANE_BG)
         self.thread.pack(fill='both', expand=True)
+        # --- Auto-scroll ("stick to bottom") state ----------------------
+        # Mirrors how mainstream chat clients behave: the newest message is
+        # always kept in view unless the user deliberately scrolls away to
+        # read history.  All values are main-thread only; nothing touches Tk
+        # from a worker (turn results already arrive via UIEventQueue).
+        self._stick_to_bottom = True    # False only while the user browses history
+        self._pin_job = None            # pending after_idle pin callback
+        self._settle_job = None         # periodic settle-poll after a rebuild
+        self._settle_ticks = 0
+        self._last_thread_height = -1   # height seen at previous settle poll
+        self._thread_needs_pin = False  # set by refresh(); consumed at idle time
+        self._thread_canvas = None
+        canvas = getattr(self.thread, '_parent_canvas', None)
+        if canvas is not None:
+            self._thread_canvas = canvas
+            # 1 px steps let _scroll_thread_to_bottom() land exactly on the
+            # last bubble's bottom edge instead of CTk's default 30 px
+            # Windows yscrollincrement.
+            canvas.configure(yscrollincrement=1)
+            # Any wheel motion over the thread decides stickiness from the
+            # *real* post-scroll position (see _on_thread_wheel).  The
+            # bind_all observer is scoped by Enter/Leave so sibling panes
+            # never lose their wheel events to this screen.
+            canvas.bind('<Enter>', lambda e: canvas.bind_all(
+                '<MouseWheel>', self._on_thread_wheel_event, add='+'), add='+')
+            canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'), add='+')
+            for seq, sign in (('<Button-4>', 1), ('<Button-5>', -1)):   # Linux/Xvfb wheels
+                canvas.bind(seq, lambda e, s=sign: self._on_thread_wheel(), add='+')
+            # Dragging the CTk scrollbar thumb routes through the canvas
+            # yview command as well, so a manual drag-up releases the pin.
+            orig_yview = canvas.yview
+
+            def tracked_yview(*args, **kw):
+                result = orig_yview(*args, **kw)
+                if (args and args[0] == 'scroll' and len(args) >= 3
+                        and int(args[1]) < 0):
+                    self._user_left_bottom_hint()
+                return result
+            canvas.yview = tracked_yview
+        # Bubbles re-wrap their text asynchronously via their own Configure
+        # handlers, so the thread keeps growing *after* refresh() has packed
+        # everything.  This fires exactly when content height changes — the
+        # reliable trigger to re-pin while stuck at the bottom.
+        self.thread.bind('<Configure>', self._on_thread_configure, add='+')
         # Responsive wrapping for the coach text: the header/notice labels
         # pack fill='x', so their allocated row width tracks the window.
         # Each label's wraplength is derived from its own width (floor only,
@@ -436,8 +485,172 @@ class CoachScreen(BaseScreen):
         can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
+        # --- Auto-scroll arming (single choke point) ---------------------
+        # Every state change that rebuilds the thread funnels through here:
+        # user send (_submitted), coach reply (finished), session start /
+        # resume / switch (resume_session, sessions, revise_topic), cancel
+        # and background assessment completion.  Arming at the end of
+        # refresh() therefore covers all current and future call paths with
+        # no per-callsite hooks to forget.
+        if session is not None:
+            # A (re)built thread ALWAYS lands at its bottom — absolute
+            # pinning, so switching to a shorter session scrolls *up* if
+            # the old view was parked mid-scroll; direction never matters.
+            self._stick_to_bottom = True
+            self._thread_needs_pin = True
+            self._schedule_thread_pin()
+            self._start_settle_poll()
+        else:
+            self._stop_settle_poll()
+
+    # ------------------------------------------------------------------
+    # Auto-scroll ("stick to bottom")
+
+    def _thread_at_bottom(self):
+        """True when the newest bubble is fully visible in the viewport."""
+        canvas = self._thread_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return True
+        try:
+            first, last = canvas.yview()
+            if last >= 1.0:
+                return True
+            region = canvas.bbox('all')
+            if region is None:
+                return True                 # nothing scrollable at all
+            return region[3] - canvas.winfo_height() <= BOTTOM_EPSILON_PX
+        except Exception:
+            return True                     # torn down mid-read
+
+    def _scroll_thread_to_bottom(self):
+        """Absolute pin — works whether reaching the bottom means scrolling up or down."""
+        canvas = self._thread_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        try:
+            if self._thread_at_bottom():
+                return                      # already pinned: cheap no-op
+        except Exception:
+            pass
+        try:
+            # yscrollincrement is 1 px (set in __init__), so a huge units
+            # scroll clamps exactly to the scrollregion's bottom edge.
+            canvas.yview_scroll(10_000_000, 'units')
+        except Exception:
+            try:
+                canvas.yview_moveto(1.0)    # fallback if private API shape changes
+            except Exception:
+                pass
+
+    def _schedule_thread_pin(self):
+        """Collapse all pin requests in one event-loop cycle into one idle callback."""
+        if self._pin_job is not None:
+            return
+        try:
+            self._pin_job = self.after_idle(self._apply_thread_pin)
+        except Exception:
+            pass
+
+    def _apply_thread_pin(self):
+        self._pin_job = None
+        self._thread_needs_pin = False
+        if not self.winfo_exists() or not self._stick_to_bottom:
+            return
+        # after_idle guarantees the freshly-packed bubbles have real
+        # geometry by now; a synchronous pin inside refresh() would read
+        # 1px-tall widgets and a stale scrollregion.
+        self._scroll_thread_to_bottom()
+
+    def _start_settle_poll(self):
+        self._stop_settle_poll()
+        self._last_thread_height = -1
+        self._settle_ticks = 0
+        try:
+            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
+        except Exception:
+            pass
+
+    def _stop_settle_poll(self):
+        if self._settle_job is not None:
+            try:
+                self.after_cancel(self._settle_job)
+            except Exception:
+                pass
+            self._settle_job = None
+
+    def _settle_tick(self):
+        self._settle_job = None
+        if not self.winfo_exists() or not self._stick_to_bottom:
+            return                          # user took over, or screen is gone
+        canvas = self._thread_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        self._settle_ticks += 1
+        try:
+            region = canvas.bbox('all')
+            height = region[3] if region else 0
+        except Exception:
+            return
+        if height != self._last_thread_height:
+            # Bubbles still growing/shrinking (async text re-wrap): re-pin
+            # and keep watching until the height stabilises.
+            self._last_thread_height = height
+            self._scroll_thread_to_bottom()
+            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
+        elif self._settle_ticks < SETTLE_MAX_TICKS:
+            # Height looks stable, but Tk may still hold queued Configure
+            # events (e.g. a wraplength burst). One extra quiet tick, then stop.
+            self._scroll_thread_to_bottom()  # cheap no-op when already pinned
+            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
+        # else: settled — polling stops entirely (zero idle cost between messages)
+
+    def _on_thread_configure(self, event=None):
+        # Reactive hook for growth *after* the settle window (rare, e.g. a
+        # resize re-wrap while stuck at bottom).  The short-circuit inside
+        # _scroll_thread_to_bottom keeps this bounded: pinning re-fires the
+        # frame's <Configure>, which schedules one redundant no-op at most.
+        if self._stick_to_bottom and not self._thread_needs_pin:
+            self._schedule_thread_pin()
+
+    def _on_thread_wheel_event(self, event=None):
+        # bind_all passes the wheel event; only decide from it while the
+        # pointer is actually over the thread (Enter/Leave-scoped binding).
+        self._on_thread_wheel()
+
+    def _on_thread_wheel(self, direction_or_event=None):
+        """Wheel motion decides stickiness from the post-scroll position."""
+        if self._thread_at_bottom():
+            self._stick_to_bottom = True
+        else:
+            self._stick_to_bottom = False
+
+    def _user_left_bottom_hint(self):
+        # Called from upward scrollbar drags; decide from the settled position.
+        try:
+            self.after_idle(self._check_bottom_after_scroll)
+        except Exception:
+            pass
+
+    def _check_bottom_after_scroll(self):
+        if not self.winfo_exists():
+            return
+        if not self._thread_at_bottom():
+            self._stick_to_bottom = False
 
     def shutdown(self):
+        # Cancel every pending auto-scroll job before teardown; worker-
+        # posted callbacks must never fire against destroyed widgets.
+        self._stop_settle_poll()
+        if self._pin_job is not None:
+            try:
+                self.after_cancel(self._pin_job)
+            except Exception:
+                pass
+            self._pin_job = None
+        try:
+            self.unbind_all('<MouseWheel>')
+        except Exception:
+            pass
         self._hide_suggestions()
         for sid in {self.session_id, *(key[0] for key in self.service.assessments)}:
             self.service.cancel_turn(sid)
