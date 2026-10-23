@@ -4,9 +4,9 @@ These exercise the *real* production wiring — HomeScreen's 1 Hour / 2 Hours
 quick-start buttons, the shared sidebar StopwatchWidget in countdown mode,
 AppState.record_timer_session and persistence — with real Tk dialogs and a
 pumpable mainloop.  Because nobody wants to wait an hour inside pytest, the
-countdowns run at a compressed time scale: we shrink the widget's internal
-second→minute conversion so a "60 minute" session actually elapses in ~1
-wall-clock second, then let the genuine tick/finish jobs drive completion.
+countdowns run at a compressed time scale: we accelerate the widget's
+monotonic clock by 3600x so a "60 minute" session elapses in ~1 wall-clock
+second, then let the genuine tick/finish jobs drive completion.
 The recording math itself (``int(round(_cd_total_s // 60))``) is untouched,
 so what gets credited is exactly what the production code would credit.
 
@@ -18,8 +18,8 @@ Covers, per preset duration (60 and 120 minutes):
 - pausing across the deadline records nothing and stays alive;
 - stacking a second session while one runs is refused (UI button disabled
   AND the widget refuses);
-- the recorded session survives autosave/reload and shows up in the today
-  summary (XP/time path used by the Home screen).
+- the recorded session survives autosave/reload and shows up in the
+  summary for its start day (XP/time path used by the Home screen).
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from app.gui.screens.home_screen import HomeScreen          # noqa: E402
 from app.gui.widgets import stopwatch as sw                 # noqa: E402
 from app.gui.widgets.stopwatch import StopwatchWidget       # noqa: E402
 from app.state.app_state import AppState                    # noqa: E402
+from app.utils.date_utils import format_minutes             # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -146,6 +147,7 @@ def harness(monkeypatch):
         # Mirror what MainWindow does: re-derive every screen (incl. the
         # countdown busy-state of the preset buttons) on any data change.
         state.add_listener(home.refresh)
+        widget.on_countdown_change = home.refresh
         pump = _Pump(root)
         yield state, widget, home, dialogs, pump
     finally:
@@ -175,7 +177,7 @@ class _CompressedClock:
         return (time.monotonic() - self._origin) * self._scale
 
 
-def _compress_time(monkeypatch, scale: float = 60.0):
+def _compress_time(monkeypatch, scale: float = 3600.0):
     monkeypatch.setattr(sw, "time", _CompressedClock(scale))
 
 
@@ -193,7 +195,7 @@ def test_quick_start_records_full_session_in_real_time(harness, monkeypatch,
     """Pressing the actual preset button and WAITING OUT the (compressed)
     countdown records exactly `minutes` of timer-source study time."""
     state, widget, home, dialogs, pump = harness
-    _compress_time(monkeypatch, scale=60.0)  # 60 min of sim-time per wall sec
+    _compress_time(monkeypatch)  # 60 min of sim-time per wall sec
 
     idx = {60: 0, 120: 1}[minutes]
     btn = home.preset_buttons[idx]
@@ -206,7 +208,7 @@ def test_quick_start_records_full_session_in_real_time(harness, monkeypatch,
     assert _sessions(state) == []
     assert dialogs.has("Session started", "countdown is running")
 
-    # Wait out the whole session in real time (≈1 s at 60x compression).
+    # Wait out the whole session in real time (1–2 s at 3600x compression).
     finished = pump.wait_until(lambda: not widget.countdown_active,
                                timeout_s=5.0)
     assert finished, "countdown never completed"
@@ -216,16 +218,20 @@ def test_quick_start_records_full_session_in_real_time(harness, monkeypatch,
     assert dialogs.has("Session complete", "study session was")
     # Widget reverts cleanly to stopwatch mode.
     assert widget._display_text() == "0:00:00"
-    # Home summary now reflects the recorded time.
-    agg = state.get_today_summary()
+    # Sessions are attributed to their start day, which may be yesterday
+    # when these tests run shortly after midnight.
+    agg = state.get_day_aggregate(state.dataset.sessions[0].start_local.date())
     assert agg is not None and agg.total_minutes == minutes
+    today = state.get_today_summary()
+    assert home.time_value.cget("text") == format_minutes(
+        today.total_minutes if today else 0)
 
 
 @pytest.mark.parametrize("minutes", [60, 120])
 def test_cancel_before_zero_records_nothing_real_time(harness, monkeypatch,
                                                       minutes):
     state, widget, home, dialogs, pump = harness
-    _compress_time(monkeypatch, scale=60.0)
+    _compress_time(monkeypatch)
 
     home._start_preset(minutes)
     assert widget.countdown_active
@@ -248,8 +254,8 @@ def test_paused_across_deadline_records_nothing_real_time(harness, monkeypatch,
 
     home._start_preset(minutes)
     # Shrink the balance so the deadline lands ~0.15 wall-seconds ahead
-    # (36 sim-seconds at 120x compression), then re-arm the finish job.
-    widget._cd_remaining_s = 36.0
+    # (18 sim-seconds at 120x compression), then re-arm the finish job.
+    widget._cd_remaining_s = 18.0
     widget._cd_segment_start = sw.time.monotonic()
     widget._schedule_cd_finish()
     widget._on_pause_toggle()               # pause before it hits zero
@@ -266,7 +272,7 @@ def test_paused_across_deadline_records_nothing_real_time(harness, monkeypatch,
 
 def test_second_quick_start_refused_while_running(harness, monkeypatch):
     state, widget, home, dialogs, pump = harness
-    _compress_time(monkeypatch, scale=60.0)
+    _compress_time(monkeypatch)
 
     home.preset_buttons[0].invoke()         # start 1 Hour
     pump.sleep(0.1)
@@ -285,20 +291,22 @@ def test_second_quick_start_refused_while_running(harness, monkeypatch):
     pump.sleep(0.1)
     for b in home.preset_buttons:
         assert str(b.cget("state")) == "normal"
+    assert str(home.custom_button.cget("state")) == "normal"
 
 
 def test_recorded_session_survives_reload(harness, monkeypatch):
     """The auto-recorded session is autosaved and reappears after a fresh
     AppState load — i.e. it really hit the persistent dataset."""
     state, widget, home, dialogs, pump = harness
-    _compress_time(monkeypatch, scale=60.0)
+    _compress_time(monkeypatch)
 
     home.preset_buttons[1].invoke()         # 2 Hours
     assert pump.wait_until(lambda: not widget.countdown_active, timeout_s=5.0)
     pump.sleep(0.1)
     assert _sessions(state) == [(120, "timer")]
 
-    reloaded = AppState()                   # reads the same isolated data dir
+    reloaded = AppState()
+    reloaded.load_startup()                 # same load flow as MainWindow
     assert [(s.duration_minutes, s.source)
             for s in reloaded.dataset.sessions] == [(120, "timer")]
 
@@ -308,7 +316,7 @@ def test_custom_session_dialog_starts_countdown_not_instant_log(harness,
     """"Start custom session" also routes through the countdown (no instant
     credit), and completes the same way."""
     state, widget, home, dialogs, pump = harness
-    _compress_time(monkeypatch, scale=60.0)
+    _compress_time(monkeypatch)
 
     # Simulate the dialog returning 90 minutes to its callback.
     home._start_countdown(90)
@@ -317,3 +325,20 @@ def test_custom_session_dialog_starts_countdown_not_instant_log(harness,
     assert pump.wait_until(lambda: not widget.countdown_active, timeout_s=5.0)
     pump.sleep(0.1)
     assert _sessions(state) == [(90, "timer")]
+
+
+def test_deferred_finish_records_once_without_tick_loop(harness, monkeypatch):
+    """The independent finish chain must work even without display ticks."""
+    state, widget, home, dialogs, pump = harness
+    _compress_time(monkeypatch)
+    monkeypatch.setattr(widget, "_CD_MAX_HOP_MS", 50)
+
+    home._start_preset(60)
+    widget._cancel_tick()
+    assert pump.wait_until(lambda: not widget.countdown_active, timeout_s=5.0)
+    pump.sleep(0.2)
+
+    assert _sessions(state) == [(60, "timer")]
+    assert dialogs.titles().count("Session complete") == 1
+    assert widget._cd_finish_job is None
+    assert widget._tick_job is None
