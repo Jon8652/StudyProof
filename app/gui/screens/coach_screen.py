@@ -22,6 +22,13 @@ from app.gui.workers import UIEventQueue
 BOTTOM_EPSILON_PX = 4   # tolerance so sub-pixel rounding/DPI scaling doesn't unstick the view
 SETTLE_POLL_MS = 60     # interval of the post-rebuild settle poll
 SETTLE_MAX_TICKS = 12   # ~0.7 s worst case; stops early once the height stabilises
+# Grace window (ms) after the last content-extent change before the settle
+# poll may terminate.  The tick budget alone is a race on platforms where
+# CTk's deferred scrollregion rewrite and async bubble re-wraps land late
+# (Windows): the poll would exit right before the final geometry burst,
+# leaving the viewport parked off-bottom.  A short time-based settle keeps
+# re-pinning until the extent has genuinely been quiet.
+SETTLE_QUIET_MS = 300
 # Window (ms) in which a pointer event must have been seen for a ``yview``
 # write to count as a user gesture (see tracked_yview / _last_gesture_ms).
 GESTURE_EVIDENCE_MS = 250
@@ -68,6 +75,8 @@ class CoachScreen(BaseScreen):
         self._pin_job = None
         self._settle_job = None
         self._settle_ticks = 0
+        self._settle_deadline = 0.0
+        self._last_extent_change = 0.0
         self._last_thread_height = -1
         self._thread_needs_pin = False
         self._thread_canvas = None
@@ -827,15 +836,47 @@ class CoachScreen(BaseScreen):
         finally:
             self._auto_scroll_depth -= 1
 
+    def _bottom_gap(self, canvas):
+        """Pixels between the viewport bottom edge and the content extent.
+
+        Positive means the newest content still hangs below the viewport;
+        zero/negative means it is fully visible.  Returns None when nothing
+        can be judged yet (un-mapped canvas or empty thread).
+        """
+        height = canvas.winfo_height()
+        if height <= 1:
+            return None                 # un-mapped: nothing to judge yet
+        bottom = self._content_bottom()
+        if bottom <= 0:
+            return None                 # empty thread — trivially pinned
+        return bottom - (self._viewport_top(canvas) + height)
+
     def _pin_viewport(self, canvas):
         """Sync the real region BEFORE scrolling so Tk clamps to visible content."""
-        if canvas.winfo_height() <= 1:
-            return
+        unmapped = canvas.winfo_height() <= 1
         self._sync_scrollregion()
-        if self._thread_at_bottom():
+        if unmapped:
+            # The canvas has no geometry yet (fresh window not mapped, e.g.
+            # during a session switch on Windows).  Keep the follow armed:
+            # the <Configure> hook re-pins as soon as real geometry lands,
+            # instead of silently dropping the pin on the floor.
+            self._thread_needs_pin = True
             return
-        canvas.yview_moveto(1.0)
-        self._note_auto_move()
+        gap = self._bottom_gap(canvas)
+        if gap is None:
+            return                      # empty thread — trivially pinned
+        if gap > 0:
+            # Close the *measured* gap with unit scrolls (yscrollincrement
+            # was set to 1 px).  yview_moveto(1.0) must never be used here:
+            # Tk quantises the fraction against the scrollregion ratio, and
+            # under Windows DPI scaling that rounding leaves a fixed few-px
+            # residual gap at the bottom even though _thread_at_bottom()'s
+            # epsilon already reports "pinned".
+            try:
+                canvas.yview_scroll(int(round(gap)), 'units')
+            except Exception:
+                self._manual_scroll_to_bottom(canvas)   # legacy fallback
+            self._note_auto_move()
 
     def _schedule_thread_pin(self):
         """Collapse all pin requests in one event-loop cycle into one idle callback."""
@@ -932,6 +973,12 @@ class CoachScreen(BaseScreen):
         self._stop_settle_poll()
         self._last_thread_height = -1
         self._settle_ticks = 0
+        now = time.monotonic()
+        # Hard ceiling: the poll can never outlive this, even if geometry
+        # keeps churning.  The quiet window below normally ends it far
+        # earlier; the ceiling bounds pathological resize loops.
+        self._settle_deadline = now + (SETTLE_MAX_TICKS * SETTLE_POLL_MS) / 1000.0
+        self._last_extent_change = now
         try:
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
         except Exception:
@@ -958,21 +1005,41 @@ class CoachScreen(BaseScreen):
             self._release_pin_for_manual_scroll()
             return
         self._settle_ticks += 1
-        if self._settle_ticks >= SETTLE_MAX_TICKS:
-            self._scroll_thread_to_bottom()
-            return
+        now = time.monotonic()
+        hard_stop = now >= self._settle_deadline
+        quiet_ms = (now - self._last_extent_change) * 1000.0
         self._sync_scrollregion()
         extent = self._content_bottom()
-        if extent != self._last_thread_height:
+        gap = self._bottom_gap(canvas)
+        changed = extent != self._last_thread_height
+        if changed:
             # Bubbles still growing/shrinking (async text re-wrap) or the
-            # deferred geometry pass finally landed: re-pin against the new
-            # extent and keep watching until it stabilises.
+            # deferred geometry pass finally landed: restart the quiet
+            # window so late Windows bursts keep the poll alive instead of
+            # the tick budget exiting right before they arrive.
             self._last_thread_height = extent
+            self._last_extent_change = now
+            quiet_ms = 0.0
+        if hard_stop:
+            # Last correction against whatever geometry exists now; then
+            # stop no matter what (bounds pathological churn).
+            self._scroll_thread_to_bottom()
+            return
+        if changed or (gap is not None and gap > BOTTOM_EPSILON_PX):
+            # Still settling (extent moved) or the viewport drifted below
+            # the pinned position: re-pin and keep watching.
             self._scroll_thread_to_bottom()
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
-        elif not self._thread_at_bottom():
-            # Height stable but the viewport drifted (late scrollregion
-            # correction, DPI/geometry settle): re-pin and keep watching.
+        elif gap is None and canvas.winfo_height() <= 1 \
+                and quiet_ms < SETTLE_QUIET_MS:
+            # Canvas not mapped yet — nothing measurable; stay armed until
+            # geometry lands (or the quiet window runs out).
+            self._thread_needs_pin = True
+            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
+        elif quiet_ms < SETTLE_QUIET_MS:
+            # Extent looks stable, but it has not been quiet long enough:
+            # CTk's deferred scrollregion rewrite can land after a few
+            # "stable" polls, so keep re-pinning through the grace window.
             self._scroll_thread_to_bottom()
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
         else:
@@ -991,8 +1058,10 @@ class CoachScreen(BaseScreen):
         # viewport back down while the user is browsing history.  Sticking
         # resumes only via a fresh rebuild (refresh) or an explicit manual
         # return to the bottom (_check_bottom_after_scroll).
-        if self._settle_job is None or self._settle_ticks >= SETTLE_MAX_TICKS:
+        if self._settle_job is None:
             return
+        if time.monotonic() >= self._settle_deadline:
+            return                      # hard ceiling reached: window closed
         if self._stick_to_bottom and not self._thread_needs_pin \
                 and not self._is_superseded_by_manual_scroll():
             self._schedule_thread_pin()
