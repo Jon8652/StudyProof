@@ -52,6 +52,15 @@ class CoachScreen(BaseScreen):
         # the window is small or maximised — matching how ChatBubble wraps.
         self._wrap_job = None
         self._responsive_labels = []
+        # Bind on the content frame *and* each responsive label itself.  A
+        # CTk widget is a plain Tk frame wrapping an internal canvas, so a
+        # <Configure> delivered to the content binding can surface with
+        # event.widget set to that inner canvas rather than the frame we
+        # bound on.  The old identity filter (`event.widget is not
+        # self.content`) then silently dropped every resize event and the
+        # header/notice/confidence rows stayed pinned at their floor width.
+        # Binding each label directly means the event always concerns that
+        # label's own row, so no filtering is needed here at all.
         self.content.bind('<Configure>', self._schedule_wrap_update, add='+')
         # Private background ratings never appear in the conversation.
         self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888',
@@ -102,6 +111,12 @@ class CoachScreen(BaseScreen):
         self.notice = ctk.CTkLabel(self.content, text='', wraplength=MIN_WRAPLENGTH)
         self.notice.pack(fill='x')
         self._responsive_labels = [self.header, self.notice, self.confidence_note]
+        # Each responsive row also gets its own <Configure> binding (see the
+        # comment where the content binding is created): the event concerns
+        # that label's allocated row directly, so it can never be dropped by
+        # a widget-identity check.
+        for label in self._responsive_labels:
+            label.bind('<Configure>', self._schedule_wrap_update, add='+')
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -109,9 +124,10 @@ class CoachScreen(BaseScreen):
 
     def _schedule_wrap_update(self, event=None):
         # Debounce resize storms: only the last Configure in a burst does
-        # the (cheap, guarded) relayout work.
-        if event is not None and event.widget is not self.content:
-            return
+        # the (cheap, guarded) relayout work.  No widget-identity filtering:
+        # every binding that reaches this handler (the content frame and
+        # each responsive label) concerns geometry that _apply_responsive_
+        # wrapping reads directly from the labels themselves.
         if self._wrap_job is not None:
             try:
                 self.after_cancel(self._wrap_job)

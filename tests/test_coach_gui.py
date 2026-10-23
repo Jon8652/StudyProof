@@ -98,7 +98,14 @@ def test_coach_text_width_tracks_the_bubble_at_every_window_size(monkeypatch):
     except tkinter.TclError as exc:
         pytest.skip(f'Tk display unavailable: {exc}')
     try:
-        app.withdraw()
+        # NOT withdraw(): a withdrawn window never receives real geometry
+        # updates from Tk, so every widget stays at its 1px un-mapped size
+        # and no <Configure> events fire — the wraplength would sit at its
+        # floor forever.  Map the window far outside the virtual screen so
+        # Tk treats it as visible (geometry events flow) while nothing is
+        # actually shown on the display.
+        app.geometry('+3000+3000')
+        app.deiconify()
         app.geometry('1600x900')
         app.show_screen('coach')
         screen = app.screens['coach']
@@ -106,12 +113,17 @@ def test_coach_text_width_tracks_the_bubble_at_every_window_size(monkeypatch):
         pump(app, lambda: bool(screen.thread.winfo_children()))
         bubbles = list(screen.thread.winfo_children())
         assert bubbles
+        # The fixture has one coach turn carrying no quotations or
+        # verification notices, so each bubble holds exactly one wrapped
+        # label; derive the count from the widgets rather than hard-coding
+        # an assumption that silently breaks when the fixture changes.
+        expected_labels = sum(len(_message_labels(b)) for b in bubbles)
         # Pump until the Configure-driven wraplength settles at the wide size.
         def wrapped_wide():
             app.update_idletasks()
             app.update()
             widths = [label.cget('wraplength') for b in bubbles for label in _message_labels(b)]
-            return len(widths) == 2 and all(w > 900 for w in widths)
+            return len(widths) == expected_labels and all(w > 900 for w in widths)
         deadline = time.monotonic() + 5
         while not wrapped_wide() and time.monotonic() < deadline:
             time.sleep(.02)
@@ -128,15 +140,25 @@ def test_coach_text_width_tracks_the_bubble_at_every_window_size(monkeypatch):
             app.update_idletasks()
             app.update()
             widths = [label.cget('wraplength') for b in bubbles for label in _message_labels(b)]
-            return len(widths) == 2 and all(w < 900 for w in widths)
+            return len(widths) == expected_labels and all(w < 900 for w in widths)
         deadline = time.monotonic() + 5
         while not wrapped_narrow() and time.monotonic() < deadline:
             time.sleep(.02)
         assert wrapped_narrow(), 'shrink events did not re-wrap the coach text'
         # Header/notice/confidence rows track their own allocated width too.
-        header_target = target_wraplength(max(screen.header.winfo_width(), 1),
-                                          float(screen._get_widget_scaling()))
-        assert screen.header.cget('wraplength') == max(MIN_WRAPLENGTH, header_target)
+        # Their updates are debounced behind an after(50) job, so pump until
+        # the settled value matches the geometry-derived target instead of
+        # asserting against a mid-flight snapshot.
+        def header_settled():
+            app.update_idletasks()
+            app.update()
+            header_target = target_wraplength(max(screen.header.winfo_width(), 1),
+                                              float(screen._get_widget_scaling()))
+            return screen.header.cget('wraplength') == max(MIN_WRAPLENGTH, header_target)
+        deadline = time.monotonic() + 5
+        while not header_settled() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert header_settled(), 'header wraplength never tracked its allocated row width'
     finally:
         for screen in app.screens.values():
             if hasattr(screen, 'shutdown'):
