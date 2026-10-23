@@ -276,7 +276,12 @@ class CoachScreen(BaseScreen):
                 # is classified as a user gesture by tracked_yview.
                 self._last_gesture_ms = time.monotonic()
             if over_us and self._auto_scroll_depth == 0 \
-                    and self.winfo_exists() and self._stick_to_bottom:
+                    and self.winfo_exists():
+                # Release unconditionally (not only while stuck): a notch may
+                # arrive after the pin was already released, and its scroll
+                # still needs the veto id bumped *before* it executes.  The
+                # release is idempotent; _on_thread_wheel_event keeps exactly
+                # one bump per notch via its was_stuck guard.
                 self._release_pin_for_manual_scroll()
             return _orig_wheel_all(event)
         self.thread._mouse_wheel_all = _tracked_mouse_wheel_all
