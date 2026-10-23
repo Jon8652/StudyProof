@@ -511,7 +511,7 @@ def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted
         assert _settle(app, screen)
         # Park mid-scroll, then send — the reply must pull the view back down.
         screen._thread_canvas.yview_moveto(0.3)
-        screen._on_thread_wheel()
+        app.update()          # let the wheel-observer verdict settle first
         assert not screen._stick_to_bottom
         screen.composer.insert('1.0', 'Energy from sunlight')
         screen.send()
@@ -586,27 +586,107 @@ def test_scrolling_up_releases_the_pin(monkeypatch):
         screen.resume_session(session.id)
         pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
         assert _settle(app, screen)
-        # User scrolls up to read history: the pin releases and Tk leaves them
-        # exactly where they put themselves.
-        screen._thread_canvas.yview_moveto(0.3)
-        screen._on_thread_wheel()
+        # User scrolls up to read history (the yview wrapper sees the upward
+        # request and hands control over): the pin releases and Tk leaves
+        # them exactly where they put themselves.
+        canvas = screen._thread_canvas
+        canvas.yview_moveto(0.3)
         assert not screen._stick_to_bottom
-        before = screen._thread_canvas.yview()[0]
+        before = canvas.yview()[0]
         for _ in range(10):
             app.update()
             time.sleep(.02)
         assert screen._thread_at_bottom() is False
-        assert abs(screen._thread_canvas.yview()[0] - before) < 0.02, \
+        assert abs(canvas.yview()[0] - before) < 0.02, \
             'view was yanked away after the user took over'
-        # A scrollbar-drag hint releases the pin too.
-        screen._stick_to_bottom = True
-        screen._user_left_bottom_hint()
-        app.update()
-        assert not screen._stick_to_bottom
-        # Scrolling back to the bottom re-engages stickiness.
-        screen._scroll_thread_to_bottom()
-        screen._on_thread_wheel()
+        # Wheel motion over the thread releases the pin too, even when the
+        # gesture happens while auto-scroll jobs are still pending.
+        screen.refresh()                     # re-arms pin + settle poll
         assert screen._stick_to_bottom
+        assert screen._settle_job is not None or screen._pin_job is not None
+        screen._on_thread_wheel_event(None)  # wheel observer fires first
+        canvas.yview_scroll(-100, 'units')   # ... then the actual scroll-up
+        assert not screen._stick_to_bottom
+        assert screen._settle_job is None and screen._pin_job is None, \
+            'pending auto jobs must be cancelled when the user takes over'
+        pos_after_release = canvas.yview()[0]
+        for _ in range(10):
+            app.update()
+            time.sleep(.02)
+        assert abs(canvas.yview()[0] - pos_after_release) < 0.02, \
+            'a stale settle/pin pass dragged the view back down'
+        # Scrolling all the way back to the bottom re-engages stickiness.
+        canvas.yview_scroll(10_000_000, 'units')   # clamps at the real bottom
+        app.update()
+        assert screen._stick_to_bottom, 'manual return to bottom must re-stick'
+        # And a mid-page downward click on the scrollbar track must NOT.
+        screen._stick_to_bottom = False
+        canvas.yview_moveto(0.3)
+        app.update()
+        canvas.yview_scroll(50, 'units')     # still far from the bottom
+        app.update()
+        assert not screen._stick_to_bottom, \
+            'downward scrolling must only re-stick once actually at the bottom'
+    finally:
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
+    """Auto-scroll may only follow NEW content — never fight a live manual scroll.
+
+    The wheel-up handler runs *before* CTk's own bind_all wheel handler
+    scrolls the canvas; by the time the deferred reply rebuild reaches its
+    idle pin, the user's newer gesture must veto it entirely.
+    """
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology',
+        'Photosynthesis converts sunlight into chemical energy stored in glucose, '
+        'while chlorophyll absorbs the light needed for this process.').value
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        canvas = screen._thread_canvas
+        state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+        screen.service.live_factory = scripted_provider
+        session = screen.service.start_session([('note', note.id)]).value
+        screen.session_id = session.id
+        screen.request('question')
+        pump(app, lambda: not screen.busy)
+        assert _settle(app, screen)
+        from app.core.models import CoachTurn
+        long_text = ('Energy explanation detail. ' * 30).strip()
+        for i in range(20):
+            session.turns.append(CoachTurn.create(
+                'coach' if i % 2 else 'user', 'notice', f'{i}. {long_text}'))
+        screen.refresh()
+        pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+        # Start a turn, then scroll up to read history WHILE the coach thinks.
+        screen.request('question')
+        assert screen.busy
+        screen._on_thread_wheel_event(None)      # wheel observer...
+        canvas.yview_scroll(-400, 'units')       # ...then CTk scrolls up
+        parked = canvas.yview()[0]
+        assert parked < 0.99
+        pump(app, lambda: not screen.busy)       # reply lands, refresh re-arms
+        for _ in range(10):                      # let any stray pin fire
+            app.update()
+            time.sleep(.02)
+        assert screen._stick_to_bottom, 'a fresh reply resticks for the NEXT change'
+        assert abs(canvas.yview()[0] - parked) < 0.02, \
+            'the reply rebuild yanked the view away from the user mid-flight'
     finally:
         for s in app.screens.values():
             if hasattr(s, 'shutdown'):
