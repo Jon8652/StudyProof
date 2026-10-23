@@ -12,6 +12,7 @@ from app.core.agent.parser import parse_reply
 from app.core.agent.prompt import (messages, connection_messages,
                                    assessment_topic_messages, assessment_score_messages)
 from app.core.agent.provider_base import ProviderError
+from app.core.agent.confidence import is_uncertain_answer
 from app.core.agent.schema import CoachReply, AnswerAssessment
 
 
@@ -145,8 +146,23 @@ class OpenAICompatProvider:
             value = json.loads(raw)
             if not isinstance(value, dict) or type(value.get('is_answer')) is not bool:
                 raise ValueError()
+            answer = next(t['text'] for t in reversed(context['history']) if t['role'] == 'user')
             if not value['is_answer']:
-                return None
+                # Deterministic guard: refusals such as "I'm not sure" are
+                # always answers. If the model dropped them, retry once with
+                # an explicit correction so weak topics still get flagged.
+                if not is_uncertain_answer(answer):
+                    return None
+                raw = post(assessment_topic_messages(context) + [{
+                    'role': 'user',
+                    'content': 'Correction: the latest learner message IS an attempt to '
+                               'answer (an expression of uncertainty). Re-identify the '
+                               'question it responds to and reply again with is_answer:true.'}]).strip()
+                if raw.startswith('```'):
+                    raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+                value = json.loads(raw)
+                if not isinstance(value, dict) or value.get('is_answer') is not True:
+                    raise ValueError()
             source_id, topic, question = (value.get(k) for k in ('source_id', 'topic', 'question'))
             if (source_id not in context['pack'].included_source_ids
                     or not isinstance(topic, str) or not topic.strip() or len(topic) > 160
@@ -157,7 +173,6 @@ class OpenAICompatProvider:
                     w['id'] == weak_id and w['source_id'] == source_id and w['topic'] == topic
                     for w in context.get('weak_topics', [])):
                 raise ValueError()
-            answer = next(t['text'] for t in reversed(context['history']) if t['role'] == 'user')
             spans = [s for s in context['pack'].as_spans_payload() if s['source_id'] == source_id]
             raw_score = post(assessment_score_messages(question, answer, spans)).strip()
             if not raw_score.isascii() or not raw_score.isdecimal():
@@ -165,6 +180,10 @@ class OpenAICompatProvider:
             score = int(raw_score)
             if not 0 <= score <= 100:
                 raise ValueError()
+            # Uncertainty must register as a weak topic even if the scorer
+            # overrates a refusal; cap it inside the flagging band (<70).
+            if is_uncertain_answer(answer):
+                score = min(score, 39)
             return AnswerAssessment(source_id, topic.strip(), question.strip(), score, weak_id)
         except (ValueError, KeyError, StopIteration, TypeError):
             raise ProviderError('Background assessment could not be read; weak topics were left unchanged.') from None

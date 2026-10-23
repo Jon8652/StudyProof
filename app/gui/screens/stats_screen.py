@@ -99,8 +99,7 @@ class StatsScreen(BaseScreen):
         coach_row = section("Coach activity")
         add_card(coach_row, "coach_sessions", "Coach sessions", color="accent")
         add_card(coach_row, "coach_answered", "Questions answered", color="accent")
-        add_card(coach_row, "coach_hints", "Hints used", color="accent")
-        add_card(coach_row, "coach_revisions", "Revisions requested", color="accent")
+        add_card(coach_row, "coach_weak_topics", "Weak topics", color="accent")
         for col in range(4):
             coach_row.grid_columnconfigure(col, weight=1)
 
@@ -193,9 +192,8 @@ class StatsScreen(BaseScreen):
         cards["coach_answered"].set_value(
             f"{activity.questions_answered}/{activity.questions_asked}",
             "Questions answered")
-        cards["coach_hints"].set_value(str(activity.hints_used), "Hints used")
-        cards["coach_revisions"].set_value(str(activity.revisions),
-                                           "Revisions requested")
+        cards["coach_weak_topics"].set_value(
+            str(len(metrics.weak_topics)), "Weak topics")
         # Drop everything inside the container except the header row, then
         # re-add the empty-state label / weak-topic rows.
         for child in list(self._weak_container.winfo_children()):

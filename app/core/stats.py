@@ -152,13 +152,16 @@ def compute_stats(
 
 @dataclass
 class CoachActivity:
-    """Coach activity cards (REV-3), derived from every persisted turn."""
+    """Coach activity cards (REV-3), derived from every persisted turn.
+
+    Only sessions and questions answered/asked are surfaced in the Stats
+    screen; hint and revision counters were removed when the dedicated
+    coach buttons went away.
+    """
 
     sessions: int = 0
     questions_asked: int = 0
     questions_answered: int = 0
-    hints_used: int = 0
-    revisions: int = 0
 
     @property
     def answered_ratio(self) -> float:
@@ -195,6 +198,4 @@ def compute_review_metrics(
             activity.questions_asked += 1
             if question.first_answer is not None:
                 activity.questions_answered += 1
-            activity.hints_used += max(0, question.hints_seen)
-            activity.revisions += len(question.revisions)
     return metrics
