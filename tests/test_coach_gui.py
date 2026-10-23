@@ -540,6 +540,10 @@ def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted
         for i in range(20):
             session.turns.append(CoachTurn.create(
                 'coach' if i % 2 else 'user', 'notice', f'{i}. {long_text}'))
+        # Simulate a conversation event (new coach content landing): only the
+        # declared events — session open/switch, user send, coach reply —
+        # arm auto-scroll; plain re-renders never do.
+        screen._pending_follow_event = True
         screen.refresh()
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
@@ -640,11 +644,11 @@ def test_scrolling_up_releases_the_pin(monkeypatch):
             'view was yanked away after the user took over'
         # Wheel motion over the thread releases the pin too, even when the
         # gesture happens while auto-scroll jobs are still pending — but a
-        # genuine content change must arm them first.  A plain refresh() of
-        # identical content deliberately no longer does (button clicks that
-        # only re-render must never yank the viewport).
+        # genuine conversation event must arm them first.  A plain refresh()
+        # (button churn) deliberately never does, whatever it renders.
         from app.core.models import CoachTurn
         session.turns.append(CoachTurn.create('user', 'answer', 'Fresh content.'))
+        screen._pending_follow_event = True   # simulate a user send
         screen.refresh()
         assert screen._stick_to_bottom
         assert screen._settle_job is not None or screen._pin_job is not None
@@ -720,6 +724,10 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         for i in range(20):
             session.turns.append(CoachTurn.create(
                 'coach' if i % 2 else 'user', 'notice', f'{i}. {long_text}'))
+        # Simulate a conversation event (new coach content landing): only the
+        # declared events — session open/switch, user send, coach reply — arm
+        # auto-scroll; plain re-renders never do.
+        screen._pending_follow_event = True
         screen.refresh()
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
@@ -754,15 +762,18 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         app.destroy()
 
 
-def test_repeated_refresh_of_identical_content_never_moves_the_view(monkeypatch):
-    """Regression: button clicks must not trigger auto-scroll.
+def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch):
+    """Regression: auto-scroll is event-driven, never render-driven.
 
     "Sessions…" closing without switching and the weak-topics picker churn
-    used to end in refresh() calls that re-rendered an *identical* thread —
-    each one armed a fresh pin window and yanked the viewport back down
-    mid-manual-scroll.  Auto-scroll may only follow new conversation content
-    (a sent message or a coach reply), so a same-content rebuild must leave
-    the view exactly where the user parked it.
+    end in refresh() calls that rebuild the thread — used to arm a fresh pin
+    window on every click and yank the viewport back down mid-manual-scroll
+    (with a blank-flash glitch while Tk clamped against stale geometry).
+    Only three events may move the view: opening/resuming/switching a
+    session, a message the user sent, and a new coach reply.  Even if the
+    thread's content somehow changed underneath, a button-triggered
+    re-render must leave the viewport *exactly* where the user parked it —
+    not one pixel, and no scheduled auto work at all.
     """
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
@@ -780,6 +791,7 @@ def test_repeated_refresh_of_identical_content_never_moves_the_view(monkeypatch)
         app.show_screen('coach')
         screen = app.screens['coach']
         canvas = screen._thread_canvas
+        # Opening a session IS an event: land at its newest message.
         screen.resume_session(session.id)
         pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
         assert _settle(app, screen)
@@ -788,21 +800,23 @@ def test_repeated_refresh_of_identical_content_never_moves_the_view(monkeypatch)
         canvas.yview_scroll(-5000, 'units')
         assert not screen._stick_to_bottom
         parked = canvas.yview()[0]
-        # ...then clicks buttons whose handlers end in refresh() with the
-        # thread content unchanged (the old double-refresh of sessions(),
-        # redundant manual refreshes).  Nothing may arm a pin window.
+        # ...then buttons whose handlers end in refresh() fire.  Even with
+        # brand-new turns appended behind the scenes, the click itself is
+        # not a conversation event — nothing may arm a pin window.
         from app.core.models import CoachTurn
+        session.turns.append(CoachTurn.create('coach', 'question', 'Sneaky background change.'))
         screen.refresh()
         screen.refresh()
         assert screen._pin_job is None and screen._settle_job is None, \
-            'an identical re-render must not schedule any auto-scroll work'
+            'a button-triggered re-render must not schedule any auto-scroll work'
+        assert not screen._stick_to_bottom, 'button churn must not re-engage stickiness'
         for _ in range(10):
             app.update()
             time.sleep(.02)
         assert abs(canvas.yview()[0] - parked) < 0.02, \
             'a same-content refresh dragged the view back to the bottom'
         # The real path: clicking "Sessions…" but picking nothing ends in
-        # refresh() too — still identical content, still must not move.
+        # refresh() too — still must not move anything.
         monkeypatch.setattr(screen, 'wait_window', lambda dialog: None)
         screen.sessions()
         assert screen._pin_job is None and screen._settle_job is None
@@ -810,13 +824,22 @@ def test_repeated_refresh_of_identical_content_never_moves_the_view(monkeypatch)
             app.update()
             time.sleep(.02)
         assert abs(canvas.yview()[0] - parked) < 0.02
-        # Sanity: genuine NEW content through the very same choke point DOES
-        # arm a window and land at the bottom again.
-        session.turns.append(CoachTurn.create('coach', 'question', 'Brand-new question.'))
-        screen.refresh()
-        assert screen._stick_to_bottom
+        # Sanity: the genuine events through the very same choke point DO
+        # arm a window and land at the bottom again — first a coach reply
+        # delivered via finished(), then a session switch.  The scripted
+        # provider turns a prepared job into a real appended bubble, exactly
+        # like the live path does.
+        screen.composer.insert('1.0', 'Energy from sunlight')
+        screen.send()
+        pump(app, lambda: not screen.busy)
+        assert screen._stick_to_bottom, 'a coach reply must re-engage stickiness'
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
+        short = _seed_long_session(state, note, turns=2)
+        screen.resume_session(short.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) == 2)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom(), 'session switch lands at the newest message'
     finally:
         for s in app.screens.values():
             if hasattr(s, 'shutdown'):
