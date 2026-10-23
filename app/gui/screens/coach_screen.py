@@ -70,32 +70,20 @@ class CoachScreen(BaseScreen):
         # Once the user scrolls away, sticking stays off until they return to
         # the bottom or the next rebuild arms a fresh window.
         self._stick_to_bottom = True    # False only while the user browses history
-        # --- Content-change detection (the *only* legitimate auto-scroll
-        # trigger) ----------------------------------------------------------
-        # Auto-scroll must follow NEW conversation content — a message the
-        # user sent, or a reply/cancel/assessment notice from the coach — and
-        # nothing else.  Button clicks that merely re-render the thread with
-        # identical turns ("Sessions…" closing its dialog without switching,
-        # opening/closing the "Revise Weak Topics" picker, refreshing the same
-        # session) used to arm a fresh pin window here and yank the viewport
-        # back down mid-manual-scroll.  refresh() therefore snapshots the
-        # newest turn after every rebuild; pins are armed only when that
-        # snapshot differs from the previous one.  The sentinel starts
-        # mismatched so the very first build of a session still lands at the
-        # newest message (opening/resuming/switching sessions).
-        # ``_thread_rendered`` distinguishes "never built yet" from "already
-        # showing exactly this content": the first render of a session is a
-        # *view* change (legitimately pins), every later identical rebuild is
-        # pure button churn (must not move anything).
-        self._last_content_key = None   # (session_id, turn_count, last_turn_id, last_turn_text)
-        self._thread_rendered = False
-        # Session id whose view-change pin has already been consumed.  The
-        # FIRST render of a session legitimately lands at its newest message;
-        # a later refresh() that finds no new turns is pure button churn
-        # ("Sessions…" closing without switching, the weak-topics picker,
-        # redundant re-renders) and must leave the viewport completely
-        # untouched — no pin passes, no scrollregion syncs, no blank flash.
-        self._pinned_view_session = None
+        # --- Event-driven arming (the ONLY legitimate auto-scroll trigger) -
+        # Auto-scroll follows *events*, never rendering: opening/resuming/
+        # switching to a session, a message the user just sent, and a new
+        # reply (or cancel notice) from the coach.  Those code paths set
+        # ``_pending_follow_event`` explicitly right before calling
+        # refresh(); every other caller — button handlers like "Sessions…"
+        # or "Revise Weak Topics", background assessment completion, gate
+        # changes, redundant re-renders — leaves the flag unset, so their
+        # rebuild is completely inert: zero pin passes, zero scrollregion
+        # syncs, zero viewport movement or blank-flash glitch.  A heuristic
+        # content-diff once tried to *infer* which rebuilds were "new";
+        # it mis-classified button churn as content and kept glitching, so
+        # inference is gone entirely — the events declare themselves.
+        self._pending_follow_event = False
         self._pin_job = None            # pending after_idle pin callback
         self._settle_job = None         # periodic settle-poll after a rebuild
         self._settle_ticks = 0
@@ -396,6 +384,9 @@ class CoachScreen(BaseScreen):
         if result.ok:
             self.session_id = result.value.id
             self.notice.configure(text='Answer in your own words, or ask for help with this topic.')
+            # Opening a new session is a conversation event: land at its
+            # newest message (absolute pin — direction never matters).
+            self._pending_follow_event = True
             self.refresh()
         else:
             self.notice.configure(text=result.message)
@@ -403,6 +394,9 @@ class CoachScreen(BaseScreen):
     def resume_session(self, sid):
         self.cancel(cancel_assessments=False)
         self.session_id = sid
+        # Switching sessions is a conversation event: always open the view at
+        # its newest message, whether reaching it means scrolling up or down.
+        self._pending_follow_event = True
         self.refresh()
 
     def request(self, kind):
@@ -457,18 +451,30 @@ class CoachScreen(BaseScreen):
         self.busy = False
         result = self.service.complete_turn(job, result)
         self.notice.configure(text=result.message or self._assessment_notices.pop(job['session_id'], ''))
+        # A new coach reply just landed in the thread — a conversation event.
+        self._pending_follow_event = True
         self.refresh()
 
     def cancel(self, cancel_assessments=True):
+        was_busy = self.busy
         self.service.cancel_turn(self.session_id, cancel_assessments=cancel_assessments)
         self.busy = False
         self.notice.configure(text='Turn cancelled.')
+        # Only an actual cancellation appends a "turn cancelled" notice to
+        # the thread; the button-press paths call cancel() defensively while
+        # nothing is in flight, which must NOT move the viewport.
+        if was_busy:
+            self._pending_follow_event = True
         self.refresh()
 
     def _submitted(self, result):
         self.notice.configure(text=result.message or '')
         if result.ok:
             self.composer.delete('1.0', 'end')
+        # The user's message was appended (or a revision rewritten) — a
+        # conversation event; land at the newest bubble.
+        if result.ok:
+            self._pending_follow_event = True
         self.refresh()
 
     def answer(self):
@@ -577,39 +583,23 @@ class CoachScreen(BaseScreen):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
         # --- Auto-scroll decision (BEFORE any teardown of the old view) ---
-        # Every state change that rebuilds the thread funnels through here:
-        # user send (_submitted), coach reply (finished), session start /
-        # resume / switch (resume_session, sessions, revise_topic), cancel
-        # and background assessment completion.  But auto-scroll must follow
-        # *content*, not rendering: buttons like "Sessions…" or "Revise Weak
-        # Topics" end their handlers with a refresh() that re-renders an
-        # identical thread.  Deciding up front — from the live session state,
-        # before the destroy-and-repack wipes the previous layout — means a
-        # pure re-render is detected while the numbers still describe the
-        # *current* thread, so it arms nothing at all: zero pin passes, zero
-        # scrollregion syncs, zero viewport movement.  That is what removes
-        # the click-time glitch (blank flash + snap-back) entirely.
-        new_key = self._thread_content_key(session) if session is not None else None
-        content_changed = bool(new_key) and (
-            not self._thread_rendered or new_key != self._last_content_key)
-        # Has this session's *view* already been opened with a pin?  The
-        # first render of a session legitimately lands at its newest message.
-        # Once that happened, later refresh() calls that find no new turns
-        # are button churn ("Sessions…" closing without switching, opening/
-        # cancelling the weak-topics picker, redundant re-renders) and must
-        # be completely inert — not even a scrollregion sync, which during
-        # Tk's settle burst clamps yview against a stale bbox and produces
-        # the blank-flash/snap-back glitch on click.
-        view_already_opened = (session is not None
-                               and self._pinned_view_session == session.id)
-        if not content_changed and view_already_opened:
-            # Pure re-render of an already-opened view: cancel any auto work
-            # still in flight so nothing moves while the bubbles repack.
+        # Arming is purely event-driven: the conversation events that add a
+        # newest message — opening/resuming/switching a session, sending one,
+        # or receiving a coach reply/cancel notice — set
+        # ``_pending_follow_event`` right before calling us.  Every other
+        # caller ("Sessions…" closing without switching, the weak-topics
+        # picker, background assessment completion, gate-only rebuilds,
+        # redundant re-renders) leaves it unset, so this rebuild is
+        # completely inert: no pin passes, no settle poll, no scrollregion
+        # syncs — zero viewport movement and no blank-flash glitch while the
+        # bubbles repack.  The flag is consumed here regardless of outcome so
+        # a later button-triggered refresh can never inherit an old arming.
+        follow_event = self._pending_follow_event
+        self._pending_follow_event = False
+        if not follow_event:
+            # Pure re-render: cancel any auto work still in flight so nothing
+            # moves while the thread rebuilds.
             self._stop_settle_poll()
-        if session is not None:
-            self._pinned_view_session = session.id
-        self._last_content_key = new_key
-        self._thread_rendered = bool(new_key)
         # Dismiss any visible tooltip before re-laying out the thread; stale
         # popups must never survive a state change or a moved pointer.  The
         # shared popup window is only hidden (never destroyed) here, which is
@@ -661,61 +651,33 @@ class CoachScreen(BaseScreen):
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
         # --- Auto-scroll arming (uses the decision taken at refresh() top) -
-        # The content snapshot above already decided whether anything new
-        # actually landed.  Only then may auto-scroll move the viewport;
-        # otherwise the rebuild must be completely inert — no pin passes, no
-        # settle poll, and crucially NO scrollregion churn while Tk is still
-        # settling the freshly repacked bubbles (a sync during that window
-        # clamps yview against a stale bbox and produces the blank flash +
-        # snap-back glitch on button clicks).
-        if session is not None:
-            if content_changed:
-                # New conversation content (a sent message, a coach reply, a
-                # cancel/assessment notice) or a freshly built session view.
-                # It ALWAYS lands at its bottom — absolute pinning, and any
-                # manual-scroll veto from before this change expires here.
-                # Switching to a shorter session scrolls *up* if the old view
-                # was parked mid-scroll; direction never matters.
-                self._stick_to_bottom = True
-                self._thread_needs_pin = True
-                self._reset_manual_scroll_baseline()
-                # Defer the pin until Tk's geometry manager has laid out the
-                # freshly packed bubbles.  In this very cycle every extent we
-                # could measure (canvas bbox, frame height) still describes
-                # the *previous* thread: pinning now clamps against stale
-                # numbers — too low after growth (newest bubble stays out of
-                # view), too high after switching to a shorter session
-                # (viewport parks over blank space).  The idle pass runs right
-                # after the queued Configure burst, and the settle poll +
-                # <Configure> hook below then keep re-pinning while async
-                # bubble re-wraps land.
-                self._schedule_thread_pin()
-                self._start_settle_poll()
-            # else: pure re-render of content the user already saw — leave
-            # the viewport exactly where it is (manual browsing untouched).
-        else:
-            self._stop_settle_poll()
-
-    def _thread_content_key(self, session):
-        """Snapshot identifying the thread's rendered conversation content.
-
-        Two turns count as "the same content" when the session id, the number
-        of visible turns, and the newest turn's text all match what refresh()
-        last rendered.  Any genuine addition (user message, coach reply,
-        cancel/assessment notice, revision edit) changes the key; a button
-        click that merely rebuilds the identical thread does not — so
-        auto-scroll windows are armed by new content alone.
-
-        Turn ids are included because they change even when the visible text
-        does not: ``complete_turn`` rewrites the coach bubble in place (e.g.
-        attaching a confidence rating after the background assessment), and
-        that late *mutation* is exactly the kind of layout churn that must
-        never re-arm a pin window on its own.
-        """
-        visible = [t for t in session.turns if t.kind != 'confidence']
-        last = visible[-1] if visible else None
-        return (self.session_id, len(visible), getattr(last, 'id', None),
-                getattr(last, 'text', None))
+        # Only a declared conversation event may move the viewport; any
+        # other rebuild leaves it exactly where it is (manual browsing
+        # untouched, no pin passes, no settle poll, and crucially NO
+        # scrollregion churn while Tk is still settling the freshly repacked
+        # bubbles — a sync during that window clamps yview against a stale
+        # bbox and produces the blank flash + snap-back glitch on clicks).
+        if session is not None and follow_event:
+            # New conversation content (a sent message, a coach reply, a
+            # cancel notice) or opening/resuming/switching to a session.  It
+            # ALWAYS lands at its bottom — absolute pinning, and any
+            # manual-scroll veto from before this event expires here.
+            # Switching to a shorter session scrolls *up* if the old view
+            # was parked mid-scroll; direction never matters.
+            self._stick_to_bottom = True
+            self._thread_needs_pin = True
+            self._reset_manual_scroll_baseline()
+            # Defer the pin until Tk's geometry manager has laid out the
+            # freshly packed bubbles.  In this very cycle every extent we
+            # could measure (canvas bbox, frame height) still describes the
+            # *previous* thread: pinning now clamps against stale numbers —
+            # too low after growth (newest bubble stays out of view), too
+            # high after switching to a shorter session (viewport parks over
+            # blank space).  The idle pass runs right after the queued
+            # Configure burst, and the settle poll + <Configure> hook below
+            # then keep re-pinning while async bubble re-wraps land.
+            self._schedule_thread_pin()
+            self._start_settle_poll()
 
     # ------------------------------------------------------------------
     # Auto-scroll ("stick to bottom")
