@@ -732,9 +732,13 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
-        # Start a turn and keep it in flight behind the gate...
+        # Start a turn and keep it in flight behind the gate...  Gate this
+        # kind explicitly: GatedProvider answers non-gated kinds instantly,
+        # so without this the reply would land (and its idle pin run) before
+        # the scroll-up below ever happened, turning the test into a race.
         GatedProvider.release.clear()
         GatedProvider.started.clear()
+        GatedProvider.gate_kinds = ('question', 'hint', 'feedback', 'followup')
         screen.request('question')
         pump(app, GatedProvider.started.is_set)
         assert screen.busy
