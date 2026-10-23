@@ -403,3 +403,241 @@ def test_prompt_terminology_calls_the_material_notes():
             'never use the terms "source pack"', '')          # only as forbidden term
         assert 'the pack' not in text
         assert 'notes' in text
+
+
+# ---------------------------------------------------------------------------
+# Auto-scroll ("stick to bottom") behaviour
+
+
+def _seed_long_session(state, note, turns=25):
+    """Create a session whose thread is far taller than any test viewport."""
+    from app.core.models import CoachTurn
+    long_text = ('Photosynthesis converts light energy into chemical energy. ' * 12).strip()
+    session = state.create_coach_session([state.source_ref_for('note', note.id)]).value
+    for i in range(turns):
+        role = 'coach' if i % 2 == 0 else 'user'
+        kind = 'question' if role == 'coach' else 'answer'
+        session.turns.append(CoachTurn.create(role, kind, f'{i}. {long_text}'))
+    return session
+
+
+def _settle(app, screen, timeout=3):
+    """Pump until the settle poll has run its course and stopped itself."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.update()
+        time.sleep(.02)
+        if screen._settle_job is None and screen._pin_job is None:
+            # One more quiet cycle to be sure nothing rescheduled itself.
+            app.update()
+            time.sleep(.08)
+            if screen._settle_job is None and screen._pin_job is None:
+                return True
+    return False
+
+
+def test_thread_pins_to_bottom_when_content_overflows(monkeypatch):
+    """Long sessions must land with the newest bubble fully visible."""
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        canvas = screen._thread_canvas
+        assert canvas is not None, 'CTkScrollableFrame lost _parent_canvas'
+        screen.resume_session(session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) >= len(session.turns))
+        assert _settle(app, screen), 'settle poll never terminated'
+        assert screen._thread_at_bottom()
+        # The scrollregion must extend well past the viewport (content really
+        # overflows) and the last bubble's bottom edge must sit inside it.
+        region = canvas.bbox('all')
+        assert region[3] > canvas.winfo_height() + 100
+        last = screen.thread.winfo_children()[-1]
+        top = canvas.canvasy(0)
+        assert last.winfo_y() + last.winfo_height() - top <= canvas.winfo_height() + 6, \
+            'newest bubble is clipped at the bottom of the viewport'
+    finally:
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted_provider):
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology',
+        'Photosynthesis converts sunlight into chemical energy stored in glucose, '
+        'while chlorophyll absorbs the light needed for this process.').value
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.withdraw()          # send flow needs no real geometry events
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+        screen.service.live_factory = scripted_provider
+        session = screen.service.start_session([('note', note.id)]).value
+        screen.session_id = session.id
+        screen.request('question')
+        pump(app, lambda: not screen.busy)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+        # Fill the thread until it definitely overflows the small viewport.
+        _seed_long_session(state, note, turns=0)
+        from app.core.models import CoachTurn
+        long_text = ('Energy explanation detail. ' * 30).strip()
+        for i in range(20):
+            session.turns.append(CoachTurn.create(
+                'coach' if i % 2 else 'user', 'notice', f'{i}. {long_text}'))
+        screen.refresh()
+        pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
+        assert _settle(app, screen)
+        # Park mid-scroll, then send — the reply must pull the view back down.
+        screen._thread_canvas.yview_moveto(0.3)
+        screen._on_thread_wheel()
+        assert not screen._stick_to_bottom
+        screen.composer.insert('1.0', 'Energy from sunlight')
+        screen.send()
+        pump(app, lambda: not screen.busy)
+        assert screen._stick_to_bottom, 'send/reply must restick to the bottom'
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+    finally:
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_session_switch_lands_at_bottom_in_both_directions(monkeypatch):
+    """Switching sessions pins absolutely: works when the bottom is above or below."""
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    long_session = _seed_long_session(state, note, turns=25)
+    short_session = _seed_long_session(state, note, turns=2)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(long_session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+        # Park mid-scroll in the long session, then switch to the SHORT one:
+        # landing at its bottom means scrolling *up* relative to the old view.
+        screen._thread_canvas.yview_moveto(0.4)
+        screen.resume_session(short_session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) == 2)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom(), 'short-session switch must pin (scroll up)'
+        # And back to the long session: now the bottom is far *below*.
+        screen.resume_session(long_session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) == 25)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom(), 'long-session switch must pin (scroll down)'
+    finally:
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_scrolling_up_releases_the_pin(monkeypatch):
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note, turns=25)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
+        assert _settle(app, screen)
+        # User scrolls up to read history: the pin releases and Tk leaves them
+        # exactly where they put themselves.
+        screen._thread_canvas.yview_moveto(0.3)
+        screen._on_thread_wheel()
+        assert not screen._stick_to_bottom
+        before = screen._thread_canvas.yview()[0]
+        for _ in range(10):
+            app.update()
+            time.sleep(.02)
+        assert screen._thread_at_bottom() is False
+        assert abs(screen._thread_canvas.yview()[0] - before) < 0.02, \
+            'view was yanked away after the user took over'
+        # A scrollbar-drag hint releases the pin too.
+        screen._stick_to_bottom = True
+        screen._user_left_bottom_hint()
+        app.update()
+        assert not screen._stick_to_bottom
+        # Scrolling back to the bottom re-engages stickiness.
+        screen._scroll_thread_to_bottom()
+        screen._on_thread_wheel()
+        assert screen._stick_to_bottom
+    finally:
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_shutdown_cancels_pending_scroll_jobs(monkeypatch):
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note, turns=10)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        # Jobs are pending right after arming — shutdown must cancel both.
+        assert screen._settle_job is not None
+        screen.shutdown()
+        assert screen._settle_job is None
+        assert screen._pin_job is None
+        app.update()   # would raise TclError if a cancelled job still fired
+    finally:
+        try:
+            app.destroy()
+        except tkinter.TclError:
+            pass
