@@ -411,9 +411,13 @@ def test_prompt_terminology_calls_the_material_notes():
 
 def _seed_long_session(state, note, turns=25):
     """Create a session whose thread is far taller than any test viewport."""
-    from app.core.models import CoachTurn
+    from app.core.models import CoachTurn, QuestionRecord
     long_text = ('Photosynthesis converts light energy into chemical energy. ' * 12).strip()
     session = state.create_coach_session([state.source_ref_for('note', note.id)]).value
+    # An open question must exist so composer sends (screen.send()) go
+    # through the real conversation path instead of bailing out early.
+    session.questions.append(QuestionRecord.create(
+        f'Explain photosynthesis in one sentence? ({note.title})'))
     for i in range(turns):
         role = 'coach' if i % 2 == 0 else 'user'
         kind = 'question' if role == 'coach' else 'answer'
@@ -449,7 +453,11 @@ class GatedProvider:
     confidence = 'high'
     release = threading.Event()
     started = threading.Event()
-    gate_kinds = ()
+    # Default: every generation kind gates.  Tests that need an instant
+    # first turn (e.g. seeding a real question before the gated one) set
+    # this to () for the warm-up request and restore the full tuple for
+    # the turn whose in-flight behaviour they assert on.
+    gate_kinds = ('question', 'hint', 'feedback', 'followup')
 
     def __init__(self, settings):
         pass
@@ -714,9 +722,8 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         session = screen.service.start_session([('note', note.id)]).value
         screen.session_id = session.id
         # First turn must complete (release gate) before the second starts.
+        GatedProvider.gate_kinds = ()            # warm-up answers instantly
         screen.request('question')
-        pump(app, GatedProvider.started.is_set)
-        GatedProvider.release.set()
         pump(app, lambda: not screen.busy)
         assert _settle(app, screen)
         from app.core.models import CoachTurn
