@@ -129,6 +129,10 @@ class CoachScreen(BaseScreen):
         # requests *after* this line are user gestures; earlier ones were part
         # of (or before) the automatic pass that established the pin.
         self._manual_scroll_baseline = 0
+        # Number of automatic viewport writes performed since the last era
+        # reset — instrumentation only (tests assert no stray auto-movement
+        # during inert re-renders); never read by the scroll logic itself.
+        self._auto_move_count = 0
         canvas = getattr(self.thread, '_parent_canvas', None)
         if canvas is not None:
             self._thread_canvas = canvas
@@ -171,6 +175,12 @@ class CoachScreen(BaseScreen):
             def tracked_yview(*args, **kw):
                 requested = bool(args) and str(args[0]).lower() in ('scroll', 'moveto')
                 manual = False
+                if requested:
+                    _dbg = getattr(self, '_dbg_log', None)
+                    if _dbg is not None:
+                        _dbg.append((str(args[:2]), self._auto_scroll_depth,
+                                     int((time.monotonic() - self._last_gesture_ms) * 1000),
+                                     self._rebuilding, self._stick_to_bottom))
                 if requested and self._auto_scroll_depth == 0:
                     # Gesture-evidence gate: a yview WRITE counts as a user
                     # gesture only if a pointer event (wheel observer,
@@ -188,13 +198,17 @@ class CoachScreen(BaseScreen):
                     # command stay covered.
                     evidence = (time.monotonic() - self._last_gesture_ms) * 1000.0 \
                         <= GESTURE_EVIDENCE_MS
-                    # During a rebuild, clamp-writes are inert ONLY while the
-                    # user is actually browsing history.  If we're still
-                    # stuck-to-bottom, a legitimate follow was armed and any
-                    # write reaching here must be honoured as the gesture it
-                    # came with — keeping the veto active preserves the
-                    # "user scrolled away during generation" behaviour.
-                    manual = evidence or (not self._rebuilding or self._stick_to_bottom)
+                    # A genuine interaction always stamps evidence first:
+                    # wheel notches hit our canvas binding / CTk's wrapped
+                    # ``_mouse_wheel_all``, and thumb drags / trackbar clicks
+                    # route through the scrollbar's repointed command shim
+                    # before reaching this wrapper.  Tk's own clamp writes
+                    # (scrollregion rewrites against stale viewport bounds)
+                    # never touch those channels, so untagged writes outside
+                    # a rebuild window can only be legacy callers using the
+                    # raw command — honour them to keep every real gesture
+                    # vetoing an armed follow.
+                    manual = evidence or not self._rebuilding
                 if manual:
                     # Genuine user gesture (wheel, thumb drag, trackbar
                     # click): hand the viewport to the user immediately and
