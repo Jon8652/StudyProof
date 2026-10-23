@@ -27,7 +27,12 @@ def target_wraplength(px_width: int, scaling: float) -> int:
 
 
 class ChatBubble(ctk.CTkFrame):
-    def __init__(self, master, turn, sources, index, navigate):
+    def __init__(self, master, turn, sources, index, navigate, role=None):
+        # ``role`` is kept as a public attribute so containers (e.g. the
+        # coach screen's sticky-bottom scroller) can identify learner
+        # bubbles without parsing the displayed text.  It falls back to
+        # the turn's own role for callers that don't pass it.
+        self.role = role if role is not None else getattr(turn, 'role', None)
         # Both bubbles use DETAIL_CARD_FG, which is deliberately *lighter*
         # than the navy PANE_BG thread behind them in dark mode (and a soft
         # blue on the pale pane in light mode), so coach/user messages read
