@@ -67,12 +67,15 @@ class ChatBubble(ctk.CTkFrame):
     def _initial_wraplength(self) -> int:
         """Reasonable starting width before the first Configure event lands."""
         try:
-            toplevel_width = self.winfo_toplevel().winfo_width()
             scaling = float(self._get_widget_scaling()) or 1.0
+            # The thread is narrower than the window (sidebar, pane padding,
+            # scrollbar).  Start at its real width so a long message does
+            # not first appear short and then grow dramatically on Configure.
+            width = self.master.winfo_width() - round(24 * scaling)
         except Exception:
             return MIN_WRAPLENGTH
-        if toplevel_width and toplevel_width > 1:
-            return target_wraplength(toplevel_width, scaling)
+        if width > 1:
+            return target_wraplength(width, scaling)
         return MIN_WRAPLENGTH
 
     def _wrap_content(self, event):
