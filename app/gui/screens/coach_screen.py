@@ -210,6 +210,18 @@ class CoachScreen(BaseScreen):
                 scrollbar._command = _scrollbar_command
 
             def _stamp_gesture(event=None):
+                # customtkinter 6.0.0 only initialises the scrollbar's
+                # _motion_center_offset inside its canvas tag Button-1
+                # bindings (_clicked/_clicked_scrollbar).  This widget-level
+                # add='+' handler also runs for <B1-Motion> events that reach
+                # Tk before any tagged press (e.g. a press delivered while the
+                # pointer is over the thumb gap), and Tk evaluates every
+                # binding for the event — including CTk's own _on_motion on the
+                # inner canvas — so an uninitialised offset there raises
+                # AttributeError.  Stamping the default 0 here is harmless:
+                # the real press handlers overwrite it before any drag uses it.
+                if not hasattr(scrollbar, '_motion_center_offset'):
+                    scrollbar._motion_center_offset = 0
                 self._last_gesture_ms = time.monotonic()
             for seq in ('<ButtonPress-1>', '<ButtonPress-2>', '<ButtonPress-3>',
                         '<B1-Motion>', '<B2-Motion>'):
