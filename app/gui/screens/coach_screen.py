@@ -11,7 +11,7 @@ from app.gui.dialogs.source_select import SourceSelectDialog
 from app.gui.dialogs.sessions_dialog import SessionsDialog
 from app.gui.dialogs.weak_topics_dialog import WeakTopicsDialog
 from app.gui.dialogs.message_dialog import show_message
-from app.gui.widgets.chat_bubble import ChatBubble
+from app.gui.widgets.chat_bubble import ChatBubble, target_wraplength, MIN_WRAPLENGTH
 from app.gui.widgets.tooltip import Tooltip
 from app.gui.workers import UIEventQueue
 
@@ -39,22 +39,23 @@ class CoachScreen(BaseScreen):
         ctk.CTkButton(top, text='New session', command=self.new_session).pack(side='left', padx=4, pady=4)
         ctk.CTkButton(top, text='Sessions…', command=self.sessions).pack(side='left', padx=4)
         ctk.CTkButton(top, text='Revise Weak Topics', command=self.revise_weak_topics).pack(side='left', padx=4)
-        self.header = ctk.CTkLabel(self.content, text='', wraplength=650, justify='left')
+        self.header = ctk.CTkLabel(self.content, text='', wraplength=MIN_WRAPLENGTH, justify='left')
         self.header.pack(fill='x')
         # Pane 2: the chat thread.  Unstyled CTkScrollableFrame used to show
         # customtkinter's default grey; now the same blue pane surface.
         self.thread = ctk.CTkScrollableFrame(self.content, fg_color=PANE_BG)
         self.thread.pack(fill='both', expand=True)
         # Responsive wrapping for the coach text: the header/notice labels
-        # pack fill='x', so their <Configure> width tracks the window.  The
-        # wraplength follows it (clamped), making the text column slightly
-        # narrower in a small windowed layout and wider when maximised —
-        # matching how ChatBubble wraps its messages.
+        # pack fill='x', so their allocated row width tracks the window.
+        # Each label's wraplength is derived from its own width (floor only,
+        # no ceiling), keeping the text flush with the box behind it whether
+        # the window is small or maximised — matching how ChatBubble wraps.
         self._wrap_job = None
         self._responsive_labels = []
         self.content.bind('<Configure>', self._schedule_wrap_update, add='+')
         # Private background ratings never appear in the conversation.
-        self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888')
+        self.confidence_note = ctk.CTkLabel(self.content, text='', text_color='#888888',
+                                            wraplength=MIN_WRAPLENGTH)
         self.confidence_note.pack(fill='x', pady=(2, 0))
         self.suggestions = ctk.CTkFrame(self.content, fg_color='transparent')
         ctk.CTkLabel(self.suggestions, text='Need a starting point?',
@@ -98,9 +99,9 @@ class CoachScreen(BaseScreen):
             button = ctk.CTkButton(row, text=label, width=90, command=command)
             self.buttons[key] = button
             button.gate_tip = Tooltip(button, '')
-        self.notice = ctk.CTkLabel(self.content, text='', wraplength=650)
+        self.notice = ctk.CTkLabel(self.content, text='', wraplength=MIN_WRAPLENGTH)
         self.notice.pack(fill='x')
-        self._responsive_labels = [self.header, self.notice]
+        self._responsive_labels = [self.header, self.notice, self.confidence_note]
         self.refresh()
 
     # ------------------------------------------------------------------
@@ -120,24 +121,27 @@ class CoachScreen(BaseScreen):
 
     def _apply_responsive_wrapping(self):
         self._wrap_job = None
-        try:
-            width = self.content.winfo_width()
-        except Exception:
+        if not self.winfo_exists():
             return
-        if width <= 1 or not self.winfo_exists():
-            return                        # not mapped yet; wait for Configure
-        scaling = 1.0
         try:
             scaling = float(self._get_widget_scaling()) or 1.0
         except Exception:
-            pass
-        # Tk reports physical pixels; CTk wraplength uses unscaled ones.
-        logical = max(1, int(width / scaling))
-        from app.gui.widgets.chat_bubble import MAX_WRAPLENGTH, MIN_WRAPLENGTH
-        target = max(MIN_WRAPLENGTH, min(MAX_WRAPLENGTH, logical - 8))
+            scaling = 1.0
+        content_width = self.content.winfo_width()
         for label in self._responsive_labels:
             try:
-                if label.winfo_exists() and label.cget('wraplength') != target:
+                if not label.winfo_exists():
+                    continue
+                # Prefer the label's own allocated row width so each text
+                # block hugs its own box; fall back to the screen content
+                # width while the label is still un-mapped.
+                width = label.winfo_width()
+                if width <= 1:
+                    width = content_width
+                if width <= 1:
+                    continue              # nothing measured yet
+                target = target_wraplength(width, scaling)
+                if label.cget('wraplength') != target:
                     label.configure(wraplength=target)
             except Exception:
                 pass                      # widget torn down mid-resize
