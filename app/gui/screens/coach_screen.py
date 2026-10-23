@@ -62,20 +62,19 @@ class CoachScreen(BaseScreen):
         self._last_thread_height = -1   # height seen at previous settle poll
         self._thread_needs_pin = False  # set by refresh(); consumed at idle time
         self._thread_canvas = None
+        self._in_sync_region = False    # re-entrancy guard for the sync drain
         canvas = getattr(self.thread, '_parent_canvas', None)
         if canvas is not None:
             self._thread_canvas = canvas
-            # customtkinter binds <Configure> on the *inner frame* with a
-            # plain `bind` (no add='+'), whose script reads
-            # `canvas.bbox('all')` to recompute the scrollregion.  Because
-            # every packed widget extends that bbox downward, the stale
-            # region always contains the newest content — so scrolling to
-            # the absolute bottom lands there even in the same event-loop
-            # cycle as the packing (before any Configure has been handled).
-            # The old code ran this handler only at idle time and then
-            # short-circuited on the stale `yview()[1] == 1.0`, which is how
-            # rebuilds ended up "stuck" showing blank space below the text.
-            # Refresh the region synchronously before every pin instead.
+            # customtkinter recomputes the scrollregion from a <Configure>
+            # Tcl script bound on the inner frame (`scrollregion=bbox(all)`),
+            # which only runs when the event queue drains — so right after a
+            # destroy-and-repack the region still describes the *previous*
+            # thread.  yview clamps against that stale region: too low after
+            # growth (pin lands short of the newest bubble), too high after
+            # switching to a shorter session (viewport parks over blank
+            # space).  Every pin therefore refreshes the region synchronously
+            # first (see _sync_scrollregion) — this early call just primes it.
             self._sync_scrollregion()
             # 1 px steps let _scroll_thread_to_bottom() land exactly on the
             # last bubble's bottom edge instead of CTk's default 30 px
@@ -103,8 +102,11 @@ class CoachScreen(BaseScreen):
             canvas.yview = tracked_yview
         # Bubbles re-wrap their text asynchronously via their own Configure
         # handlers, so the thread keeps growing *after* refresh() has packed
-        # everything.  This fires exactly when content height changes — the
-        # reliable trigger to re-pin while stuck at the bottom.
+        # everything; CTk's deferred scrollregion rewrite lands in the same
+        # burst.  This fires when the frame's geometry changes — the
+        # reliable trigger to re-pin while stuck at the bottom.  Bound with
+        # add='+' it runs *after* CTk's plain bind on this same widget, so
+        # the pin never gets clobbered by a later stale-region rewrite.
         self.thread.bind('<Configure>', self._on_thread_configure, add='+')
         # Responsive wrapping for the coach text: the header/notice labels
         # pack fill='x', so their allocated row width tracks the window.
@@ -510,17 +512,15 @@ class CoachScreen(BaseScreen):
             # the old view was parked mid-scroll; direction never matters.
             self._stick_to_bottom = True
             self._thread_needs_pin = True
-            # First pass right now: CTk's stale scrollregion still encloses
-            # all freshly packed content (its bbox only ever grew downward),
-            # and the packer has already computed final geometry, so the
-            # absolute bottom is reachable in this very cycle — no waiting
-            # for Configure events to drain.  The idle + settle passes below
-            # then correct against the *final* region once async bubble
-            # re-wraps land.  Previously the pin ran only at idle time and
-            # short-circuited on stale yview() fractions, which left
-            # rebuilds parked over blank space ("stays blank until you
-            # scroll yourself").
-            self._scroll_thread_to_bottom()
+            # Defer the pin until Tk's geometry manager has laid out the
+            # freshly packed bubbles.  In this very cycle every extent we
+            # could measure (canvas bbox, frame height) still describes the
+            # *previous* thread: pinning now clamps against stale numbers —
+            # too low after growth (newest bubble stays out of view), too
+            # high after switching to a shorter session (viewport parks over
+            # blank space).  The idle pass runs right after the queued
+            # Configure burst, and the settle poll + <Configure> hook below
+            # then keep re-pinning while async bubble re-wraps land.
             self._schedule_thread_pin()
             self._start_settle_poll()
         else:
@@ -534,9 +534,12 @@ class CoachScreen(BaseScreen):
 
         customtkinter refreshes the region only from a ``<Configure>`` Tcl
         script bound on the inner frame, which runs when the event queue is
-        drained.  Before every pin we pull that same update forward so the
-        scroll commands clamp against the *real* content extent instead of a
-        stale one.  Returns True when the region was refreshed.
+        drained — so right after a destroy-and-repack it still describes the
+        *previous* thread.  yview clamps against that stale region: too low
+        after growth (the pin lands short of the newest bubble), too high
+        after switching to a shorter session (the viewport parks over blank
+        space).  Pull the update forward before every pin.  Returns True when
+        the region was refreshed.
         """
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
@@ -552,14 +555,18 @@ class CoachScreen(BaseScreen):
     def _content_bottom(self):
         """Best immediate estimate (px) of where the thread's content ends.
 
-        Both the canvas ``bbox('all')`` and the inner frame's allocated
-        height are driven by deferred Configure/idle geometry passes, so
-        right after a destroy-and-repack they still describe the *previous*
-        thread: stale-high after switching to a shorter session, stale-low
-        while bubbles re-wrap.  The packer's requested height for the frame
-        updates synchronously with each ``pack()``, so take the maximum of
-        all three — it never under-estimates the true final extent, and any
-        over-estimate is corrected by the idle/settle pins once Tk settles.
+        The canvas ``bbox('all')`` and the inner frame's allocated height are
+        driven by deferred Configure/idle geometry passes, so right after a
+        destroy-and-repack they still describe the *previous* thread — in
+        BOTH directions: stale-high after switching to a shorter session
+        (pinning there parks the view over blank space) and stale-low while
+        bubbles re-wrap.  What updates synchronously with each ``pack()`` is
+        the packer's requested size for the frame (grid ``reqheight``) plus
+        the per-bubble ``winfo_reqheight`` values inside it.  Summing those
+        gives the final layout height immediately after a rebuild, so take
+        the maximum of all sources: it never under-estimates the true extent,
+        and any transient over-estimate is corrected by the idle/settle pins
+        once Tk's geometry catches up.
         """
         best = 0
         canvas = self._thread_canvas
@@ -573,15 +580,81 @@ class CoachScreen(BaseScreen):
         try:
             if self.thread.winfo_exists():
                 best = max(best, self.thread.winfo_height())
-                info = self.thread.grid_info()
-                best = max(best, int(info.get('reqheight', 0) or 0))
                 kids = self.thread.winfo_children()
                 if kids:
                     last = max(kids, key=lambda c: c.winfo_y() + c.winfo_height())
                     best = max(best, last.winfo_y() + last.winfo_height())
+                    # Synchronous estimate: total requested height of the
+                    # packed children plus the frame's own grid padding —
+                    # exactly what the packer will allocate after its next
+                    # idle pass, available right now.
+                    total = sum(int(kid.winfo_reqheight()) for kid in kids)
+                    try:
+                        info = self.thread.grid_info()
+                        ipady = int(info.get('ipady', 0) or 0)
+                        pady_hi = int(str(info.get('pady', '0')).split()[1])
+                    except Exception:
+                        ipady = pady_hi = 0
+                    best = max(best, total + 2 * ipady + 2 * pady_hi)
         except Exception:
             pass
         return best
+
+    def _viewport_top(self, canvas=None):
+        """Current top edge of the visible area, in canvas coordinates.
+
+        Never ``canvasy(0)`` or raw ``yview()`` fractions alone: they are
+        computed by Tk against the canvas's *current* scrollregion, which
+        lags a fresh rebuild by an event cycle and reports positions derived
+        from the old content — the exact source of the spurious "already at
+        bottom" short-circuits.  CTk mirrors every scroll into its custom
+        scrollbar (``yscrollcommand=self._scrollbar.set`` stores the same
+        fractions synchronously), so cross-checking the two sources gives a
+        trustworthy position: if the mirrored scrollbar disagrees with what
+        ``canvasy(0)`` implies, the region is stale and the fractional read
+        is meaningless — fall back to the settled extent instead.
+        """
+        canvas = canvas if canvas is not None else self._thread_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return 0.0
+        try:
+            height = canvas.winfo_height()
+            scrollbar = getattr(self.thread, '_scrollbar', None)
+            start, _end = canvas.yview()
+            if scrollbar is not None:
+                mirror = getattr(scrollbar, 'get', lambda: (None, None))()
+                if (mirror and mirror[0] is not None
+                        and abs(mirror[0] - start) > 0.02):
+                    # Scrollbar callback hasn't fired for this region yet
+                    # (or the region shrank under us): yview() is describing
+                    # the previous thread.  Treat the view as parked at the
+                    # settled content bottom — the pin recomputes the true
+                    # offset right after, so this only prevents false
+                    # "at bottom" verdicts between rebuild passes.
+                    return self._content_bottom() - height
+            if height > 1:
+                region = canvas.bbox('all')
+                if region is not None and region[3] - region[1] > 0:
+                    implied = (start * (region[3] - region[1]))
+                    if abs(canvas.canvasy(0) - implied) > max(4.0, height * 0.05):
+                        return self._content_bottom() - height
+            return float(canvas.canvasy(0))
+        except Exception:
+            try:
+                return float(canvas.canvasy(0))
+            except Exception:
+                return 0.0
+
+    def _manual_scroll_to_bottom(self, canvas):
+        """Legacy pin: clamp Tk's own yview against the (synced) region."""
+        self._sync_scrollregion()
+        try:
+            canvas.yview_scroll(10_000_000, 'units')
+        except Exception:
+            try:
+                canvas.yview_moveto(1.0)
+            except Exception:
+                pass
 
     def _thread_at_bottom(self):
         """True when the newest bubble is fully visible in the viewport.
@@ -601,37 +674,51 @@ class CoachScreen(BaseScreen):
             bottom = self._content_bottom()
             if bottom <= 0:
                 return True                 # empty thread — trivially pinned
-            # Viewport top in canvas coordinates (clamped by Tk itself).
-            top = canvas.canvasy(0)
+            top = self._viewport_top(canvas)
             return bottom - (top + height) <= BOTTOM_EPSILON_PX
         except Exception:
             return True                     # torn down mid-read
 
     def _scroll_thread_to_bottom(self):
-        """Absolute pin — works whether reaching the bottom means scrolling up or down."""
+        """Absolute pin — works whether reaching the bottom means scrolling up or down.
+
+        Never trusts Tk's own clamping: right after a destroy-and-repack the
+        canvas scrollregion still describes the *previous* thread (CTk only
+        rewrites it from a deferred ``<Configure>`` script), so a
+        ``yview_scroll`` past the end lands short after growth or parks over
+        blank space after switching to a shorter session.  Instead, compute
+        the exact top-edge offset from our synchronous content estimate and
+        drive the view there directly with ``yview_moveto``, refreshing the
+        scrollregion afterwards so the scrollbar geometry stays consistent.
+        """
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return
-        # Pull CTk's deferred scrollregion update forward first, then decide
-        # from the *real* position.  This makes the pin idempotent: a second
-        # call after the region grows (async bubble re-wrap) still scrolls,
-        # because it compares viewport edges against fresh content extents
-        # rather than trusting yview() fractions computed from stale ones.
-        self._sync_scrollregion()
         try:
-            if self._thread_at_bottom():
-                return                      # already pinned: cheap no-op
-        except Exception:
-            pass
-        try:
-            # Scroll past the end: Tk clamps exactly to the scrollregion's
-            # bottom edge (yscrollincrement is 1 px, set in __init__), so
-            # this lands pixel-exact whether reaching the bottom means
-            # scrolling down (new message) or up (shorter session).
-            canvas.yview_scroll(10_000_000, 'units')
+            height = canvas.winfo_height()
+            if height <= 1:
+                # Un-mapped viewport (e.g. the screen has never been shown):
+                # no meaningful fraction exists, so clamp against whatever
+                # region we do have and let later passes refine.
+                self._manual_scroll_to_bottom(canvas)
+                return
+            bottom = self._content_bottom()
+            region = canvas.bbox('all')
+            span = max((region[3] - region[1]) if region else 0, bottom)
+            if bottom <= 0 or span <= height:
+                # Empty thread or everything fits: yview at the top shows
+                # all content; moveto(0) also survives a stale-high region.
+                canvas.yview_moveto(0.0)
+                self._sync_scrollregion()
+                return
+            # Fraction such that the viewport's bottom edge sits exactly on
+            # the estimated content bottom — independent of how stale the
+            # current scrollregion is.
+            canvas.yview_moveto(max(0.0, min(1.0, (bottom - height) / span)))
+            self._sync_scrollregion()
         except Exception:
             try:
-                canvas.yview_moveto(1.0)    # fallback if private API shape changes
+                self._manual_scroll_to_bottom(canvas)   # legacy fallback
             except Exception:
                 pass
 
@@ -649,10 +736,10 @@ class CoachScreen(BaseScreen):
         self._thread_needs_pin = False
         if not self.winfo_exists() or not self._stick_to_bottom:
             return
-        # Belt-and-braces follow-up to the synchronous pin in refresh():
-        # by idle time every queued Configure/re-wrap burst has landed, so
-        # this pass clamps against the final content extent.  It is a cheap
-        # no-op when the synchronous pin already holds.
+        # Runs at idle time, right after Tk's geometry pass laid out the
+        # freshly packed bubbles — the first moment every extent we measure
+        # describes the *current* thread.  The settle poll and <Configure>
+        # hook keep re-pinning while async bubble re-wraps land afterwards.
         self._scroll_thread_to_bottom()
 
     def _start_settle_poll(self):
