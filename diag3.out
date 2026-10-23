@@ -1,6 +1,0 @@
-parked: 0.1186 stick: False
-after sessions(): stick= False pos= 0.1186
-   0 ()
-busy cleared: True
-after send/reply: stick= False pos= 0.1186 seq= 1 baseline= 0
-   0 () 

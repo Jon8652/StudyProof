@@ -1,7 +1,0 @@
-parked: 0.1186 stick: False seq: 1 baseline: 0
-after sessions(): stick= False pos= 0.1186 seq= 1 baseline= 0
-YVIEW depth=0 args=()
-   stack: diag2.py:66:<module>
-after send/reply: stick= False pos= 0.1186 seq= 1 baseline= 0 needs_pin= False pin= None settle= None
-YVIEW depth=0 args=()
-   stack: diag2.py:78:<module>
