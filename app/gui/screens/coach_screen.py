@@ -129,6 +129,7 @@ class CoachScreen(BaseScreen):
         # requests *after* this line are user gestures; earlier ones were part
         # of (or before) the automatic pass that established the pin.
         self._manual_scroll_baseline = 0
+        self._gesture_seq = 0         # id of the newest *user* gesture
         # Number of automatic viewport writes performed since the last era
         # reset — instrumentation only (tests assert no stray auto-movement
         # during inert re-renders); never read by the scroll logic itself.
@@ -175,6 +176,7 @@ class CoachScreen(BaseScreen):
             def tracked_yview(*args, **kw):
                 requested = bool(args) and str(args[0]).lower() in ('scroll', 'moveto')
                 manual = False
+                evidence = False
                 if requested and self._auto_scroll_depth == 0:
                     # Gesture-evidence gate: a yview WRITE counts as a user
                     # gesture only if a pointer event (wheel observer,
@@ -204,33 +206,43 @@ class CoachScreen(BaseScreen):
                     # vetoing an armed follow.
                     manual = evidence or not self._rebuilding
                 if manual:
-                    # Genuine user gesture (wheel, thumb drag, trackbar
-                    # click): hand the viewport to the user immediately and
-                    # cancel every pending auto-pin/settle job.  Downward
-                    # gestures additionally schedule a deferred verdict from
-                    # the settled position, so scrolling back to the newest
-                    # message re-engages stickiness.
-                    self._manual_scroll_seq += 1
-                    seq = self._manual_scroll_seq
-                    direction_up = True
-                    if str(args[0]).lower() == 'scroll':
-                        try:
-                            direction_up = int(args[1]) < 0   # CTk sign: up = negative
-                        except (ValueError, TypeError):
-                            direction_up = True
-                    else:
-                        try:
-                            start = canvas.yview()[0]
-                            direction_up = float(args[1]) < start - 1e-9
-                        except Exception:
-                            direction_up = True
-                    # Hand control over *before* the scroll executes: CTk's
-                    # scrollbar wheel handler calls this command without any
-                    # separate wheel observer, so releasing first is what
-                    # keeps the resulting motion from being vetoed away.
-                    self._release_pin_for_manual_scroll()
-                    if not direction_up:
-                        self.after_idle(lambda: self._check_bottom_after_scroll(seq))
+                    # The wheel observer (<Button-4/5>/<MouseWheel> canvas
+                    # bindings + _on_thread_wheel_event) runs *before* CTk's
+                    # bind_all handler reaches this wrapper and claims each
+                    # notch by minting a fresh id and stamping _gesture_seq
+                    # to it.  When that claim is still current — same id,
+                    # fresh evidence, pin already released — this write is
+                    # just the visible motion of the notch the observer
+                    # already accounted for: stay completely inert here (no
+                    # second bump, which would orphan the observer's
+                    # deferred bottom-verdict and let a spurious re-stick
+                    # yank the view back down mid-burst).  Writes with no
+                    # live claim (thumb drags, trackbar clicks, legacy raw
+                    # -command callers) are owned by this wrapper instead.
+                    claimed = (evidence
+                               and self._gesture_seq == self._manual_scroll_seq
+                               and not self._stick_to_bottom)
+                    if not claimed:
+                        seq = self._mint_manual_scroll_id()
+                        direction_up = True
+                        if str(args[0]).lower() == 'scroll':
+                            try:
+                                direction_up = int(args[1]) < 0   # CTk sign: up = negative
+                            except (ValueError, TypeError):
+                                direction_up = True
+                        else:
+                            try:
+                                start = canvas.yview()[0]
+                                direction_up = float(args[1]) < start - 1e-9
+                            except Exception:
+                                direction_up = True
+                        # Hand control over *before* the scroll executes: CTk's
+                        # scrollbar wheel handler calls this command without any
+                        # separate wheel observer, so releasing first is what
+                        # keeps the resulting motion from being vetoed away.
+                        self._release_pin_for_manual_scroll()
+                        if not direction_up:
+                            self.after_idle(lambda: self._check_bottom_after_scroll(seq))
                 return orig_yview(*args, **kw)
             canvas.yview = tracked_yview
             # ``canvas.yview_scroll`` / ``yview_moveto`` are bound methods
@@ -704,6 +716,11 @@ class CoachScreen(BaseScreen):
         # a later button-triggered refresh can never inherit an old arming.
         follow_event = self._pending_follow_event
         self._pending_follow_event = False
+        dbg = getattr(self, '_dbg', None)
+        if dbg is not None:
+            dbg.append(('refresh', follow_event, 'seq', self._manual_scroll_seq,
+                        'base', self._manual_scroll_baseline,
+                        'stick', self._stick_to_bottom))
         if not follow_event:
             # Pure re-render: cancel any auto work still in flight so nothing
             # moves while the thread rebuilds.
@@ -1045,6 +1062,20 @@ class CoachScreen(BaseScreen):
             return
         self._scroll_thread_to_bottom()
 
+    def _mint_manual_scroll_id(self):
+        """Record a fresh user gesture and return its veto id.
+
+        Every manual scroll channel (wheel observer, yview wrapper for
+        thumb drags / trackbar clicks) funnels through here so exactly one
+        id is minted per gesture; ``_gesture_seq`` marks the newest id as
+        *user-owned* so the yview wrapper can recognise — and stay inert
+        for — the automatic follow-up write of a notch it already claimed.
+        """
+        self._manual_scroll_seq += 1
+        self._gesture_seq = self._manual_scroll_seq
+        self._last_gesture_ms = time.monotonic()
+        return self._manual_scroll_seq
+
     def _is_superseded_by_manual_scroll(self):
         """True when a genuine user scroll landed after the current pin era began.
 
@@ -1067,8 +1098,17 @@ class CoachScreen(BaseScreen):
         self._manual_scroll_baseline = self._manual_scroll_seq
 
     def _release_pin_for_manual_scroll(self):
-        """Hand the viewport to the user: unstick and cancel pending auto jobs."""
+        """Hand the viewport to the user: unstick and cancel pending auto jobs.
+
+        Also re-anchors the veto baseline at the current sequence: this call
+        always runs from a *fresh* user gesture, so any older gesture id must
+        not keep vetoing pins armed after this point (otherwise stickiness
+        could never re-engage once the user had scrolled even once).  The
+        gesture's own id was minted before this call, so it still outranks
+        anything scheduled earlier in the same instant.
+        """
         self._stick_to_bottom = False
+        self._reset_manual_scroll_baseline()
         self._thread_needs_pin = False
         self._stop_settle_poll()
         if self._pin_job is not None:
@@ -1167,26 +1207,17 @@ class CoachScreen(BaseScreen):
         # so this only runs while the pointer is over the chat thread.
         if not self.winfo_exists():
             return
-        # Stamp gesture evidence FIRST: the yview write produced by this
-        # notch must be recognised as user-driven by tracked_yview even if
-        # another binding executes the scroll before we release the pin.
-        self._last_gesture_ms = time.monotonic()
-        was_stuck = self._stick_to_bottom
+        # Claim this notch FIRST, unconditionally.  This handler runs
+        # *before* any other wheel binding (widget bindings precede
+        # bind_all), so the sequence bump + evidence stamp below become the
+        # gesture's single canonical id: tracked_yview recognises CTk's
+        # follow-up write as the same notch (already claimed) instead of
+        # minting a competing id, and every auto-pin armed before this
+        # moment is vetoed by it.  The claim happens even when the pin was
+        # already released (mid-browse) — a bare yank-back guard must still
+        # count as the newest gesture.
+        seq = self._mint_manual_scroll_id()
         self._release_pin_for_manual_scroll()
-        if not was_stuck:
-            # Pin already released (e.g. a second wheel observer fired for
-            # this same notch, or the user is mid-browse): don't bump the
-            # sequence again — tracked_yview classifies the resulting write
-            # via the fresh evidence stamp instead, keeping exactly one
-            # manual-scroll id per notch.
-            return
-        # The wheel event itself is the manual gesture — bump the sequence
-        # directly instead of relying on tracked_yview to classify CTk's
-        # follow-up write, which may arrive after the 250 ms evidence window
-        # on a slow machine or never come at all (e.g. view already pinned
-        # at the bottom, so CTk's scroll clamps to a no-op).
-        self._manual_scroll_seq += 1
-        seq = self._manual_scroll_seq
         # Up = negative units for Linux Button-4/5; Windows/mac delta is
         # positive when scrolling up.
         direction_up = True
@@ -1210,7 +1241,13 @@ class CoachScreen(BaseScreen):
             return
         if seq is not None and seq != self._manual_scroll_seq:
             return
-        if self._thread_at_bottom():
+        dbg = getattr(self, '_dbg', None)
+        at_bottom = self._thread_at_bottom()
+        if dbg is not None:
+            dbg.append(('verdict', seq, at_bottom,
+                        self._viewport_top(), self._content_bottom(),
+                        self._thread_canvas.winfo_height()))
+        if at_bottom:
             self._stick_to_bottom = True
             # New era: gestures up to and including this one belong to the
             # user's return-to-bottom, not to any pending auto pass.  Only
