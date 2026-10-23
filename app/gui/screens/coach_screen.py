@@ -73,6 +73,24 @@ class CoachScreen(BaseScreen):
         # Once the user scrolls away, sticking stays off until they return to
         # the bottom or the next rebuild arms a fresh window.
         self._stick_to_bottom = True    # False only while the user browses history
+        # --- Gesture evidence window --------------------------------------
+        # ``tracked_yview`` below is the one observer of EVERY scroll request,
+        # but Tk itself emits yview writes that no user asked for: whenever a
+        # widget inside the canvas is destroyed/repacked and the content no
+        # longer fits the *current* scrollregion, Tcl clamps the viewport by
+        # calling the very same ``yview`` command.  Those internal clamp-writes
+        # are indistinguishable from a real gesture by arguments alone — yet a
+        # genuine wheel notch / thumb drag / trackbar click ALWAYS runs a
+        # pointer binding first (canvas <Enter>-scoped MouseWheel/Button-4/5
+        # observers, or CTk's scrollbar callbacks).  So manual classification
+        # requires fresh gesture evidence: a pointer event seen within
+        # GESTURE_EVIDENCE_MS of the yview request.  Writes without evidence
+        # (dialog-close relayouts, geometry churn, CTk scrollbar internals)
+        # never bump the sequence counter, never release the pin and never
+        # veto an armed follow — which is exactly what used to produce the
+        # "jump toward the bottom then snap back" flicker after clicking
+        # "Sessions…" / "Revise Weak Topics" mid-manual-scroll.
+        self._last_gesture_ms = 0       # last time a real pointer gesture was observed
         # --- Event-driven arming (the ONLY legitimate auto-scroll trigger) -
         # Auto-scroll follows *events*, never rendering: opening/resuming/
         # switching to a session, a message the user just sent, and a new
