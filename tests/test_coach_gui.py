@@ -690,15 +690,8 @@ def test_scrolling_up_releases_the_pin(monkeypatch):
         app.destroy()
 
 
-def test_manual_scroll_survives_a_coach_reply(monkeypatch):
-    """Auto-scroll may only follow NEW content — never fight a live manual scroll.
-
-    The wheel-up handler runs *before* CTk's own bind_all wheel handler
-    scrolls the canvas; by the time the deferred reply rebuild reaches its
-    idle pin, the user's newer gesture must veto it entirely.  A gated
-    provider holds the turn in flight deterministically so the scroll-up
-    provably happens *during* generation (no race against thread timing).
-    """
+def test_new_coach_reply_scrolls_after_browsing_history(monkeypatch):
+    """A new reply is a fresh follow event, even after browsing while waiting."""
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
     note = state.create_note('Biology',
@@ -754,14 +747,7 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         screen.request('question')
         pump(app, GatedProvider.started.is_set)
         assert screen.busy
-        # ...then scroll up to read history WHILE the coach is still thinking.
-        # The wheel observer must receive a real event object: calling it with
-        # None raises AttributeError inside its try (event.num) and silently
-        # aborts the handler BEFORE its sequence bump — leaving no veto id for
-        # the reply rebuild to respect, so the pin legitimately yanks the view
-        # back down.  This reproduces the user's gesture through the same
-        # channels X delivers (canvas Button-4 binding + CTk's bind_all wheel
-        # handler), then scrolls as a real notch would.
+        # Browse history with the wheel while the provider is blocked.
         class _WheelUp:
             num = 4                      # Linux Button-4 = wheel up
             delta = 120                  # Windows/mac equivalent, unused here
@@ -770,17 +756,17 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         canvas.yview_scroll(-400, 'units')           # ...then CTk scrolls up
         parked = canvas.yview()[0]
         assert parked < 0.99
-        # Release the reply: its rebuild arms a fresh window, and stickiness
-        # re-engages for FUTURE changes — but the user's newer gesture vetoes
-        # every pending pin, so the viewport itself must not move.
+        # The reply is a new event, so earlier browsing must not veto it.
+        # Manual input AFTER it arrives is covered by the pending-pin test.
         GatedProvider.release.set()
         pump(app, lambda: not screen.busy)       # reply lands, refresh re-arms
         for _ in range(10):                      # let any stray pin fire
             app.update()
             time.sleep(.02)
-        assert screen._stick_to_bottom, 'a fresh reply resticks for the NEXT change'
-        assert abs(canvas.yview()[0] - parked) < 0.02, \
-            'the reply rebuild yanked the view away from the user mid-flight'
+        assert _settle(app, screen)
+        assert screen._stick_to_bottom
+        assert screen._thread_at_bottom()
+        assert canvas.yview()[0] > parked
     finally:
         GatedProvider.release.set()
         for s in app.screens.values():
@@ -789,7 +775,7 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         app.destroy()
 
 
-def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch):
+def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch, scripted_provider):
     """Regression: auto-scroll is event-driven, never render-driven.
 
     "Sessions…" closing without switching and the weak-topics picker churn
@@ -817,6 +803,7 @@ def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch):
         app.geometry('700x400')
         app.show_screen('coach')
         screen = app.screens['coach']
+        screen.service.live_factory = scripted_provider
         canvas = screen._thread_canvas
         # Opening a session IS an event: land at its newest message.
         screen.resume_session(session.id)
@@ -870,6 +857,145 @@ def test_button_clicks_never_move_the_view_even_with_new_content(monkeypatch):
     finally:
         for s in app.screens.values():
             if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+@pytest.mark.parametrize('picker', ['sessions', 'revise_weak_topics', 'same_session'])
+@pytest.mark.parametrize('busy', [False, True])
+def test_pickers_keep_mapped_bubbles_and_pixel_position(monkeypatch, picker, busy):
+    """Observe the modal transition, not just its corrected final yview."""
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('900x650+3000+3000')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        assert _settle(app, screen)
+        canvas = screen._thread_canvas
+        canvas.yview_moveto(.4)
+        app.update()
+        parked = canvas.canvasy(0)
+        bubbles = screen.thread.winfo_children()
+        writes = screen._auto_move_count
+        observations = []
+
+        def observe(*_):
+            observations.append((canvas.canvasy(0), screen.thread.winfo_children()))
+
+        canvas.bind('<Configure>', observe, add='+')
+        screen.thread.bind('<Configure>', observe, add='+')
+
+        def close_picker(dialog):
+            observe()
+            if picker == 'same_session':
+                dialog.result = session.id
+            dialog.destroy()
+
+        wait = screen.wait_window
+
+        def visit(dialog):
+            dialog.after(40, lambda: close_picker(dialog))
+            wait(dialog)
+
+        monkeypatch.setattr(screen, 'wait_window', visit)
+        screen.busy = busy
+        getattr(screen, 'sessions' if picker == 'same_session' else picker)()
+        observe()
+        for _ in range(8):
+            app.update()
+            observe()
+            time.sleep(.01)
+        assert observations
+        assert all(abs(top - parked) <= 1 for top, _ in observations)
+        assert all(children == bubbles for _, children in observations), \
+            'picker refresh replaced mapped messages and exposed the background'
+        assert screen._auto_move_count == writes
+        assert screen._pin_job is None and screen._settle_job is None
+    finally:
+        for s in app.screens.values():
+            if s and hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch):
+    """Sending and its immediate busy refresh must share a complete follow."""
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note, turns=10)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    release, started = threading.Event(), threading.Event()
+
+    class SlowProvider(GatedProvider):
+        gate_kinds = ('feedback',)
+
+    SlowProvider.release, SlowProvider.started = release, started
+    try:
+        app.geometry('900x650+3000+3000')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.service.live_factory = SlowProvider
+        screen.resume_session(session.id)
+        assert _settle(app, screen)
+        canvas = screen._thread_canvas
+        canvas.yview_moveto(.3)
+        app.update()
+        history = screen.thread.winfo_children()
+        visible = []
+
+        def observe(*_):
+            top, height = canvas.canvasy(0), canvas.winfo_height()
+            visible.append(any(
+                b.winfo_ismapped() and b.winfo_y() < top + height
+                and b.winfo_y() + b.winfo_height() > top
+                for b in screen.thread.winfo_children()))
+
+        original_pin = screen._pin_viewport
+
+        def pin(target):
+            original_pin(target)
+            observe()
+
+        monkeypatch.setattr(screen, '_pin_viewport', pin)
+        canvas.bind('<Configure>', observe, add='+')
+        screen.thread.bind('<Configure>', observe, add='+')
+        screen.composer.insert('1.0', 'Why does chlorophyll absorb sunlight? ' * 150)
+        screen.send()
+        assert screen.busy
+        assert screen.thread.winfo_children()[:len(history)] == history
+        assert screen._settle_job is not None, 'busy refresh cancelled the send follow'
+        pump(app, started.is_set)
+        assert _settle(app, screen)
+        assert screen.busy, 'the question must be visible before the coach replies'
+        assert screen._thread_at_bottom()
+        sent = screen.thread.winfo_children()[-1]
+        assert sent.winfo_height() > canvas.winfo_height()
+        assert abs(sent.winfo_y() + sent.winfo_height()
+                   - canvas.canvasy(0) - canvas.winfo_height()) <= 6
+        release.set()
+        pump(app, lambda: not screen.busy)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+        assert sent.winfo_exists(), 'reply replaced the sent question'
+        assert visible and all(visible), 'a transition displayed an empty viewport'
+    finally:
+        release.set()
+        for s in app.screens.values():
+            if s and hasattr(s, 'shutdown'):
                 s.shutdown()
         app.destroy()
 

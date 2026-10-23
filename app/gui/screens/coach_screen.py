@@ -1,6 +1,7 @@
 """Thin coaching UI; workers only generate, main thread commits."""
 import threading
 import time
+from dataclasses import asdict
 
 import customtkinter as ctk
 from app.core.agent.coach_service import CoachService
@@ -55,85 +56,25 @@ class CoachScreen(BaseScreen):
         # customtkinter's default grey; now the same blue pane surface.
         self.thread = ctk.CTkScrollableFrame(self.content, fg_color=PANE_BG)
         self.thread.pack(fill='both', expand=True)
-        # --- Auto-scroll ("stick to bottom") state ----------------------
-        # Mirrors how mainstream chat clients behave: the newest message is
-        # always kept in view unless the user deliberately scrolls away to
-        # read history.  All values are main-thread only; nothing touches Tk
-        # from a worker (turn results already arrive via UIEventQueue).
-        # User agency preserved: auto-scroll fires ONLY in the bounded
-        # "settle window" opened by a *conversation-event* rebuild —
-        # opening/resuming/switching a session, a message the user sent, or a
-        # new coach reply (see _pending_follow_event below).  Button clicks
-        # and other plain re-renders open no window at all, and outside any
-        # window nothing ever moves the view on a timer, so ordinary layout
-        # churn (window resizes, hover effects, suggestion popups) can never
-        # fight a manual scroll.  Manual input
-        # is detected on two channels:
-        #   * wheel events over the thread (scoped via Enter/Leave), and
-        #   * the canvas ``yview`` command, which CTk routes *every* scroll
-        #     request through — CTk's own bind_all wheel handler AND the
-        #     scrollbar thumb/clicks.  Tagging each request with a sequence
-        #     number lets any auto pass veto itself when a newer user gesture
-        #     landed since it was armed (see _is_superseded_by_manual_scroll).
-        # Once the user scrolls away, sticking stays off until they return to
-        # the bottom or the next rebuild arms a fresh window.
-        self._stick_to_bottom = True    # False only while the user browses history
-        # --- Gesture evidence window --------------------------------------
-        # ``tracked_yview`` below is the one observer of EVERY scroll request,
-        # but Tk itself emits yview writes that no user asked for: whenever a
-        # widget inside the canvas is destroyed/repacked and the content no
-        # longer fits the *current* scrollregion, Tcl clamps the viewport by
-        # calling the very same ``yview`` command.  Those internal clamp-writes
-        # are indistinguishable from a real gesture by arguments alone — yet a
-        # genuine wheel notch / thumb drag / trackbar click ALWAYS runs a
-        # pointer binding first (canvas <Enter>-scoped MouseWheel/Button-4/5
-        # observers, or CTk's scrollbar callbacks).  So manual classification
-        # requires fresh gesture evidence: a pointer event seen within
-        # GESTURE_EVIDENCE_MS of the yview request.  Writes without evidence
-        # (dialog-close relayouts, geometry churn, CTk scrollbar internals)
-        # never bump the sequence counter, never release the pin and never
-        # veto an armed follow — which is exactly what used to produce the
-        # "jump toward the bottom then snap back" flicker after clicking
-        # "Sessions…" / "Revise Weak Topics" mid-manual-scroll.
-        self._last_gesture_ms = 0       # last time a real pointer gesture was observed
-        # True while the thread's children are being destroyed/repacked in
-        # refresh().  Tk clamps the viewport through the canvas ``yview``
-        # command during that window (the scrollregion shrinks with the old
-        # bubbles gone); those writes carry no pointer evidence and must be
-        # inert — see tracked_yview below.
+        self._rendered_session = None
+        self._rendered_turns = []
+        # Only session changes, sends and replies open a bounded follow
+        # window. Controls-only refreshes retain both mapped messages and
+        # any follow already in progress. Manual input cancels pending work.
+        self._stick_to_bottom = True
+        self._last_gesture_ms = 0
         self._rebuilding = False
-        # --- Event-driven arming (the ONLY legitimate auto-scroll trigger) -
-        # Auto-scroll follows *events*, never rendering: opening/resuming/
-        # switching to a session, a message the user just sent, and a new
-        # reply (or cancel notice) from the coach.  Those code paths set
-        # ``_pending_follow_event`` explicitly right before calling
-        # refresh(); every other caller — button handlers like "Sessions…"
-        # or "Revise Weak Topics", background assessment completion, gate
-        # changes, redundant re-renders — leaves the flag unset, so their
-        # rebuild is completely inert: zero pin passes, zero scrollregion
-        # syncs, zero viewport movement or blank-flash glitch.  A heuristic
-        # content-diff once tried to *infer* which rebuilds were "new";
-        # it mis-classified button churn as content and kept glitching, so
-        # inference is gone entirely — the events declare themselves.
         self._pending_follow_event = False
-        self._pin_job = None            # pending after_idle pin callback
-        self._settle_job = None         # periodic settle-poll after a rebuild
+        self._pin_job = None
+        self._settle_job = None
         self._settle_ticks = 0
-        self._last_thread_height = -1   # height seen at previous settle poll
-        self._thread_needs_pin = False  # set by refresh(); consumed at idle time
+        self._last_thread_height = -1
+        self._thread_needs_pin = False
         self._thread_canvas = None
-        self._in_sync_region = False    # re-entrancy guard for the sync drain
-        self._manual_scroll_seq = 0     # id of the newest scroll request seen
-        self._auto_scroll_depth = 0     # >0 while an automatic pin is executing
-        # Sequence number the current stick-to-bottom era began at.  Only
-        # requests *after* this line are user gestures; earlier ones were part
-        # of (or before) the automatic pass that established the pin.
+        self._manual_scroll_seq = 0
+        self._auto_scroll_depth = 0
         self._manual_scroll_baseline = 0
-        self._gesture_seq = 0         # id of the newest *user* gesture
-        # Number of automatic viewport writes performed since the last era
-        # reset — instrumentation only (tests assert no stray auto-movement
-        # during inert re-renders); never read by the scroll logic itself.
-        self._auto_move_count = 0
+        self._auto_move_count = 0  # viewport-write instrumentation for tests
         canvas = getattr(self.thread, '_parent_canvas', None)
         if canvas is not None:
             self._thread_canvas = canvas
@@ -178,71 +119,24 @@ class CoachScreen(BaseScreen):
                 manual = False
                 evidence = False
                 if requested and self._auto_scroll_depth == 0:
-                    # Gesture-evidence gate: a yview WRITE counts as a user
-                    # gesture only if a pointer event (wheel observer,
-                    # scrollbar press/drag, CTk's wheel handler) fired within
-                    # GESTURE_EVIDENCE_MS.  Without that evidence the write is
-                    # Tk's own clamp against a stale scrollregion — during a
-                    # rebuild (destroy-and-repack) those must stay completely
-                    # inert: no sequence bump, no pin release, no veto of an
-                    # armed follow.  That false veto was the whole "jump
-                    # toward the bottom then snap back" flicker after closing
-                    # the Sessions / Revise-Weak-Topics dialogs mid-scroll.
-                    # Outside a rebuild, untagged writes can only come from a
-                    # genuine interaction (or its immediate aftermath), so
-                    # they still count — legacy paths that call the raw
-                    # command stay covered.
+                    # During replacement ignore layout-only writes, but
+                    # always honour pointer gestures and direct scroll calls.
                     evidence = (time.monotonic() - self._last_gesture_ms) * 1000.0 \
                         <= GESTURE_EVIDENCE_MS
-                    # A genuine interaction always stamps evidence first:
-                    # wheel notches hit our canvas binding / CTk's wrapped
-                    # ``_mouse_wheel_all``, and thumb drags / trackbar clicks
-                    # route through the scrollbar's repointed command shim
-                    # before reaching this wrapper.  Tk's own clamp writes
-                    # (scrollregion rewrites against stale viewport bounds)
-                    # never touch those channels, so untagged writes outside
-                    # a rebuild window can only be legacy callers using the
-                    # raw command — honour them to keep every real gesture
-                    # vetoing an armed follow.
                     manual = evidence or not self._rebuilding
                 if manual:
-                    # The wheel observer (<Button-4/5>/<MouseWheel> canvas
-                    # bindings + _on_thread_wheel_event) runs *before* CTk's
-                    # bind_all handler reaches this wrapper and claims each
-                    # notch by minting a fresh id and stamping _gesture_seq
-                    # to it.  When that claim is still current — same id,
-                    # fresh evidence, pin already released — this write is
-                    # just the visible motion of the notch the observer
-                    # already accounted for: stay completely inert here (no
-                    # second bump, which would orphan the observer's
-                    # deferred bottom-verdict and let a spurious re-stick
-                    # yank the view back down mid-burst).  Writes with no
-                    # live claim (thumb drags, trackbar clicks, legacy raw
-                    # -command callers) are owned by this wrapper instead.
-                    claimed = (evidence
-                               and self._gesture_seq == self._manual_scroll_seq
-                               and not self._stick_to_bottom)
-                    if not claimed:
-                        seq = self._mint_manual_scroll_id()
-                        direction_up = True
-                        if str(args[0]).lower() == 'scroll':
-                            try:
-                                direction_up = int(args[1]) < 0   # CTk sign: up = negative
-                            except (ValueError, TypeError):
-                                direction_up = True
-                        else:
-                            try:
-                                start = canvas.yview()[0]
-                                direction_up = float(args[1]) < start - 1e-9
-                            except Exception:
-                                direction_up = True
-                        # Hand control over *before* the scroll executes: CTk's
-                        # scrollbar wheel handler calls this command without any
-                        # separate wheel observer, so releasing first is what
-                        # keeps the resulting motion from being vetoed away.
-                        self._release_pin_for_manual_scroll()
-                        if not direction_up:
-                            self.after_idle(lambda: self._check_bottom_after_scroll(seq))
+                    # Own the actual write, even if a wheel observer already
+                    # released the pin.  A time-based "claimed" flag can
+                    # swallow a later downward gesture in the same burst,
+                    # preventing a return to bottom from being recognised.
+                    seq = self._mint_manual_scroll_id()
+                    if str(args[0]).lower() == 'scroll':
+                        direction_up = float(args[1]) < 0
+                    else:
+                        direction_up = float(args[1]) < canvas.yview()[0]
+                    self._release_pin_for_manual_scroll()
+                    if not direction_up:
+                        self.after_idle(lambda: self._check_bottom_after_scroll(seq))
                 return orig_yview(*args, **kw)
             canvas.yview = tracked_yview
             # ``canvas.yview_scroll`` / ``yview_moveto`` are bound methods
@@ -512,11 +406,12 @@ class CoachScreen(BaseScreen):
             self.notice.configure(text=result.message)
 
     def resume_session(self, sid):
+        switched = sid != self.session_id
         self.cancel(cancel_assessments=False)
         self.session_id = sid
         # Switching sessions is a conversation event: always open the view at
         # its newest message, whether reaching it means scrolling up or down.
-        self._pending_follow_event = True
+        self._pending_follow_event = switched
         self.refresh()
 
     def request(self, kind):
@@ -576,15 +471,11 @@ class CoachScreen(BaseScreen):
         self.refresh()
 
     def cancel(self, cancel_assessments=True):
-        was_busy = self.busy
         self.service.cancel_turn(self.session_id, cancel_assessments=cancel_assessments)
         self.busy = False
         self.notice.configure(text='Turn cancelled.')
-        # Only an actual cancellation appends a "turn cancelled" notice to
-        # the thread; the button-press paths call cancel() defensively while
-        # nothing is in flight, which must NOT move the viewport.
-        if was_busy:
-            self._pending_follow_event = True
+        # Cancellation changes the controls, not the conversation.  In
+        # particular, opening a picker while busy must not arm a scroll.
         self.refresh()
 
     def _submitted(self, result):
@@ -702,18 +593,8 @@ class CoachScreen(BaseScreen):
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
-        # --- Auto-scroll decision (BEFORE any teardown of the old view) ---
-        # Arming is purely event-driven: the conversation events that add a
-        # newest message — opening/resuming/switching a session, sending one,
-        # or receiving a coach reply/cancel notice — set
-        # ``_pending_follow_event`` right before calling us.  Every other
-        # caller ("Sessions…" closing without switching, the weak-topics
-        # picker, background assessment completion, gate-only rebuilds,
-        # redundant re-renders) leaves it unset, so this rebuild is
-        # completely inert: no pin passes, no settle poll, no scrollregion
-        # syncs — zero viewport movement and no blank-flash glitch while the
-        # bubbles repack.  The flag is consumed here regardless of outcome so
-        # a later button-triggered refresh can never inherit an old arming.
+        # Events declare scrolling explicitly. Widget reconciliation below
+        # is independent: detecting a changed turn never arms a follow.
         follow_event = self._pending_follow_event
         self._pending_follow_event = False
         dbg = getattr(self, '_dbg', None)
@@ -721,27 +602,13 @@ class CoachScreen(BaseScreen):
             dbg.append(('refresh', follow_event, 'seq', self._manual_scroll_seq,
                         'base', self._manual_scroll_baseline,
                         'stick', self._stick_to_bottom))
-        if not follow_event:
-            # Pure re-render: cancel any auto work still in flight so nothing
-            # moves while the thread rebuilds.
-            self._stop_settle_poll()
+        # A controls-only refresh must also leave any legitimate send/reply
+        # follow in flight: send() calls request() before geometry settles.
         # Dismiss any visible tooltip before re-laying out the thread; stale
         # popups must never survive a state change or a moved pointer.  The
         # shared popup window is only hidden (never destroyed) here, which is
         # what keeps rapid refresh/hover churn from crashing Tk on Windows.
         Tooltip.dismiss_all()
-        # Mark the destroy-and-repack window: while it is open, any yview
-        # write without fresh pointer evidence is Tk clamping against the
-        # collapsing scrollregion and must not be mistaken for a gesture
-        # (tracked_yview).  Cleared at idle, once every queued Configure /
-        # clamp-write from this teardown has been processed.
-        self._rebuilding = True
-        for child in self.thread.winfo_children():
-            child.destroy()
-        try:
-            self.after_idle(lambda: setattr(self, '_rebuilding', False))
-        except Exception:
-            self._rebuilding = False
         if session:
             notes = {n.id: n for n in self.state.dataset.notes}
             docs = {d.id: d for d in self.state.dataset.documents}
@@ -753,12 +620,10 @@ class CoachScreen(BaseScreen):
                               + ('' if exists else ' (removed)'))
             mode = 'live'
             self.header.configure(text=f'{mode.title()} · ' + ' · '.join(labels))
-            for turn in session.turns:
-                if turn.kind == 'confidence':
-                    continue
-                ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
+            self._refresh_thread(session, index)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
+            self._refresh_thread(None, None)
         # Keep guidance visible while the separate assessment stays private.
         if q and q.first_answer is not None:
             note = 'Ask a question, try again, or choose another topic from your sources.'
@@ -785,16 +650,10 @@ class CoachScreen(BaseScreen):
         can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
-        # --- Auto-scroll arming (uses the decision taken at refresh() top) -
-        # Only a declared conversation event may move the viewport; any
-        # other rebuild leaves it exactly where it is (manual browsing
-        # untouched, no pin passes, no settle poll, and crucially NO
-        # scrollregion churn while Tk is still settling the freshly repacked
-        # bubbles — a sync during that window clamps yview against a stale
-        # bbox and produces the blank flash + snap-back glitch on clicks).
+        # A controls refresh leaves this state alone; in particular it must
+        # not cancel the follow opened by the immediately preceding send.
         if session is not None and follow_event:
-            # New conversation content (a sent message, a coach reply, a
-            # cancel notice) or opening/resuming/switching to a session.  It
+            # New conversation content or switching to a session.  It
             # ALWAYS lands at its bottom — absolute pinning, and any
             # manual-scroll veto from before this event expires here.
             # Switching to a shorter session scrolls *up* if the old view
@@ -813,6 +672,45 @@ class CoachScreen(BaseScreen):
             # then keep re-pinning while async bubble re-wraps land.
             self._schedule_thread_pin()
             self._start_settle_poll()
+
+    def _refresh_thread(self, session, index):
+        """Keep the unchanged prefix mapped; append only the new bubbles.
+
+        Destroying the whole thread on a controls-only refresh collapses its
+        height and exposes the canvas background before the replacement
+        labels wrap.  Restoring a scroll fraction afterwards cannot prevent
+        that flash.  Retaining the widgets preserves their geometry instead.
+        Store value snapshots so edits to persisted turns/quotes are detected.
+        """
+        turns = [t for t in session.turns if t.kind != 'confidence'] if session else []
+        sources = [asdict(ref) for ref in session.sources] if session else []
+        keys = [
+            (asdict(turn), sources,
+             [index.page(q['source_id'], q['page']) for q in turn.quotes])
+            for turn in turns
+        ]
+        keep = 0
+        sid = session.id if session else None
+        if sid == self._rendered_session:
+            for key, (previous, bubble) in zip(keys, self._rendered_turns):
+                if key != previous:
+                    break
+                keep += 1
+        if keep == len(keys) == len(self._rendered_turns):
+            self._rendered_session = sid
+            return
+        self._rebuilding = True
+        try:
+            for _, bubble in self._rendered_turns[keep:]:
+                bubble.destroy()
+            self._rendered_turns[keep:] = []
+            for turn, key in zip(turns[keep:], keys[keep:]):
+                bubble = ChatBubble(self.thread, turn, session.sources, index, self.navigate)
+                bubble.pack(fill='x', pady=4)
+                self._rendered_turns.append((key, bubble))
+            self._rendered_session = sid
+        finally:
+            self.after_idle(lambda: setattr(self, '_rebuilding', False))
 
     # ------------------------------------------------------------------
     # Auto-scroll ("stick to bottom")
@@ -841,90 +739,26 @@ class CoachScreen(BaseScreen):
             return False                  # torn down mid-relayout
 
     def _content_bottom(self):
-        """Best immediate estimate (px) of where the thread's content ends.
+        """Bottom of the allocated canvas content, never requested sizes.
 
-        The canvas ``bbox('all')`` and the inner frame's allocated height are
-        driven by deferred Configure/idle geometry passes, so right after a
-        destroy-and-repack they still describe the *previous* thread — in
-        BOTH directions: stale-high after switching to a shorter session
-        (pinning there parks the view over blank space) and stale-low while
-        bubbles re-wrap.  What updates synchronously with each ``pack()`` is
-        the packer's requested size for the frame (grid ``reqheight``) plus
-        the per-bubble ``winfo_reqheight`` values inside it.  Summing those
-        gives the final layout height immediately after a rebuild, so take
-        the maximum of all sources: it never under-estimates the true extent,
-        and any transient over-estimate is corrected by the idle/settle pins
-        once Tk's geometry catches up.
+        New labels can request a height very different from their eventual
+        wrapped height.  Combining that estimate with the old scrollregion
+        can scroll beyond every mapped bubble and show an empty viewport.
+        Configure events schedule another pin when actual geometry grows.
         """
-        best = 0
         canvas = self._thread_canvas
-        try:
-            if canvas is not None and canvas.winfo_exists():
-                bbox = canvas.bbox('all')
-                if bbox is not None:
-                    best = max(best, bbox[3])
-        except Exception:
-            pass
-        try:
-            if self.thread.winfo_exists():
-                best = max(best, self.thread.winfo_height())
-                kids = self.thread.winfo_children()
-                if kids:
-                    last = max(kids, key=lambda c: c.winfo_y() + c.winfo_height())
-                    best = max(best, last.winfo_y() + last.winfo_height())
-                    # Synchronous estimate: total requested height of the
-                    # packed children plus the frame's own grid padding —
-                    # exactly what the packer will allocate after its next
-                    # idle pass, available right now.
-                    total = sum(int(kid.winfo_reqheight()) for kid in kids)
-                    try:
-                        info = self.thread.grid_info()
-                        ipady = int(info.get('ipady', 0) or 0)
-                        pady_hi = int(str(info.get('pady', '0')).split()[1])
-                    except Exception:
-                        ipady = pady_hi = 0
-                    best = max(best, total + 2 * ipady + 2 * pady_hi)
-        except Exception:
-            pass
-        return best
+        if canvas is not None and canvas.winfo_exists():
+            region = canvas.bbox('all')
+            if region is not None:
+                return region[3]
+        return 0
 
     def _viewport_top(self, canvas=None):
-        """Current top edge of the visible area, in canvas coordinates.
-
-        ``canvasy(0)`` is Tk's own pixel truth for the yview origin — it
-        always describes where the viewport actually is (against the current
-        scrollregion).  The one unreliable case is a *stationary* viewport
-        while the scrollregion grows underneath it (async bubble re-wraps
-        lengthen the thread without any scroll request): Tk's fractions then
-        still describe the pre-growth region and ``canvasy(0)`` reads too low.
-        CTk mirrors every genuine scroll into its custom scrollbar
-        synchronously, so when the mirrored window ends short of the *current*
-        region there really is content below the fold — take the deeper of
-        the two readings.  This must never fall back to raw content extents:
-        after switching to a shorter session those still describe the old
-        (taller) thread for an event cycle, and a stale-high read makes an
-        upward manual gesture look like "still at the bottom", silently
-        re-engaging stickiness and yanking the view back down.
-        """
+        """Tk's actual viewport origin in canvas pixels."""
         canvas = canvas if canvas is not None else self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return 0.0
-        try:
-            height = canvas.winfo_height()
-            region = canvas.bbox('all')
-            top = float(canvas.canvasy(0))
-            if height > 1 and region is not None and region[3] - region[1] > 0:
-                span = region[3] - region[1]
-                scrollbar = getattr(self.thread, '_scrollbar', None)
-                mirror = getattr(scrollbar, 'get', lambda: (None, None))()
-                if mirror and mirror[1] is not None and mirror[1] < 0.995:
-                    top = max(top, mirror[1] * span - height)
-            return top
-        except Exception:
-            try:
-                return float(canvas.canvasy(0))
-            except Exception:
-                return 0.0
+        return float(canvas.canvasy(0))
 
     def _manual_scroll_to_bottom(self, canvas):
         """Legacy pin: clamp Tk's own yview against the (synced) region."""
@@ -961,22 +795,7 @@ class CoachScreen(BaseScreen):
             return True                     # torn down mid-read
 
     def _scroll_thread_to_bottom(self):
-        """Absolute pin — works whether reaching the bottom means scrolling up or down.
-
-        Never trusts Tk's own clamping: right after a destroy-and-repack the
-        canvas scrollregion still describes the *previous* thread (CTk only
-        rewrites it from a deferred ``<Configure>`` script), so a
-        ``yview_scroll`` past the end lands short after growth or parks over
-        blank space after switching to a shorter session.  Instead, compute
-        the exact top-edge offset from our synchronous content estimate and
-        drive the view there directly with ``yview_moveto``, refreshing the
-        scrollregion afterwards so the scrollbar geometry stays consistent.
-
-        The whole pass runs inside ``_auto_scroll_depth`` so the wrapped
-        ``yview`` command recognises its own writes as automatic instead of
-        mis-reading them as user gestures, and bails out if a genuine gesture
-        landed since this pass was armed.
-        """
+        """Pin against allocated geometry; newer manual input always wins."""
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return
@@ -997,39 +816,14 @@ class CoachScreen(BaseScreen):
             self._auto_scroll_depth -= 1
 
     def _pin_viewport(self, canvas):
-        """Geometry half of the pin (see _scroll_thread_to_bottom)."""
-        height = canvas.winfo_height()
-        if height <= 1:
-            # Un-mapped viewport (e.g. the screen has never been shown):
-            # no meaningful fraction exists, so clamp against whatever
-            # region we do have and let later passes refine.
-            self._manual_scroll_to_bottom(canvas)
+        """Sync the real region BEFORE scrolling so Tk clamps to visible content."""
+        if canvas.winfo_height() <= 1:
             return
-        bottom = self._content_bottom()
-        region = canvas.bbox('all')
-        span = max((region[3] - region[1]) if region else 0, bottom)
-        if bottom <= 0 or span <= height:
-            # Empty thread or everything fits: yview at the top shows
-            # all content; moveto(0) also survives a stale-high region.
-            canvas.yview_moveto(0.0)
-            self._note_auto_move()
-            self._sync_scrollregion()
-            return
-        # Fraction such that the viewport's bottom edge sits exactly on
-        # the estimated content bottom — independent of how stale the
-        # current scrollregion is.
-        target = max(0.0, min(1.0, (bottom - height) / span))
-        if abs(canvas.canvasy(0) - (bottom - height)) <= BOTTOM_EPSILON_PX:
-            # Pixel truth beats fractions here: after a scrollregion
-            # rewrite Tk's own yview() values can lag one cycle behind
-            # the real position, and a fraction-based "already pinned"
-            # check would then short-circuit genuine re-pins while the
-            # settle window is still open.  The viewport bottom already
-            # covers the newest content — leave the view alone.
-            return
-        canvas.yview_moveto(target)
-        self._note_auto_move()
         self._sync_scrollregion()
+        if self._thread_at_bottom():
+            return
+        canvas.yview_moveto(1.0)
+        self._note_auto_move()
 
     def _schedule_thread_pin(self):
         """Collapse all pin requests in one event-loop cycle into one idle callback."""
@@ -1063,16 +857,8 @@ class CoachScreen(BaseScreen):
         self._scroll_thread_to_bottom()
 
     def _mint_manual_scroll_id(self):
-        """Record a fresh user gesture and return its veto id.
-
-        Every manual scroll channel (wheel observer, yview wrapper for
-        thumb drags / trackbar clicks) funnels through here so exactly one
-        id is minted per gesture; ``_gesture_seq`` marks the newest id as
-        *user-owned* so the yview wrapper can recognise — and stay inert
-        for — the automatic follow-up write of a notch it already claimed.
-        """
+        """Invalidate verdicts from older input and timestamp pointer evidence."""
         self._manual_scroll_seq += 1
-        self._gesture_seq = self._manual_scroll_seq
         self._last_gesture_ms = time.monotonic()
         return self._manual_scroll_seq
 
@@ -1160,6 +946,9 @@ class CoachScreen(BaseScreen):
             self._release_pin_for_manual_scroll()
             return
         self._settle_ticks += 1
+        if self._settle_ticks >= SETTLE_MAX_TICKS:
+            self._scroll_thread_to_bottom()
+            return
         self._sync_scrollregion()
         extent = self._content_bottom()
         if extent != self._last_thread_height:
@@ -1207,15 +996,8 @@ class CoachScreen(BaseScreen):
         # so this only runs while the pointer is over the chat thread.
         if not self.winfo_exists():
             return
-        # Claim this notch FIRST, unconditionally.  This handler runs
-        # *before* any other wheel binding (widget bindings precede
-        # bind_all), so the sequence bump + evidence stamp below become the
-        # gesture's single canonical id: tracked_yview recognises CTk's
-        # follow-up write as the same notch (already claimed) instead of
-        # minting a competing id, and every auto-pin armed before this
-        # moment is vetoed by it.  The claim happens even when the pin was
-        # already released (mid-browse) — a bare yank-back guard must still
-        # count as the newest gesture.
+        # Release before CTk moves the canvas. The actual yview write may
+        # mint a newer id; its post-scroll verdict then supersedes this one.
         seq = self._mint_manual_scroll_id()
         self._release_pin_for_manual_scroll()
         # Up = negative units for Linux Button-4/5; Windows/mac delta is
