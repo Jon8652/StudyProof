@@ -32,6 +32,13 @@ SETTLE_QUIET_MS = 300
 # Window (ms) in which a pointer event must have been seen for a ``yview``
 # write to count as a user gesture (see tracked_yview / _last_gesture_ms).
 GESTURE_EVIDENCE_MS = 250
+# Upper bound on the corrective re-scrolls _pin_viewport() may chain after
+# its first measured scroll.  Tk quantises ``yview_scroll(n, 'units')`` to
+# whole ``yscrollincrement`` steps and clamps overshoot at the region edge,
+# so a handful of closed-loop passes always converge; the bound only exists
+# to stop a pathological oscillation from spinning inside one synchronous
+# pin call.
+PIN_MAX_CORRECTIONS = 4
 
 
 class CoachScreen(BaseScreen):
@@ -852,7 +859,18 @@ class CoachScreen(BaseScreen):
         return bottom - (self._viewport_top(canvas) + height)
 
     def _pin_viewport(self, canvas):
-        """Sync the real region BEFORE scrolling so Tk clamps to visible content."""
+        """Sync the real region BEFORE scrolling so Tk clamps to visible content.
+
+        Closed-loop: every scroll is verified by re-measuring the gap and a
+        residual is corrected with one more pass *inside this call*.  The old
+        open-loop version measured once and scrolled once; on Windows DPI
+        scaling (>96 PPI) Tk's unit quantisation plus CTk's deferred
+        scrollregion rewrite left up to ~8 px of drift behind (observed as
+        ``assert 8.0 <= 6`` in the long-send test).  Handing that residue to
+        the next settle tick is a race — the poll can stop inside its quiet
+        window before the correction lands — so the pin must converge here.
+        Overshoot is safe: Tk clamps scrolling at the scrollregion edge.
+        """
         unmapped = canvas.winfo_height() <= 1
         self._sync_scrollregion()
         if unmapped:
@@ -865,7 +883,11 @@ class CoachScreen(BaseScreen):
         gap = self._bottom_gap(canvas)
         if gap is None:
             return                      # empty thread — trivially pinned
-        if gap > 0:
+        scrolled = False
+        attempts = 0
+        while gap is not None and gap > BOTTOM_EPSILON_PX \
+                and attempts <= PIN_MAX_CORRECTIONS:
+            attempts += 1
             # Close the *measured* gap with unit scrolls (yscrollincrement
             # was set to 1 px).  yview_moveto(1.0) must never be used here:
             # Tk quantises the fraction against the scrollregion ratio, and
@@ -876,6 +898,15 @@ class CoachScreen(BaseScreen):
                 canvas.yview_scroll(int(round(gap)), 'units')
             except Exception:
                 self._manual_scroll_to_bottom(canvas)   # legacy fallback
+                break
+            scrolled = True
+            # Re-sync and re-measure immediately: bbox/canvasy reflect the
+            # just-executed scroll synchronously, so any quantisation residue
+            # (or content that grew between measurement and write) shows up
+            # here and gets another corrective pass within this same call.
+            self._sync_scrollregion()
+            gap = self._bottom_gap(canvas)
+        if scrolled:
             self._note_auto_move()
 
     def _schedule_thread_pin(self):
@@ -1043,10 +1074,21 @@ class CoachScreen(BaseScreen):
             self._scroll_thread_to_bottom()
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
         else:
-            # Settled — polling stops entirely.  From here on *nothing* moves
-            # the view automatically until the next refresh() arms a new
-            # window, which is what keeps manual scrolling free outside of
-            # content changes.
+            # Settled — polling stops entirely.  Before handing over, close
+            # any *exact* residual gap (down to zero, past the epsilon band):
+            # the last open-loop pin could leave up to ~8 px of DPI
+            # quantisation drift, and once this poll stops nothing else moves
+            # the viewport until the next rebuild — the long-send test then
+            # measures that residue against its 6 px budget.  A closed-loop
+            # pin converges synchronously, so this final pass guarantees the
+            # newest bubble sits flush at the stop instant.  Tk clamps
+            # overshoot at the region edge, so scrolling to an exact zero gap
+            # cannot push the view past the content.
+            if gap is not None and gap > 0:
+                self._scroll_thread_to_bottom()
+            # From here on *nothing* moves the view automatically until the
+            # next refresh() arms a new window, which is what keeps manual
+            # scrolling free outside of content changes.
             self._stop_settle_poll()
 
     def _on_thread_configure(self, event=None):
