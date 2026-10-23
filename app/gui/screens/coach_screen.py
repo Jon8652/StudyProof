@@ -45,6 +45,71 @@ class CoachScreen(BaseScreen):
         # customtkinter's default grey; now the same blue pane surface.
         self.thread = ctk.CTkScrollableFrame(self.content, fg_color=PANE_BG)
         self.thread.pack(fill='both', expand=True)
+        # --- Sticky-bottom auto-scroll state ------------------------------------
+        # Chatbot-style behaviour: new coach replies and freshly sent messages
+        # keep the view pinned to the bottom of the thread.  If the user has
+        # scrolled up to read history, auto-scroll pauses until they return to
+        # the bottom (wheel/scrollbar) or send a new message (which re-sticks).
+        # When the newest bubble is taller than the viewport, the scroll target
+        # prioritises showing the *start* of the latest user prompt instead of
+        # blindly jumping to the absolute end.
+        self._chat_canvas = getattr(self.thread, '_parent_canvas', None)
+        self._stick_to_bottom = True
+        self._autoscroll_job = None
+        self._autoscroll_retries = 0
+        if self._chat_canvas is not None:
+            # Wheel events land on whatever widget sits under the pointer —
+            # the canvas, the inner frame, or a bubble.  CTkScrollableFrame
+            # already forwards wheel events from its own <Enter>/<Leave>
+            # handlers, so instance bindings on the two containers plus a
+            # class binding (dispatched *before* any widget-level handler)
+            # cover every scroll gesture without touching customtkinter's
+            # internal bindings — those use ``event.widget`` and would
+            # crash if an add='+' binding ran first on a CTk widget.
+            for target in (self._chat_canvas, self.thread):
+                target.bind('<MouseWheel>', self._on_chat_scroll_input, add='+')
+                target.bind('<Button-4>', self._on_chat_scroll_input, add='+')
+                target.bind('<Button-5>', self._on_chat_scroll_input, add='+')
+            try:
+                self._chat_canvas.bind_class(
+                    'Canvas', '<MouseWheel>', self._on_chat_scroll_input, add='+')
+                self._chat_canvas.bind_class('Canvas', '<Button-4>',
+                                             self._on_chat_scroll_input, add='+')
+                self._chat_canvas.bind_class('Canvas', '<Button-5>',
+                                             self._on_chat_scroll_input, add='+')
+            except Exception:
+                pass                      # class binding unavailable
+            # Scrollbar thumb drags bypass MouseWheel entirely: CTkScrollbar
+            # calls its ``command`` (the canvas yview) directly from
+            # _on_motion.  Wrap that command so every drag re-syncs the
+            # stick state against the *new* view.  The wrapper is installed
+            # lazily on the first drag because customtkinter re-configures
+            # the scrollbar's command during its own geometry handling —
+            # wrapping in __init__ would be overwritten before any real
+            # scroll happens.  ``_stick_synced`` guards against wrapping a
+            # second time.
+            try:
+                scrollbar = getattr(self.thread, '_scrollbar', None)
+                if scrollbar is not None:
+                    def _wrap_drag_command(_sb=scrollbar):
+                        try:
+                            current = _sb.cget('command')
+                            if current is None or getattr(current, '_stick_synced', False):
+                                return
+                            def _sync_stick(*args, _cmd=current):
+                                _cmd(*args)       # let CTk update the view first
+                                self._on_chat_scroll_input()
+                            _sync_stick._stick_synced = True
+                            _sb.configure(command=_sync_stick)
+                        except Exception:
+                            pass               # internals changed: wheel-only
+                    self._on_chat_scroll_input_wrapped = _wrap_drag_command
+                    for seq in ('<Button-1>', '<B1-Motion>'):
+                        # CTkScrollbar.bind() forwards to its internal
+                        # canvas with add=True, preserving its own handlers.
+                        scrollbar.bind(seq, lambda e=None: _wrap_drag_command(), add='+')
+            except Exception:
+                pass                      # customtkinter internals changed
         # Responsive wrapping for the coach text: the header/notice labels
         # pack fill='x', so their allocated row width tracks the window.
         # Each label's wraplength is derived from its own width (floor only,
@@ -212,6 +277,10 @@ class CoachScreen(BaseScreen):
 
     def resume_session(self, sid):
         self.cancel(cancel_assessments=False)
+        if sid != self.session_id:
+            # Opening a saved conversation starts at the top of the history,
+            # not pinned to its end like a live chat would be.
+            self._stick_to_bottom = False
         self.session_id = sid
         self.refresh()
 
@@ -280,6 +349,10 @@ class CoachScreen(BaseScreen):
         if result.ok:
             self.composer.delete('1.0', 'end')
         self.refresh()
+        # A learner's own message always wins visibility priority: re-stick
+        # even if they had been reading older history, and let the oversized
+        # bubble logic show the *start* of their latest prompt first.
+        self._schedule_thread_follow(force=result.ok)
 
     def answer(self):
         self._submitted(self.service.submit_answer(self.session_id, self.composer.get('1.0', 'end')))
@@ -383,6 +456,119 @@ class CoachScreen(BaseScreen):
         if not self.busy and not self._require_connection():
             return 'break'
 
+    # ------------------------------------------------------------------
+    # Sticky-bottom thread scrolling
+
+    def _on_chat_scroll_input(self, event=None):
+        """Wheel/drag inside the thread: re-stick when back at the bottom.
+
+        Scrolling *up* is handled by the follow-up poll below (the yview
+        fraction moves away from 1.0), so this handler only needs to catch
+        the opposite direction — deliberately returning to the bottom
+        resumes following new messages, like mainstream chat apps.
+        """
+        if event is not None and getattr(event, 'num', None) == 4:
+            # X11 Button-4 scrolls up; leave the stick state alone here.
+            return
+        canvas = self._chat_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return
+        try:
+            if canvas.yview()[1] >= 0.995:
+                self._stick_to_bottom = True
+        except Exception:
+            pass                          # not yet realised / torn down
+
+    def _last_user_bubble(self):
+        """Most recent learner bubble in the thread, or None."""
+        for child in reversed(self.thread.winfo_children()):
+            if isinstance(child, ChatBubble) and getattr(child, 'role', None) == 'user':
+                return child
+        return None
+
+    def _schedule_thread_follow(self, force=False):
+        """Queue a post-layout scroll of the thread.
+
+        ``force`` re-sticks unconditionally — used right after the learner
+        sends a message so their own prompt always comes into view even if
+        they had been reading older history.
+        """
+        if force:
+            self._stick_to_bottom = True
+        if self._autoscroll_job is not None:
+            try:
+                self.after_cancel(self._autoscroll_job)
+            except Exception:
+                pass                      # stale id after interpreter reset
+        # One deferred pass lets Tk finish geometry management for the
+        # freshly packed/destroyed bubbles before we measure anything.
+        self._autoscroll_retries = 0
+        self._autoscroll_job = self.after(0, self._follow_thread_bottom)
+
+    def _follow_thread_bottom(self):
+        self._autoscroll_job = None
+        canvas = self._chat_canvas
+        if canvas is None or not canvas.winfo_exists() or not self.thread.winfo_exists():
+            return
+        if not self._stick_to_bottom:
+            # User is reading history: only keep an eye on manual scrolling
+            # so that dragging/wheeling back down re-engages auto-follow.
+            try:
+                if canvas.yview()[1] >= 0.995:
+                    self._stick_to_bottom = True
+            except Exception:
+                pass
+            return
+        target, settled = self._bottom_scroll_target(canvas)
+        try:
+            canvas.yview_moveto(target)
+        except Exception:
+            return                        # widget torn down mid-flight
+        # CTkScrollableFrame recomputes its scrollregion on the inner
+        # frame's <Configure>, which fires *after* the first idle pass;
+        # labels also re-wrap asynchronously.  Retry a bounded number of
+        # times until the geometry has settled, otherwise the view would
+        # stop short of the true bottom after long replies.
+        if not settled and self._autoscroll_retries < 6:
+            self._autoscroll_retries += 1
+            self._autoscroll_job = self.after(30, self._follow_thread_bottom)
+
+    def _bottom_scroll_target(self, canvas):
+        """Fraction to scroll to, plus whether the geometry looks settled.
+
+        Normally this pins the very bottom of the thread.  Edge case: when
+        the newest message is taller than the viewport, plain bottom-scroll
+        shows only its tail.  In that case prioritise the *start* of the
+        latest user prompt (falling back to the last bubble's start if no
+        user bubble is visible), so the learner can read what they asked
+        before the coach's reply flows off-screen downwards.
+        """
+        height = canvas.winfo_height()
+        region = canvas.bbox('all')
+        settled = height > 1 and region is not None
+        if not settled:
+            return 1.0, False             # nothing measured yet: aim low
+        _, top, _, _, bottom = region
+        total = max(1, bottom - top)
+        if bottom - top <= height:
+            return 0.0, True              # everything fits; keep it at top
+        anchor = self._last_user_bubble() or None
+        if anchor is None:
+            children = self.thread.winfo_children()
+            anchor = children[-1] if children else None
+        if anchor is not None and anchor.winfo_exists() and anchor.winfo_ismapped():
+            try:
+                bbox = canvas.bbox(anchor.winfo_id())
+            except Exception:
+                bbox = None
+            if bbox is not None:
+                bubble_top, bubble_bottom = bbox[1], bbox[3]
+                if bubble_bottom - bubble_top > height:
+                    # Oversized newest bubble: align its top with the top of
+                    # the viewport instead of showing only its tail.
+                    return max(0.0, min((bubble_top - top) / total, 1.0)), True
+        return 1.0, True
+
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
         q = session.questions[-1] if session and session.questions else None
@@ -391,6 +577,17 @@ class CoachScreen(BaseScreen):
         # shared popup window is only hidden (never destroyed) here, which is
         # what keeps rapid refresh/hover churn from crashing Tk on Windows.
         Tooltip.dismiss_all()
+        # Capture the stick state *before* tearing the bubbles down: once
+        # the widgets are destroyed the canvas reports a degenerate yview
+        # and the "was at the bottom" information would be lost.  If the
+        # user was pinned to the bottom (or had never scrolled away), the
+        # rebuilt thread follows its own end after relayout.
+        if self._chat_canvas is not None and self._chat_canvas.winfo_exists():
+            try:
+                self._stick_to_bottom = self._stick_to_bottom or \
+                    self._chat_canvas.yview()[1] >= 0.995
+            except Exception:
+                pass
         for child in self.thread.winfo_children():
             child.destroy()
         if session:
@@ -407,7 +604,8 @@ class CoachScreen(BaseScreen):
             for turn in session.turns:
                 if turn.kind == 'confidence':
                     continue
-                ChatBubble(self.thread, turn, session.sources, index, self.navigate).pack(fill='x', pady=4)
+                ChatBubble(self.thread, turn, session.sources, index,
+                           self.navigate, role=turn.role).pack(fill='x', pady=4)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
         # Keep guidance visible while the separate assessment stays private.
@@ -436,9 +634,18 @@ class CoachScreen(BaseScreen):
         can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
+        # Follow the rebuilt thread once Tk has finished geometry (the
+        # stick state was captured before the old bubbles were destroyed).
+        self._schedule_thread_follow()
 
     def shutdown(self):
         self._hide_suggestions()
+        if self._autoscroll_job is not None:
+            try:
+                self.after_cancel(self._autoscroll_job)
+            except Exception:
+                pass
+            self._autoscroll_job = None
         for sid in {self.session_id, *(key[0] for key in self.service.assessments)}:
             self.service.cancel_turn(sid)
         self.events.stop()
