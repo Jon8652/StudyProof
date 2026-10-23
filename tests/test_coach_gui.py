@@ -739,10 +739,15 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
-        # Start a turn and keep it in flight behind the gate...  Gate this
-        # kind explicitly: GatedProvider answers non-gated kinds instantly,
-        # so without this the reply would land (and its idle pin run) before
-        # the scroll-up below ever happened, turning the test into a race.
+        # Start a turn and keep it in flight behind the gate...  A second
+        # 'question' would be rejected ("Finish your answer and get feedback
+        # first") while the warm-up's question is still open, so close that
+        # question first — otherwise request() bails before reaching the
+        # provider and started never sets.  Gate this kind explicitly:
+        # GatedProvider answers non-gated kinds instantly, so without this
+        # the reply would land (and its idle pin run) before the scroll-up
+        # below ever happened, turning the test into a race.
+        session.questions[-1].status = 'closed'
         GatedProvider.release.clear()
         GatedProvider.started.clear()
         GatedProvider.gate_kinds = ('question', 'hint', 'feedback', 'followup')
@@ -750,8 +755,19 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch):
         pump(app, GatedProvider.started.is_set)
         assert screen.busy
         # ...then scroll up to read history WHILE the coach is still thinking.
-        screen._on_thread_wheel_event(None)      # wheel observer...
-        canvas.yview_scroll(-400, 'units')       # ...then CTk scrolls up
+        # The wheel observer must receive a real event object: calling it with
+        # None raises AttributeError inside its try (event.num) and silently
+        # aborts the handler BEFORE its sequence bump — leaving no veto id for
+        # the reply rebuild to respect, so the pin legitimately yanks the view
+        # back down.  This reproduces the user's gesture through the same
+        # channels X delivers (canvas Button-4 binding + CTk's bind_all wheel
+        # handler), then scrolls as a real notch would.
+        class _WheelUp:
+            num = 4                      # Linux Button-4 = wheel up
+            delta = 120                  # Windows/mac equivalent, unused here
+            widget = canvas
+        screen._on_thread_wheel_event(_WheelUp())   # wheel observer...
+        canvas.yview_scroll(-400, 'units')           # ...then CTk scrolls up
         parked = canvas.yview()[0]
         assert parked < 0.99
         # Release the reply: its rebuild arms a fresh window, and stickiness
