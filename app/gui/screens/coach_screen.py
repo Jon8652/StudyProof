@@ -175,12 +175,6 @@ class CoachScreen(BaseScreen):
             def tracked_yview(*args, **kw):
                 requested = bool(args) and str(args[0]).lower() in ('scroll', 'moveto')
                 manual = False
-                if requested:
-                    _dbg = getattr(self, '_dbg_log', None)
-                    if _dbg is not None:
-                        _dbg.append((str(args[:2]), self._auto_scroll_depth,
-                                     int((time.monotonic() - self._last_gesture_ms) * 1000),
-                                     self._rebuilding, self._stick_to_bottom))
                 if requested and self._auto_scroll_depth == 0:
                     # Gesture-evidence gate: a yview WRITE counts as a user
                     # gesture only if a pointer event (wheel observer,
