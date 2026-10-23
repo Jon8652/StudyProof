@@ -65,9 +65,21 @@ class CoachScreen(BaseScreen):
         canvas = getattr(self.thread, '_parent_canvas', None)
         if canvas is not None:
             self._thread_canvas = canvas
+            # customtkinter binds <Configure> on the *inner frame* with a
+            # plain `bind` (no add='+'), whose script reads
+            # `canvas.bbox('all')` to recompute the scrollregion.  Because
+            # every packed widget extends that bbox downward, the stale
+            # region always contains the newest content — so scrolling to
+            # the absolute bottom lands there even in the same event-loop
+            # cycle as the packing (before any Configure has been handled).
+            # The old code ran this handler only at idle time and then
+            # short-circuited on the stale `yview()[1] == 1.0`, which is how
+            # rebuilds ended up "stuck" showing blank space below the text.
+            # Refresh the region synchronously before every pin instead.
+            self._sync_scrollregion()
             # 1 px steps let _scroll_thread_to_bottom() land exactly on the
             # last bubble's bottom edge instead of CTk's default 30 px
-            # Windows yscrollincrement.
+            # Linux / Windows yscrollincrement.
             canvas.configure(yscrollincrement=1)
             # Any wheel motion over the thread decides stickiness from the
             # *real* post-scroll position (see _on_thread_wheel).  The
@@ -498,6 +510,17 @@ class CoachScreen(BaseScreen):
             # the old view was parked mid-scroll; direction never matters.
             self._stick_to_bottom = True
             self._thread_needs_pin = True
+            # First pass right now: CTk's stale scrollregion still encloses
+            # all freshly packed content (its bbox only ever grew downward),
+            # and the packer has already computed final geometry, so the
+            # absolute bottom is reachable in this very cycle — no waiting
+            # for Configure events to drain.  The idle + settle passes below
+            # then correct against the *final* region once async bubble
+            # re-wraps land.  Previously the pin ran only at idle time and
+            # short-circuited on stale yview() fractions, which left
+            # rebuilds parked over blank space ("stays blank until you
+            # scroll yourself").
+            self._scroll_thread_to_bottom()
             self._schedule_thread_pin()
             self._start_settle_poll()
         else:
@@ -506,19 +529,81 @@ class CoachScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Auto-scroll ("stick to bottom")
 
+    def _sync_scrollregion(self):
+        """Recompute the canvas scrollregion from the current content bbox.
+
+        customtkinter refreshes the region only from a ``<Configure>`` Tcl
+        script bound on the inner frame, which runs when the event queue is
+        drained.  Before every pin we pull that same update forward so the
+        scroll commands clamp against the *real* content extent instead of a
+        stale one.  Returns True when the region was refreshed.
+        """
+        canvas = self._thread_canvas
+        if canvas is None or not canvas.winfo_exists():
+            return False
+        try:
+            bbox = canvas.bbox('all')
+            if bbox is not None:
+                canvas.configure(scrollregion=bbox)
+            return True
+        except Exception:
+            return False                  # torn down mid-relayout
+
+    def _content_bottom(self):
+        """Best immediate estimate (px) of where the thread's content ends.
+
+        Both the canvas ``bbox('all')`` and the inner frame's allocated
+        height are driven by deferred Configure/idle geometry passes, so
+        right after a destroy-and-repack they still describe the *previous*
+        thread: stale-high after switching to a shorter session, stale-low
+        while bubbles re-wrap.  The packer's requested height for the frame
+        updates synchronously with each ``pack()``, so take the maximum of
+        all three — it never under-estimates the true final extent, and any
+        over-estimate is corrected by the idle/settle pins once Tk settles.
+        """
+        best = 0
+        canvas = self._thread_canvas
+        try:
+            if canvas is not None and canvas.winfo_exists():
+                bbox = canvas.bbox('all')
+                if bbox is not None:
+                    best = max(best, bbox[3])
+        except Exception:
+            pass
+        try:
+            if self.thread.winfo_exists():
+                best = max(best, self.thread.winfo_height())
+                info = self.thread.grid_info()
+                best = max(best, int(info.get('reqheight', 0) or 0))
+                kids = self.thread.winfo_children()
+                if kids:
+                    last = max(kids, key=lambda c: c.winfo_y() + c.winfo_height())
+                    best = max(best, last.winfo_y() + last.winfo_height())
+        except Exception:
+            pass
+        return best
+
     def _thread_at_bottom(self):
-        """True when the newest bubble is fully visible in the viewport."""
+        """True when the newest bubble is fully visible in the viewport.
+
+        Position-based (the actual top edge of the viewport vs. the real
+        content extent), never the fractional ``yview()`` values: those are
+        ratios of a possibly stale scrollregion and report "at bottom"
+        spuriously right after any rebuild.
+        """
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return True
         try:
-            first, last = canvas.yview()
-            if last >= 1.0:
-                return True
-            region = canvas.bbox('all')
-            if region is None:
-                return True                 # nothing scrollable at all
-            return region[3] - canvas.winfo_height() <= BOTTOM_EPSILON_PX
+            height = canvas.winfo_height()
+            if height <= 1:
+                return True                 # un-mapped: nothing to judge yet
+            bottom = self._content_bottom()
+            if bottom <= 0:
+                return True                 # empty thread — trivially pinned
+            # Viewport top in canvas coordinates (clamped by Tk itself).
+            top = canvas.canvasy(0)
+            return bottom - (top + height) <= BOTTOM_EPSILON_PX
         except Exception:
             return True                     # torn down mid-read
 
@@ -527,14 +612,22 @@ class CoachScreen(BaseScreen):
         canvas = self._thread_canvas
         if canvas is None or not canvas.winfo_exists():
             return
+        # Pull CTk's deferred scrollregion update forward first, then decide
+        # from the *real* position.  This makes the pin idempotent: a second
+        # call after the region grows (async bubble re-wrap) still scrolls,
+        # because it compares viewport edges against fresh content extents
+        # rather than trusting yview() fractions computed from stale ones.
+        self._sync_scrollregion()
         try:
             if self._thread_at_bottom():
                 return                      # already pinned: cheap no-op
         except Exception:
             pass
         try:
-            # yscrollincrement is 1 px (set in __init__), so a huge units
-            # scroll clamps exactly to the scrollregion's bottom edge.
+            # Scroll past the end: Tk clamps exactly to the scrollregion's
+            # bottom edge (yscrollincrement is 1 px, set in __init__), so
+            # this lands pixel-exact whether reaching the bottom means
+            # scrolling down (new message) or up (shorter session).
             canvas.yview_scroll(10_000_000, 'units')
         except Exception:
             try:
@@ -556,9 +649,10 @@ class CoachScreen(BaseScreen):
         self._thread_needs_pin = False
         if not self.winfo_exists() or not self._stick_to_bottom:
             return
-        # after_idle guarantees the freshly-packed bubbles have real
-        # geometry by now; a synchronous pin inside refresh() would read
-        # 1px-tall widgets and a stale scrollregion.
+        # Belt-and-braces follow-up to the synchronous pin in refresh():
+        # by idle time every queued Configure/re-wrap burst has landed, so
+        # this pass clamps against the final content extent.  It is a cheap
+        # no-op when the synchronous pin already holds.
         self._scroll_thread_to_bottom()
 
     def _start_settle_poll(self):
@@ -586,21 +680,23 @@ class CoachScreen(BaseScreen):
         if canvas is None or not canvas.winfo_exists():
             return
         self._settle_ticks += 1
-        try:
-            region = canvas.bbox('all')
-            height = region[3] if region else 0
-        except Exception:
-            return
-        if height != self._last_thread_height:
-            # Bubbles still growing/shrinking (async text re-wrap): re-pin
-            # and keep watching until the height stabilises.
-            self._last_thread_height = height
+        self._sync_scrollregion()
+        extent = self._content_bottom()
+        if extent != self._last_thread_height:
+            # Bubbles still growing/shrinking (async text re-wrap) or the
+            # deferred geometry pass finally landed: re-pin against the new
+            # extent and keep watching until it stabilises.
+            self._last_thread_height = extent
+            self._scroll_thread_to_bottom()
+            self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
+        elif not self._thread_at_bottom():
+            # Height stable but the viewport drifted (late scrollregion
+            # correction, DPI/geometry settle): re-pin and keep watching.
             self._scroll_thread_to_bottom()
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
         elif self._settle_ticks < SETTLE_MAX_TICKS:
-            # Height looks stable, but Tk may still hold queued Configure
+            # Stable and pinned, but Tk may still hold queued Configure
             # events (e.g. a wraplength burst). One extra quiet tick, then stop.
-            self._scroll_thread_to_bottom()  # cheap no-op when already pinned
             self._settle_job = self.after(SETTLE_POLL_MS, self._settle_tick)
         # else: settled — polling stops entirely (zero idle cost between messages)
 
