@@ -4,12 +4,26 @@ from app.gui.theme import DETAIL_CARD_FG, ACCENT, MUTED_TEXT
 from app.gui.widgets.citation_chip import CitationChip
 from app.core.agent.grounding import validate_quotes
 
-# Wrap-length bounds (unscaled pixels) for the coach thread.  A narrow /
-# windowed layout must not wrap at a width larger than the bubble itself,
-# and a maximised window should use the extra room instead of leaving the
-# old hard-coded 650px column stranded in the middle of a wide screen.
+# Wrap-length bounds (unscaled pixels) for the coach thread.  Only a floor
+# is needed: the available width is already bounded by the real widget
+# geometry via <Configure>, so an artificial ceiling could only ever strand
+# the text short of the bubble when the window is maximised.
 MIN_WRAPLENGTH = 240
-MAX_WRAPLENGTH = 900
+# Small allowance for CTkLabel internal padding so the text hugs the box.
+LABEL_INNER_PAD = 4
+
+
+def target_wraplength(px_width: int, scaling: float) -> int:
+    """Convert a Tk physical-pixel row width to an unscaled wraplength.
+
+    Tk reports widget widths in physical pixels while CTk ``wraplength`` is
+    interpreted unscaled, so divide first and only then subtract the pad.
+    There is deliberately no upper cap — the label's own allocated width is
+    the bound, which keeps the text flush with the box behind it at any
+    window size or display-scaling factor.
+    """
+    logical = max(1, int(px_width / (scaling or 1.0)))
+    return max(MIN_WRAPLENGTH, logical - LABEL_INNER_PAD)
 
 
 class ChatBubble(ctk.CTkFrame):
@@ -42,27 +56,36 @@ class ChatBubble(ctk.CTkFrame):
                                   justify='left', anchor='w')
             notice.pack(fill='x', pady=(6, 0))
             self._wrapped_labels.append(notice)
+        # Bind on both the bubble itself and its inner content frame: the
+        # content frame reliably reports growth, while the bubble catches
+        # shrink events (a CTkFrame's child canvas does not shrink with a
+        # shrinking parent until re-managed).  Both route through the same
+        # idempotent handler, which compares before configuring.
+        self.bind('<Configure>', self._wrap_content, add='+')
         content.bind('<Configure>', self._wrap_content, add='+')
 
     def _initial_wraplength(self) -> int:
         """Reasonable starting width before the first Configure event lands."""
         try:
             toplevel_width = self.winfo_toplevel().winfo_width()
+            scaling = float(self._get_widget_scaling()) or 1.0
         except Exception:
-            toplevel_width = 0
+            return MIN_WRAPLENGTH
         if toplevel_width and toplevel_width > 1:
-            return self._clamped(toplevel_width - 120)
-        return 650   # legacy default while the window is still unmeasured
-
-    def _clamped(self, width: int) -> int:
-        return max(MIN_WRAPLENGTH, min(MAX_WRAPLENGTH, int(width)))
+            return target_wraplength(toplevel_width, scaling)
+        return MIN_WRAPLENGTH
 
     def _wrap_content(self, event):
-        # Tk reports physical pixels; CTk wrap lengths use unscaled dimensions.
-        # Clamp so the text follows the bubble when the window is small and
-        # grows with it when the window is opened wide.
-        width = max(1, int(event.width / self._get_widget_scaling()))
-        width = self._clamped(width)
+        # Track the configured widget's own row width so the text always
+        # fills the box behind it — no upper cap, only the minimum floor.
+        try:
+            scaling = float(self._get_widget_scaling()) or 1.0
+        except Exception:
+            scaling = 1.0
+        width = target_wraplength(max(1, event.width), scaling)
         for label in self._wrapped_labels:
-            if label.cget('wraplength') != width:
-                label.configure(wraplength=width)
+            try:
+                if label.winfo_exists() and label.cget('wraplength') != width:
+                    label.configure(wraplength=width)
+            except Exception:
+                pass                      # widget torn down mid-resize

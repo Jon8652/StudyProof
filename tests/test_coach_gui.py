@@ -71,6 +71,79 @@ def test_unconfigured_coach_opens_and_only_prompts_on_interaction(monkeypatch):
         app.destroy()
 
 
+def _message_labels(bubble):
+    return [child for child in bubble._wrapped_labels]
+
+
+def test_coach_text_width_tracks_the_bubble_at_every_window_size(monkeypatch):
+    """Maximised windows must not strand the text at a fixed cap.
+
+    Regression: wraplength was clamped to 900px, so on a wide screen the
+    coach column stayed narrow with dead space right of the bubble card.
+    The wraplength must instead follow each widget's own allocated width
+    (floor only), and shrink again when the window is restored.
+    """
+    from app.core.models import CoachTurn
+    from app.gui.widgets.chat_bubble import MIN_WRAPLENGTH, target_wraplength
+
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = state.create_coach_session([state.source_ref_for('note', note.id)]).value
+    long_text = ('Photosynthesis converts light energy into chemical energy. ' * 40).strip()
+    session.turns.append(CoachTurn.create('coach', 'question', long_text))
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.withdraw()
+        app.geometry('1600x900')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        pump(app, lambda: bool(screen.thread.winfo_children()))
+        bubbles = list(screen.thread.winfo_children())
+        assert bubbles
+        # Pump until the Configure-driven wraplength settles at the wide size.
+        def wrapped_wide():
+            app.update_idletasks()
+            app.update()
+            widths = [label.cget('wraplength') for b in bubbles for label in _message_labels(b)]
+            return len(widths) == 2 and all(w > 900 for w in widths)
+        deadline = time.monotonic() + 5
+        while not wrapped_wide() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert wrapped_wide(), 'wide-window wraplength never exceeded the old 900px ceiling'
+        for b in bubbles:
+            for label in _message_labels(b):
+                # Text may exceed the old cap but never the bubble's own row.
+                assert label.cget('wraplength') <= max(label.winfo_width(), 1) + 2 or \
+                    label.cget('wraplength') <= target_wraplength(
+                        b.winfo_width(), float(b._get_widget_scaling()))
+        # Restoring to a small window must narrow the text again promptly.
+        app.geometry('700x600')
+        def wrapped_narrow():
+            app.update_idletasks()
+            app.update()
+            widths = [label.cget('wraplength') for b in bubbles for label in _message_labels(b)]
+            return len(widths) == 2 and all(w < 900 for w in widths)
+        deadline = time.monotonic() + 5
+        while not wrapped_narrow() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert wrapped_narrow(), 'shrink events did not re-wrap the coach text'
+        # Header/notice/confidence rows track their own allocated width too.
+        header_target = target_wraplength(max(screen.header.winfo_width(), 1),
+                                          float(screen._get_widget_scaling()))
+        assert screen.header.cget('wraplength') == max(MIN_WRAPLENGTH, header_target)
+    finally:
+        for screen in app.screens.values():
+            if hasattr(screen, 'shutdown'):
+                screen.shutdown()
+        app.destroy()
+
+
 def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
@@ -291,3 +364,20 @@ def test_statistics_uses_coach_topics_and_resumes_exact_revision(monkeypatch):
             if hasattr(screen, 'shutdown'):
                 screen.shutdown()
         app.destroy()
+
+
+def test_prompt_terminology_calls_the_material_notes():
+    """Coach prompts must never name the material a 'source pack'.
+
+    The learner-facing JSON payload key stays ``source_pack`` (data
+    contract), but every instruction sentence must say "notes" so the
+    model never echoes internal terminology in its replies.
+    """
+    from app.core.agent import prompt
+
+    for name in ('SYSTEM_PROMPT', 'CONVERSATION_PROMPT'):
+        text = getattr(prompt, name)
+        assert 'source pack' not in text.replace(
+            'never use the terms "source pack"', '')          # only as forbidden term
+        assert 'the pack' not in text
+        assert 'notes' in text
