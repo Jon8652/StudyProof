@@ -1,5 +1,7 @@
 """Thin coaching UI; workers only generate, main thread commits."""
 import threading
+import time
+
 import customtkinter as ctk
 from app.core.agent.coach_service import CoachService
 from app.core.agent.grounding import PageIndex
@@ -19,6 +21,9 @@ from app.gui.workers import UIEventQueue
 BOTTOM_EPSILON_PX = 4   # tolerance so sub-pixel rounding/DPI scaling doesn't unstick the view
 SETTLE_POLL_MS = 60     # interval of the post-rebuild settle poll
 SETTLE_MAX_TICKS = 12   # ~0.7 s worst case; stops early once the height stabilises
+# Window (ms) in which a pointer event must have been seen for a ``yview``
+# write to count as a user gesture (see tracked_yview / _last_gesture_ms).
+GESTURE_EVIDENCE_MS = 250
 
 
 class CoachScreen(BaseScreen):
@@ -91,6 +96,12 @@ class CoachScreen(BaseScreen):
         # "jump toward the bottom then snap back" flicker after clicking
         # "Sessions…" / "Revise Weak Topics" mid-manual-scroll.
         self._last_gesture_ms = 0       # last time a real pointer gesture was observed
+        # True while the thread's children are being destroyed/repacked in
+        # refresh().  Tk clamps the viewport through the canvas ``yview``
+        # command during that window (the scrollregion shrinks with the old
+        # bubbles gone); those writes carry no pointer evidence and must be
+        # inert — see tracked_yview below.
+        self._rebuilding = False
         # --- Event-driven arming (the ONLY legitimate auto-scroll trigger) -
         # Auto-scroll follows *events*, never rendering: opening/resuming/
         # switching to a session, a message the user just sent, and a new
@@ -159,7 +170,32 @@ class CoachScreen(BaseScreen):
 
             def tracked_yview(*args, **kw):
                 requested = bool(args) and str(args[0]).lower() in ('scroll', 'moveto')
+                manual = False
                 if requested and self._auto_scroll_depth == 0:
+                    # Gesture-evidence gate: a yview WRITE counts as a user
+                    # gesture only if a pointer event (wheel observer,
+                    # scrollbar press/drag, CTk's wheel handler) fired within
+                    # GESTURE_EVIDENCE_MS.  Without that evidence the write is
+                    # Tk's own clamp against a stale scrollregion — during a
+                    # rebuild (destroy-and-repack) those must stay completely
+                    # inert: no sequence bump, no pin release, no veto of an
+                    # armed follow.  That false veto was the whole "jump
+                    # toward the bottom then snap back" flicker after closing
+                    # the Sessions / Revise-Weak-Topics dialogs mid-scroll.
+                    # Outside a rebuild, untagged writes can only come from a
+                    # genuine interaction (or its immediate aftermath), so
+                    # they still count — legacy paths that call the raw
+                    # command stay covered.
+                    evidence = (time.monotonic() - self._last_gesture_ms) * 1000.0 \
+                        <= GESTURE_EVIDENCE_MS
+                    # During a rebuild, clamp-writes are inert ONLY while the
+                    # user is actually browsing history.  If we're still
+                    # stuck-to-bottom, a legitimate follow was armed and any
+                    # write reaching here must be honoured as the gesture it
+                    # came with — keeping the veto active preserves the
+                    # "user scrolled away during generation" behaviour.
+                    manual = evidence or (not self._rebuilding or self._stick_to_bottom)
+                if manual:
                     # Genuine user gesture (wheel, thumb drag, trackbar
                     # click): hand the viewport to the user immediately and
                     # cancel every pending auto-pin/settle job.  Downward
@@ -226,11 +262,39 @@ class CoachScreen(BaseScreen):
                     in (canvas, self.thread))
             except Exception:
                 over_us = False
+            if over_us:
+                # Stamp gesture evidence even when the pin is already
+                # released, so the scroll CTk's handler is about to perform
+                # is classified as a user gesture by tracked_yview.
+                self._last_gesture_ms = time.monotonic()
             if over_us and self._auto_scroll_depth == 0 \
                     and self.winfo_exists() and self._stick_to_bottom:
                 self._release_pin_for_manual_scroll()
             return _orig_wheel_all(event)
         self.thread._mouse_wheel_all = _tracked_mouse_wheel_all
+        # Scrollbar interaction channel: CTk routes thumb drags and trackbar
+        # clicks through the scrollbar's command callback, which it wired to
+        # ``canvas.yview`` at construction time — capturing the bound method
+        # then would bypass tracked_yview entirely.  Repoint the scrollbar's
+        # stored callback (CTkScrollbar keeps it as ``_command``) at a shim
+        # that stamps gesture evidence and forwards to the wrapper.  A real
+        # click/drag always runs the scrollbar's own bindings before this
+        # callback fires; Tk's internal clamp writes never route through the
+        # scrollbar, so evidence stamped here is genuine.
+        scrollbar = getattr(self.thread, '_scrollbar', None)
+        if scrollbar is not None:
+            _orig_scroll_cmd = getattr(scrollbar, '_command', None)
+            if _orig_scroll_cmd is not None:
+                def _scrollbar_command(*args):
+                    self._last_gesture_ms = time.monotonic()
+                    return tracked_yview(*args)
+                scrollbar._command = _scrollbar_command
+
+            def _stamp_gesture(event=None):
+                self._last_gesture_ms = time.monotonic()
+            for seq in ('<ButtonPress-1>', '<ButtonPress-2>', '<ButtonPress-3>',
+                        '<B1-Motion>', '<B2-Motion>'):
+                scrollbar.bind(seq, _stamp_gesture, add='+')
         # Bubbles re-wrap their text asynchronously via their own Configure
         # handlers, so the thread keeps growing *after* refresh() has packed
         # everything; CTk's deferred scrollregion rewrite lands in the same
@@ -636,8 +700,18 @@ class CoachScreen(BaseScreen):
         # shared popup window is only hidden (never destroyed) here, which is
         # what keeps rapid refresh/hover churn from crashing Tk on Windows.
         Tooltip.dismiss_all()
+        # Mark the destroy-and-repack window: while it is open, any yview
+        # write without fresh pointer evidence is Tk clamping against the
+        # collapsing scrollregion and must not be mistaken for a gesture
+        # (tracked_yview).  Cleared at idle, once every queued Configure /
+        # clamp-write from this teardown has been processed.
+        self._rebuilding = True
         for child in self.thread.winfo_children():
             child.destroy()
+        try:
+            self.after_idle(lambda: setattr(self, '_rebuilding', False))
+        except Exception:
+            self._rebuilding = False
         if session:
             notes = {n.id: n for n in self.state.dataset.notes}
             docs = {d.id: d for d in self.state.dataset.documents}
@@ -1080,7 +1154,38 @@ class CoachScreen(BaseScreen):
         # so this only runs while the pointer is over the chat thread.
         if not self.winfo_exists():
             return
+        # Stamp gesture evidence FIRST: the yview write produced by this
+        # notch must be recognised as user-driven by tracked_yview even if
+        # another binding executes the scroll before we release the pin.
+        self._last_gesture_ms = time.monotonic()
+        was_stuck = self._stick_to_bottom
         self._release_pin_for_manual_scroll()
+        if not was_stuck:
+            # Pin already released (e.g. a second wheel observer fired for
+            # this same notch, or the user is mid-browse): don't bump the
+            # sequence again — tracked_yview classifies the resulting write
+            # via the fresh evidence stamp instead, keeping exactly one
+            # manual-scroll id per notch.
+            return
+        # The wheel event itself is the manual gesture — bump the sequence
+        # directly instead of relying on tracked_yview to classify CTk's
+        # follow-up write, which may arrive after the 250 ms evidence window
+        # on a slow machine or never come at all (e.g. view already pinned
+        # at the bottom, so CTk's scroll clamps to a no-op).
+        self._manual_scroll_seq += 1
+        seq = self._manual_scroll_seq
+        # Up = negative units for Linux Button-4/5; Windows/mac delta is
+        # positive when scrolling up.
+        direction_up = True
+        try:
+            if event.num in (4, 5):
+                direction_up = event.num == 4
+            else:
+                direction_up = getattr(event, 'delta', 0) > 0
+        except Exception:
+            direction_up = True
+        if not direction_up:
+            self.after_idle(lambda: self._check_bottom_after_scroll(seq))
 
     def _check_bottom_after_scroll(self, seq=None):
         # Deferred verdict for a downward manual gesture: if the settled
