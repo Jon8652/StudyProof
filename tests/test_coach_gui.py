@@ -436,6 +436,39 @@ def _settle(app, screen, timeout=3):
     return False
 
 
+class GatedProvider:
+    """Scripted reply generator that blocks until a test releases it.
+
+    Lets a test hold a coach turn "in flight" deterministically — no race
+    against thread scheduling — so behaviour *during* generation can be
+    asserted (e.g. manual scrolling must survive the eventual reply).
+    ``prepare_turn`` probes the provider synchronously on the main thread,
+    so only the worker-side generations (kinds listed in ``gate_kinds``)
+    block on the gate; the rest answer immediately.
+    """
+    confidence = 'high'
+    release = threading.Event()
+    started = threading.Event()
+    gate_kinds = ()
+
+    def __init__(self, settings):
+        pass
+
+    def generate(self, context):
+        from app.core.agent.schema import CoachReply
+        if context['kind'] in self.gate_kinds:
+            self.started.set()
+            assert self.release.wait(5), 'provider was never released'
+        return CoachReply(context['kind'],
+                          'Confidence: high. Explain how sunlight supplies energy.')
+
+    def assess_answer(self, context):
+        from app.core.agent.schema import AnswerAssessment
+        span = context['pack'].spans[0]
+        return AnswerAssessment(span.source_id, 'Light and energy',
+                                context['question'].prompt, 95)
+
+
 def test_thread_pins_to_bottom_when_content_overflows(monkeypatch):
     """Long sessions must land with the newest bubble fully visible."""
     state = AppState()
@@ -485,10 +518,12 @@ def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted
     except tkinter.TclError as exc:
         pytest.skip(f'Tk display unavailable: {exc}')
     try:
+        # Mapped (never withdrawn): a withdrawn window receives no geometry
+        # events, so every widget stays un-mapped at 1px and neither the pin
+        # nor _thread_at_bottom() can ever judge real positions.
         app.geometry('+3000+3000')
         app.deiconify()
         app.geometry('700x400')
-        app.withdraw()          # send flow needs no real geometry events
         app.show_screen('coach')
         screen = app.screens['coach']
         state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
@@ -500,7 +535,6 @@ def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
         # Fill the thread until it definitely overflows the small viewport.
-        _seed_long_session(state, note, turns=0)
         from app.core.models import CoachTurn
         long_text = ('Energy explanation detail. ' * 30).strip()
         for i in range(20):
@@ -509,16 +543,21 @@ def test_sending_a_message_resticks_the_view_to_the_bottom(monkeypatch, scripted
         screen.refresh()
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
-        # Park mid-scroll, then send — the reply must pull the view back down.
-        screen._thread_canvas.yview_moveto(0.3)
-        app.update()          # let the wheel-observer verdict settle first
+        # Park mid-scroll with a genuine upward user gesture — the pin
+        # releases and Tk leaves the view exactly where the user put it.
+        screen._thread_canvas.yview_scroll(-5000, 'units')
         assert not screen._stick_to_bottom
+        parked = screen._thread_canvas.yview()[0]
+        # Now send: the user's message is brand-new content, which must
+        # re-arm auto-scroll even though the user had scrolled away first.
         screen.composer.insert('1.0', 'Energy from sunlight')
         screen.send()
         pump(app, lambda: not screen.busy)
         assert screen._stick_to_bottom, 'send/reply must restick to the bottom'
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
+        assert screen._thread_canvas.yview()[0] > parked, \
+            'the reply must actually pull the view back down'
     finally:
         for s in app.screens.values():
             if hasattr(s, 'shutdown'):
@@ -600,8 +639,13 @@ def test_scrolling_up_releases_the_pin(monkeypatch):
         assert abs(canvas.yview()[0] - before) < 0.02, \
             'view was yanked away after the user took over'
         # Wheel motion over the thread releases the pin too, even when the
-        # gesture happens while auto-scroll jobs are still pending.
-        screen.refresh()                     # re-arms pin + settle poll
+        # gesture happens while auto-scroll jobs are still pending — but a
+        # genuine content change must arm them first.  A plain refresh() of
+        # identical content deliberately no longer does (button clicks that
+        # only re-render must never yank the viewport).
+        from app.core.models import CoachTurn
+        session.turns.append(CoachTurn.create('user', 'answer', 'Fresh content.'))
+        screen.refresh()
         assert screen._stick_to_bottom
         assert screen._settle_job is not None or screen._pin_job is not None
         screen._on_thread_wheel_event(None)  # wheel observer fires first
@@ -634,12 +678,14 @@ def test_scrolling_up_releases_the_pin(monkeypatch):
         app.destroy()
 
 
-def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
+def test_manual_scroll_survives_a_coach_reply(monkeypatch):
     """Auto-scroll may only follow NEW content — never fight a live manual scroll.
 
     The wheel-up handler runs *before* CTk's own bind_all wheel handler
     scrolls the canvas; by the time the deferred reply rebuild reaches its
-    idle pin, the user's newer gesture must veto it entirely.
+    idle pin, the user's newer gesture must veto it entirely.  A gated
+    provider holds the turn in flight deterministically so the scroll-up
+    provably happens *during* generation (no race against thread timing).
     """
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
@@ -650,6 +696,8 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
         app = MainWindow(app_state=state)
     except tkinter.TclError as exc:
         pytest.skip(f'Tk display unavailable: {exc}')
+    GatedProvider.release.clear()
+    GatedProvider.started.clear()
     try:
         app.geometry('+3000+3000')
         app.deiconify()
@@ -658,10 +706,13 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
         screen = app.screens['coach']
         canvas = screen._thread_canvas
         state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
-        screen.service.live_factory = scripted_provider
+        screen.service.live_factory = GatedProvider
         session = screen.service.start_session([('note', note.id)]).value
         screen.session_id = session.id
+        # First turn must complete (release gate) before the second starts.
         screen.request('question')
+        pump(app, GatedProvider.started.is_set)
+        GatedProvider.release.set()
         pump(app, lambda: not screen.busy)
         assert _settle(app, screen)
         from app.core.models import CoachTurn
@@ -673,13 +724,21 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
         pump(app, lambda: len(screen.thread.winfo_children()) >= 21)
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
-        # Start a turn, then scroll up to read history WHILE the coach thinks.
+        # Start a turn and keep it in flight behind the gate...
+        GatedProvider.release.clear()
+        GatedProvider.started.clear()
         screen.request('question')
+        pump(app, GatedProvider.started.is_set)
         assert screen.busy
+        # ...then scroll up to read history WHILE the coach is still thinking.
         screen._on_thread_wheel_event(None)      # wheel observer...
         canvas.yview_scroll(-400, 'units')       # ...then CTk scrolls up
         parked = canvas.yview()[0]
         assert parked < 0.99
+        # Release the reply: its rebuild arms a fresh window, and stickiness
+        # re-engages for FUTURE changes — but the user's newer gesture vetoes
+        # every pending pin, so the viewport itself must not move.
+        GatedProvider.release.set()
         pump(app, lambda: not screen.busy)       # reply lands, refresh re-arms
         for _ in range(10):                      # let any stray pin fire
             app.update()
@@ -687,6 +746,77 @@ def test_manual_scroll_survives_a_coach_reply(monkeypatch, scripted_provider):
         assert screen._stick_to_bottom, 'a fresh reply resticks for the NEXT change'
         assert abs(canvas.yview()[0] - parked) < 0.02, \
             'the reply rebuild yanked the view away from the user mid-flight'
+    finally:
+        GatedProvider.release.set()
+        for s in app.screens.values():
+            if hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+def test_repeated_refresh_of_identical_content_never_moves_the_view(monkeypatch):
+    """Regression: button clicks must not trigger auto-scroll.
+
+    "Sessions…" closing without switching and the weak-topics picker churn
+    used to end in refresh() calls that re-rendered an *identical* thread —
+    each one armed a fresh pin window and yanked the viewport back down
+    mid-manual-scroll.  Auto-scroll may only follow new conversation content
+    (a sent message or a coach reply), so a same-content rebuild must leave
+    the view exactly where the user parked it.
+    """
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight for photosynthesis.').value
+    state.set_ai_settings({'base_url': 'https://example.test/v1', 'api_key': 'test-key'})
+    session = _seed_long_session(state, note, turns=25)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('+3000+3000')
+        app.deiconify()
+        app.geometry('700x400')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        canvas = screen._thread_canvas
+        screen.resume_session(session.id)
+        pump(app, lambda: len(screen.thread.winfo_children()) >= 25)
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
+        # User scrolls up into history...
+        canvas.yview_scroll(-5000, 'units')
+        assert not screen._stick_to_bottom
+        parked = canvas.yview()[0]
+        # ...then clicks buttons whose handlers end in refresh() with the
+        # thread content unchanged (the old double-refresh of sessions(),
+        # redundant manual refreshes).  Nothing may arm a pin window.
+        from app.core.models import CoachTurn
+        screen.refresh()
+        screen.refresh()
+        assert screen._pin_job is None and screen._settle_job is None, \
+            'an identical re-render must not schedule any auto-scroll work'
+        for _ in range(10):
+            app.update()
+            time.sleep(.02)
+        assert abs(canvas.yview()[0] - parked) < 0.02, \
+            'a same-content refresh dragged the view back to the bottom'
+        # The real path: clicking "Sessions…" but picking nothing ends in
+        # refresh() too — still identical content, still must not move.
+        monkeypatch.setattr(screen, 'wait_window', lambda dialog: None)
+        screen.sessions()
+        assert screen._pin_job is None and screen._settle_job is None
+        for _ in range(10):
+            app.update()
+            time.sleep(.02)
+        assert abs(canvas.yview()[0] - parked) < 0.02
+        # Sanity: genuine NEW content through the very same choke point DOES
+        # arm a window and land at the bottom again.
+        session.turns.append(CoachTurn.create('coach', 'question', 'Brand-new question.'))
+        screen.refresh()
+        assert screen._stick_to_bottom
+        assert _settle(app, screen)
+        assert screen._thread_at_bottom()
     finally:
         for s in app.screens.values():
             if hasattr(s, 'shutdown'):

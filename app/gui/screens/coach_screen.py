@@ -70,6 +70,20 @@ class CoachScreen(BaseScreen):
         # Once the user scrolls away, sticking stays off until they return to
         # the bottom or the next rebuild arms a fresh window.
         self._stick_to_bottom = True    # False only while the user browses history
+        # --- Content-change detection (the *only* legitimate auto-scroll
+        # trigger) ----------------------------------------------------------
+        # Auto-scroll must follow NEW conversation content — a message the
+        # user sent, or a reply/cancel/assessment notice from the coach — and
+        # nothing else.  Button clicks that merely re-render the thread with
+        # identical turns ("Sessions…" closing its dialog without switching,
+        # opening/closing the "Revise Weak Topics" picker, refreshing the same
+        # session) used to arm a fresh pin window here and yank the viewport
+        # back down mid-manual-scroll.  refresh() therefore snapshots the
+        # newest turn after every rebuild; pins are armed only when that
+        # snapshot differs from the previous one.  The sentinel starts
+        # mismatched so the very first build of a session still lands at the
+        # newest message (opening/resuming/switching sessions).
+        self._last_content_key = None   # (session_id, turn_count, last_turn_text)
         self._pin_job = None            # pending after_idle pin callback
         self._settle_job = None         # periodic settle-poll after a rebuild
         self._settle_ticks = 0
@@ -154,17 +168,34 @@ class CoachScreen(BaseScreen):
                         self.after_idle(lambda: self._check_bottom_after_scroll(seq))
                 return orig_yview(*args, **kw)
             canvas.yview = tracked_yview
-        # customtkinter's own bind_all wheel handler (``_mouse_wheel_all``)
-        # scrolls via ``self._parent_canvas.yview_scroll(...)`` — the bound
-        # *method*, captured before our wrapper existed — so a plain mouse
-        # wheel would move the view invisibly to the observer above and the
-        # pin would yank it back on the next content change.  Patch that
-        # method for this frame: scroll requests made while the pointer is
-        # over OUR canvas are genuine user gestures, so release the pin
-        # first (the actual scroll then runs through the tracked ``yview``
-        # command, which schedules the re-stick verdict for downward
-        # motion).  Wheels landing on other scrollable frames pass through
-        # untouched.
+            # ``canvas.yview_scroll`` / ``yview_moveto`` are bound methods
+            # captured straight from the Tk object — customtkinter's own
+            # wheel handler (``_mouse_wheel_all`` below) and the internal
+            # scrollbar callbacks call *those*, completely bypassing the
+            # wrapper above.  Wrap them as thin shims that route through the
+            # tracked command so EVERY scroll request — programmatic or
+            # user-driven, from any caller — lands in one observable place.
+            def tracked_yview_scroll(amount, what='units', *_rest):
+                return tracked_yview('scroll', amount, what)
+
+            def tracked_yview_moveto(fraction):
+                return tracked_yview('moveto', fraction)
+            canvas.yview_scroll = tracked_yview_scroll
+            canvas.yview_moveto = tracked_yview_moveto
+        # customtkinter binds its wheel handler (``_mouse_wheel_all``) via
+        # ``bind_all``, which registers on every widget of the class — the
+        # parent canvas included.  A wheel notch therefore runs the canvas's
+        # own binding *first*: our Enter/Leave-scoped ``bind_all`` observer
+        # only fires afterwards (and the instance-level patch below only
+        # covers the frame), so without a direct canvas binding an upward
+        # gesture would execute before the pin was released and a pending
+        # settle pass could yank the view back down.  Bind the release hook
+        # on the canvas itself for all wheel event flavours; harmless
+        # duplicates when several channels fire for one notch, since the
+        # release is idempotent.
+        if canvas is not None:
+            for wheel_seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+                canvas.bind(wheel_seq, self._on_thread_wheel_event, add='+')
         _orig_wheel_all = self.thread._mouse_wheel_all
 
         def _tracked_mouse_wheel_all(event):
@@ -325,8 +356,13 @@ class CoachScreen(BaseScreen):
         dialog = SessionsDialog(self, self.state, self.service)
         self.wait_window(dialog)
         if dialog.result:
+            # resume_session() refreshes itself; the extra refresh() used to
+            # re-render an identical thread and — because every rebuild armed
+            # a pin window — yank the viewport back to the bottom after a
+            # manual scroll whenever the button was pressed.
             self.resume_session(dialog.result)
-        self.refresh()
+        else:
+            self.refresh()
 
     def revise_weak_topics(self):
         if not self._require_connection():
@@ -584,29 +620,55 @@ class CoachScreen(BaseScreen):
         # resume / switch (resume_session, sessions, revise_topic), cancel
         # and background assessment completion.  Arming at the end of
         # refresh() therefore covers all current and future call paths with
-        # no per-callsite hooks to forget.
+        # no per-callsite hooks to forget.  BUT arming must follow *content*,
+        # not rendering: some buttons re-render an identical thread ("Sessions…"
+        # closing without switching, picker churn, redundant refreshes).  A
+        # snapshot of the newest turn decides whether anything new actually
+        # landed; only then may auto-scroll move the viewport.
         if session is not None:
-            # A (re)built thread means new content, so it ALWAYS lands at
-            # its bottom — absolute pinning, and any manual-scroll veto from
-            # before the rebuild expires here.  Switching to a shorter
-            # session scrolls *up* if the old view was parked mid-scroll;
-            # direction never matters.
-            self._stick_to_bottom = True
-            self._thread_needs_pin = True
-            self._reset_manual_scroll_baseline()
-            # Defer the pin until Tk's geometry manager has laid out the
-            # freshly packed bubbles.  In this very cycle every extent we
-            # could measure (canvas bbox, frame height) still describes the
-            # *previous* thread: pinning now clamps against stale numbers —
-            # too low after growth (newest bubble stays out of view), too
-            # high after switching to a shorter session (viewport parks over
-            # blank space).  The idle pass runs right after the queued
-            # Configure burst, and the settle poll + <Configure> hook below
-            # then keep re-pinning while async bubble re-wraps land.
-            self._schedule_thread_pin()
-            self._start_settle_poll()
+            content_key = self._thread_content_key(session)
+            content_changed = content_key != self._last_content_key
+            self._last_content_key = content_key
+            if content_changed:
+                # New conversation content (a sent message, a coach reply, a
+                # cancel/assessment notice) or a freshly built session view.
+                # It ALWAYS lands at its bottom — absolute pinning, and any
+                # manual-scroll veto from before this change expires here.
+                # Switching to a shorter session scrolls *up* if the old view
+                # was parked mid-scroll; direction never matters.
+                self._stick_to_bottom = True
+                self._thread_needs_pin = True
+                self._reset_manual_scroll_baseline()
+                # Defer the pin until Tk's geometry manager has laid out the
+                # freshly packed bubbles.  In this very cycle every extent we
+                # could measure (canvas bbox, frame height) still describes
+                # the *previous* thread: pinning now clamps against stale
+                # numbers — too low after growth (newest bubble stays out of
+                # view), too high after switching to a shorter session
+                # (viewport parks over blank space).  The idle pass runs right
+                # after the queued Configure burst, and the settle poll +
+                # <Configure> hook below then keep re-pinning while async
+                # bubble re-wraps land.
+                self._schedule_thread_pin()
+                self._start_settle_poll()
+            # else: pure re-render of content the user already saw — leave
+            # the viewport exactly where it is (manual browsing untouched).
         else:
             self._stop_settle_poll()
+
+    def _thread_content_key(self, session):
+        """Snapshot identifying the thread's rendered conversation content.
+
+        Two turns count as "the same content" when the session id, the number
+        of visible turns, and the newest turn's text all match what refresh()
+        last rendered.  Any genuine addition (user message, coach reply,
+        cancel/assessment notice, revision edit) changes the key; a button
+        click that merely rebuilds the identical thread does not — so
+        auto-scroll windows are armed by new content alone.
+        """
+        visible = [t for t in session.turns if t.kind != 'confidence']
+        last = visible[-1] if visible else None
+        return (self.session_id, len(visible), getattr(last, 'text', None))
 
     # ------------------------------------------------------------------
     # Auto-scroll ("stick to bottom")
