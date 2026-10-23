@@ -55,11 +55,14 @@ class CoachScreen(BaseScreen):
         # always kept in view unless the user deliberately scrolls away to
         # read history.  All values are main-thread only; nothing touches Tk
         # from a worker (turn results already arrive via UIEventQueue).
-        # User agency preserved: auto-scroll fires ONLY inside a bounded
-        # "settle window" opened by refresh() when new content is built into
-        # the thread.  Outside that window nothing ever moves the view on a
-        # timer, so ordinary layout churn (window resizes, hover effects,
-        # suggestion popups) can never fight a manual scroll.  Manual input
+        # User agency preserved: auto-scroll fires ONLY in the bounded
+        # "settle window" opened by a *conversation-event* rebuild —
+        # opening/resuming/switching a session, a message the user sent, or a
+        # new coach reply (see _pending_follow_event below).  Button clicks
+        # and other plain re-renders open no window at all, and outside any
+        # window nothing ever moves the view on a timer, so ordinary layout
+        # churn (window resizes, hover effects, suggestion popups) can never
+        # fight a manual scroll.  Manual input
         # is detected on two channels:
         #   * wheel events over the thread (scoped via Enter/Leave), and
         #   * the canvas ``yview`` command, which CTk routes *every* scroll
@@ -346,6 +349,16 @@ class CoachScreen(BaseScreen):
             result = self.service.start_session(dialog.result)
             if result.ok:
                 self.session_id = result.value.id
+                # Opening a brand-new session is a conversation event: land
+                # at its newest message.  Without this flag the first
+                # refresh() of the (short) new thread renders inertly while
+                # the viewport keeps the OLD scroll fraction from the
+                # previous, much longer session — which maps to the top of a
+                # near-empty canvas, i.e. the "blank until I scroll" glitch.
+                # request() deliberately never arms anything itself (button
+                # clicks must not move the view); the events declare
+                # themselves here, mirroring revise_topic()/resume_session().
+                self._pending_follow_event = True
                 self.request('question')
             else:
                 self.notice.configure(text=result.message)
