@@ -472,7 +472,11 @@ def test_conversation_accepts_natural_replies(coach, reply):
     assert result.text
     assert len(calls) == 1
     assert service.complete_turn(job, ActionResult(True, value=result)).ok
-    assert session.questions[-1].feedback_given
+    assert session.questions[0].feedback_given
+    if 'What do mitochondria do?' in result.text:
+        assert session.questions[-1].prompt == 'What do mitochondria do?'
+        assert session.questions[-1].status == 'open'
+        assert session.questions[-1].first_answer is None
     assert session.questions[-1].confidence is None
     payload = json.loads(messages(job)[1]['content'])
     assert 'response_example' not in payload

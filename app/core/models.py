@@ -341,6 +341,7 @@ class CoachTurn:
     ungrounded_count: int = 0
     recap: dict | None = None               # rendered recap links and follow-up state
     assessment: dict | None = None          # private, immutable assessment evidence
+    answer_intent: bool | None = None       # whether a learner turn was an answer attempt
 
     @classmethod
     def create(cls, role: str, kind: str, text: str,
@@ -348,13 +349,15 @@ class CoachTurn:
                confidence: str | None = None,
                quotes: list[dict[str, Any]] | None = None,
                ungrounded_count: int = 0,
-               at: datetime | None = None) -> "CoachTurn":
+               at: datetime | None = None,
+               answer_intent: bool | None = None) -> "CoachTurn":
         return cls(
             id=str(uuid.uuid4()),
             at_local=at if at is not None else datetime.now(),
             role=role, kind=kind, text=text, question_id=question_id,
             mode=mode, confidence=confidence,
             quotes=list(quotes or []), ungrounded_count=ungrounded_count,
+            answer_intent=answer_intent,
         )
 
 

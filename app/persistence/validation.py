@@ -519,6 +519,7 @@ def _parse_turn(record: Any) -> CoachTurn | None:
             ungrounded_count=max(0, _parse_int(record.get("ungrounded_count"))),
             recap=_parse_recap(record.get("recap")) if kind == 'recap' else None,
             assessment=_parse_assessment(record.get("assessment")),
+            answer_intent=record.get('answer_intent') if type(record.get('answer_intent')) is bool else None,
         )
     except Exception:
         return None
@@ -531,8 +532,12 @@ def _parse_recap(value):
     for item in value.get('loose_ends', [])[:5] if isinstance(value.get('loose_ends'), list) else []:
         if isinstance(item, dict) and all(isinstance(item.get(k), str) for k in
                                          ('session_id', 'question_id', 'question', 'label', 'asked')):
-            links.append({k: item[k][:240] for k in
-                          ('session_id', 'question_id', 'question', 'label', 'asked')})
+            link = {k: item[k][:240] for k in
+                    ('session_id', 'question_id', 'question', 'label', 'asked')}
+            for key in ('title', 'turn_id'):
+                if isinstance(item.get(key), str):
+                    link[key] = item[key][:240]
+            links.append(link)
     return {'days': value['days'], 'loose_ends': links,
             'offer': value['days'] == 7 and value.get('offer') is True,
             'revise': value.get('revise') is True,

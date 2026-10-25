@@ -53,7 +53,7 @@ def test_recap_offline_offer_yes_no_reopen_and_repeat(recap_app):
     weekly = session.turns[-1]
     assert weekly.kind == 'recap' and weekly.recap['offer']
     bubble = screen._rendered_turns[-1][1]
-    assert any('Resume:' in b.cget('text') for b in bubble.recap_buttons)
+    assert any(b.cget('text') == 'Resume' for b in bubble.recap_buttons)
     assert all(str(b._canvas.cget('takefocus')) == '1' for b in bubble.recap_buttons)
     next(b for b in bubble.recap_buttons if b.cget('text').startswith('Yes')).invoke()
     pump(app, lambda: not screen.busy)
@@ -149,3 +149,70 @@ def test_provider_failure_falls_back_and_empty_preview_creates_no_session(recap_
     pump(app, lambda: not screen.busy)
     assert len(state.dataset.coach_sessions) == count
     assert screen._recap_preview.turns[-1].kind == 'recap'
+
+
+def test_mixed_topic_recap_has_titled_cards_plain_resume_and_recovers_inline_question(recap_app):
+    from app.core.models import SourceRef
+    app, screen, state, session, question = recap_app
+    app.geometry('1100x800')
+    app.deiconify()
+    other = state.create_note('Welcome — stranger', 'The stranger discovers a letter.').value
+    session.sources.append(SourceRef('note', other.id, other.title))
+    switch = CoachTurn.create('user', 'answer', 'Can we study the stranger instead?', question.id)
+    switch.answer_intent = False
+    question.first_answer, question.first_answer_at = switch.text, switch.at_local
+    question.status = 'closed'
+    follow = CoachTurn.create('coach', 'feedback', 'What does the stranger discover?', question.id)
+    session.turns.extend([switch, follow])
+    screen.request_recap()
+    pump(app, lambda: not screen.busy)
+    app.update_idletasks()
+    turn = session.turns[-1]
+    bubble = screen._rendered_turns[-1][1]
+    assert len(turn.recap['loose_ends']) == len(bubble.recap_cards) == 2
+    resumes = [b for b in bubble.recap_buttons if b.cget('text') == 'Resume']
+    assert len(resumes) == 2
+    texts = [label.cget('text') for label in bubble._wrapped_labels]
+    assert 'How do plants use sunlight?' in texts
+    assert 'What does the stranger discover?' in texts
+    card_texts = [label.cget('text') for label in bubble._wrapped_labels
+                  if label.master.master in bubble.recap_cards]
+    assert not any('Biology, Welcome' in text for text in card_texts)
+    loose_heading = next(label for label in bubble._wrapped_labels if label.cget('text') == 'Loose ends')
+    next_heading = next(label for label in bubble._wrapped_labels if label.cget('text') == 'Your next step')
+    assert all(loose_heading.winfo_y() < card.winfo_y() < next_heading.winfo_y()
+               for card in bubble.recap_cards)
+    novel_index = next(i for i, item in enumerate(turn.recap['loose_ends'])
+                       if item['question'] == 'What does the stranger discover?')
+    novel_link = turn.recap['loose_ends'][novel_index]
+    assert session.question_by_id(novel_link['question_id']) is None
+    resumes[novel_index].invoke()
+    app.update()
+    recovered = session.question_by_id(novel_link['question_id'])
+    assert recovered.prompt == 'What does the stranger discover?'
+    assert screen._resume_question_id == recovered.id
+    assert screen.service.submit_message(session.id, 'A letter.', recovered.id).ok
+    assert recovered.first_answer == 'A letter.'
+    # The other topic still has its own Resume and can be reopened even
+    # though a topic-switch message had occupied its immutable first turn.
+    original_link = next(item for item in turn.recap['loose_ends'] if item['question_id'] == question.id)
+    screen.resume_recap_question(original_link)
+    assert question.status == 'open'
+    assert screen._resume_question_id == question.id
+    assert screen.service.submit_message(session.id, 'Plants use it as energy.', question.id).ok
+
+
+def test_saved_legacy_recap_uses_plain_resume_without_combined_source_heading(recap_app):
+    app, screen, state, session, question = recap_app
+    turn = CoachTurn.create('coach', 'recap', 'An older saved recap.')
+    turn.recap = {'days': 7, 'offer': False, 'loose_ends': [{
+        'session_id': session.id, 'question_id': question.id,
+        'question': question.prompt, 'label': 'Linear layer plus softmax, Welcome — stranger',
+        'asked': 'Sun 25 Oct'}]}
+    session.turns.append(turn)
+    screen.refresh()
+    bubble = screen._rendered_turns[-1][1]
+    assert [b.cget('text') for b in bubble.recap_buttons] == ['Resume']
+    texts = [label.cget('text') for label in bubble._wrapped_labels]
+    assert question.prompt in texts
+    assert not any('softmax, Welcome' in text for text in texts)
