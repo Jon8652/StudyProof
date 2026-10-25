@@ -1,6 +1,7 @@
 """Local recap facts and tone rules. No provider, persistence or GUI access."""
 from collections import Counter
 from datetime import date, datetime, timedelta
+from app.core.agent.questions import question_entries
 
 LOW_RATIO = .70
 HEAVY_RATIO = 1.50
@@ -58,11 +59,8 @@ def build_recap_payload(dataset, days=7, today=None):
                 if start <= turn.at_local.date() <= today:
                     confidence_events.append((turn.at_local, rating['score']))
         active = start <= session.created_at_local.date() <= today
-        asked = {}
         for turn in turns:
             day = turn.at_local.date()
-            if turn.kind in ('question', 'followup') and turn.question_id:
-                asked.setdefault(turn.question_id, turn.at_local)
             # Recaps and navigation must not manufacture practice activity.
             if turn.kind not in ('question', 'followup', 'answer', 'revision', 'hint', 'feedback'):
                 continue
@@ -84,15 +82,13 @@ def build_recap_payload(dataset, days=7, today=None):
                     topics[key] += 1
         if not active or session.created_at_local.date() > today:
             continue
-        for question in questions:
-            moment = asked.get(question.id, session.created_at_local)
-            if (question.status != 'open' or question.first_answer is not None
-                    or moment.date() > today):
+        for entry in question_entries(session):
+            moment = entry['at']
+            if entry['answered'] or moment.date() > today:
                 continue
-            key = question_topics.get(question.id)
-            label = labels[key] if key else ', '.join(sources.values()) or 'Study question'
-            loose.append({'session_id': session.id, 'question_id': question.id,
-                          'question': question.prompt[:110], 'label': label[:90],
+            loose.append({'session_id': session.id, 'question_id': entry['question_id'],
+                          'turn_id': entry['turn_id'] or '', 'title': entry['title'],
+                          'question': entry['prompt'][:110], 'label': entry['label'][:90],
                           'asked': moment.strftime('%a %d %b'), '_at': moment})
 
     # Replay the actual current Coach rule: <70 flags, >=85 clears, 70–84
@@ -234,6 +230,21 @@ def render_sections(sections):
     return '\n\n'.join(title + '\n' + ('\n'.join(value) if isinstance(value, list) else value)
                          for title, value in zip(('Your effort', 'Your learning', 'Loose ends', 'Your next step'),
                                                   (sections[k] for k in ('effort', 'learning', 'loose_ends', 'next_step'))))
+
+
+def split_recap_sections(text):
+    """Read saved recap prose without changing older conversation turns."""
+    if not text.startswith('Your effort\n'):
+        return None
+    rest = text[len('Your effort\n'):]
+    sections = {}
+    for key, heading in [('effort', 'Your learning'), ('learning', 'Loose ends'),
+                         ('loose_ends', 'Your next step')]:
+        if '\n\n' + heading + '\n' not in rest:
+            return None
+        sections[key], rest = rest.split('\n\n' + heading + '\n', 1)
+    sections['next_step'] = rest
+    return sections
 
 
 def reconcile_recap(reply, payload):

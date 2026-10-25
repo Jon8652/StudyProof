@@ -75,7 +75,12 @@ listed but cannot be revised until restored.
 calendar days: recorded study effort, coached topics, improvements supported
 by saved assessments, current revision topics and unanswered questions. Resume
 opens the exact question, including questions in conversations whose sources
-were removed. Each weekly recap offers an optional 30-day recap, appended
+were removed. Loose ends have separate topic/question cards with one Resume
+button each; unrelated source titles are never combined into a question title.
+Questions inside ordinary Coach replies are tracked too. Older untracked
+questions can be recovered from their literal conversation text, and changing
+topics or acknowledging a reply does not count as answering the previous question.
+Each weekly recap offers an optional 30-day recap, appended
 below it. Recaps autosave inside the current conversation; without a selected
 conversation, a temporary preview is shown without creating a new session.
 

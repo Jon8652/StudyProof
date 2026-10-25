@@ -117,7 +117,9 @@ class CoachService:
         if not text.strip():
             return ActionResult(False, 'Write your answer first.')
         q.first_answer, q.first_answer_at, q.status = text.strip(), datetime.now(), 'answered'
-        return self._store(s, q, 'answer', q.first_answer)
+        from app.core.agent.questions import is_discussion_message
+        intent = False if is_discussion_message(text) else True if question_id else None
+        return self._store(s, q, 'answer', q.first_answer, answer_intent=intent)
 
     def submit_revision(self, session_id, text, question_id=None):
         s, q = self._find(session_id, question_id)
@@ -126,7 +128,9 @@ class CoachService:
         if not text.strip():
             return ActionResult(False, 'Write your revision first.')
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
-        return self._store(s, q, 'revision', text.strip())
+        from app.core.agent.questions import is_discussion_message
+        intent = False if is_discussion_message(text) else True if question_id else None
+        return self._store(s, q, 'revision', text.strip(), answer_intent=intent)
 
     def submit_message(self, session_id, text, question_id=None):
         """Save a conversational message, including topic changes and retries."""
@@ -138,7 +142,9 @@ class CoachService:
         if q.first_answer is None:
             return self.submit_answer(session_id, text, question_id)
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
-        return self._store(s, q, 'revision', text.strip())
+        from app.core.agent.questions import is_discussion_message
+        intent = False if is_discussion_message(text) else True if question_id else None
+        return self._store(s, q, 'revision', text.strip(), answer_intent=intent)
 
     def prepare_turn(self, session_id, kind, question_id=None, conversational=False):
         s, q = self._find(session_id, question_id)
@@ -221,7 +227,14 @@ class CoachService:
         docs = {d.id: d for d in self.state.dataset.documents}
         if build_source_pack([(r.kind, r.id) for r in session.sources], notes, docs) != job['pack']:
             return ActionResult(False, 'Sources changed; weak topics were left unchanged.')
-        if not result.ok or result.value is None:
+        if not result.ok:
+            return result
+        if result.value is None:
+            # An acknowledgment or a topic switch is not an answer to the
+            # preceding question. Keep the immutable transcript, but retain
+            # the private intent so recaps do not lose that loose end.
+            latest.answer_intent = False
+            self.state.persist_coach_session(session)
             return result
         rating = result.value
         source = next((r for r in session.sources if r.id == rating.source_id), None)
@@ -257,6 +270,7 @@ class CoachService:
         q.confidence = 'high' if rating.score >= 85 else 'medium' if rating.score >= 70 else 'low'
         q.confidence_at = datetime.now()
         latest.question_id = q.id
+        latest.answer_intent = True
         # Keep the original scoring evidence on its answer turn. Current weak
         # topics are mutable and cannot alone establish historical improvement.
         latest.assessment = {'source_id': source.id, 'topic': rating.topic.strip(),
@@ -339,6 +353,11 @@ class CoachService:
         s.turns.append(CoachTurn.create('coach', kind, reply.text, q.id, mode,
                                         quotes=quotes, ungrounded_count=failures,
                                         confidence=q.confidence if kind == 'feedback' and not job.get('conversational') else None))
+        if job.get('conversational') and kind == 'feedback':
+            from app.core.agent.questions import register_reply_questions
+            new_questions = register_reply_questions(s, s.turns[-1], job['pack'].as_spans_payload())
+            if new_questions:
+                q = new_questions[-1]
         self.state.persist_coach_session(s)
         return ActionResult(True, value=q)
 

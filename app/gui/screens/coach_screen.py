@@ -509,8 +509,25 @@ class CoachScreen(BaseScreen):
             return
         question = session.question_by_id(link['question_id'])
         if not question:
-            self.notice.configure(text='That question is no longer available.')
-            return
+            from app.core.agent.questions import question_entries
+            from app.core.models import QuestionRecord
+            entry = next((item for item in question_entries(session)
+                          if item['question_id'] == link['question_id']), None)
+            if not entry:
+                self.notice.configure(text='That question is no longer available.')
+                return
+            # Recover a literal question from older natural replies only
+            # after the learner chooses Resume; requesting a recap is read-only.
+            question = QuestionRecord(id=entry['question_id'], prompt=entry['prompt'])
+            session.questions.append(question)
+            self.state.persist_coach_session(session)
+        if question.status == 'closed':
+            from app.core.agent.questions import question_entries
+            pending = next((item for item in question_entries(session)
+                            if item['question_id'] == question.id and not item['answered']), None)
+            if pending:
+                question.status = 'open'
+                self.state.persist_coach_session(session)
         self.resume_session(session.id)
         self._resume_question_id = question.id
         self.refresh()
@@ -523,7 +540,9 @@ class CoachScreen(BaseScreen):
             self._sync_scrollregion()
             turns = [t for t in session.turns if t.kind != 'confidence']
             for turn, (_, bubble) in zip(turns, self._rendered_turns):
-                if turn.question_id == question.id and turn.kind in ('question', 'followup'):
+                if (turn.id == link.get('turn_id') or
+                        (turn.question_id == question.id and turn.role == 'coach'
+                         and turn.kind in ('question', 'followup', 'feedback'))):
                     height = max(1, self._content_bottom())
                     self._auto_scroll_depth += 1
                     try:
@@ -549,7 +568,7 @@ class CoachScreen(BaseScreen):
             return
         self.busy = False
         result = self.service.complete_turn(job, result)
-        if result.ok and job['kind'] in ('question', 'followup'):
+        if result.ok and result.value is not None:
             self._resume_question_id = result.value.id
         self.notice.configure(text=result.message or self._assessment_notices.pop(job['session_id'], ''))
         # A new coach reply just landed in the thread — a conversation event.
