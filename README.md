@@ -71,6 +71,29 @@ inside the application's JSON save, using the same atomic save and backup flow.
 Deleting a conversation keeps its unresolved topics. Removed sources remain
 listed but cannot be revised until restored.
 
+**Coach Recap** in the Coach screen's top row summarises the last seven
+calendar days: recorded study effort, coached topics, improvements supported
+by saved assessments, current revision topics and unanswered questions. Resume
+opens the exact question, including questions in conversations whose sources
+were removed. Each weekly recap offers an optional 30-day recap, appended
+below it. Recaps autosave inside the current conversation; without a selected
+conversation, a temporary preview is shown without creating a new session.
+
+Comparisons use your own preceding routine (up to 28 days, with at least
+14 days of history and three prior sessions). There is no new goal-setting UI.
+Below 70% of that routine gets a neutral invitation; above 150% suggests a
+lighter day only with three consecutive unusually heavy days or declining
+assessment results. Thin history gets facts without comparisons. Older saves
+may lack the evidence needed to establish topic improvement; new private
+assessment evidence is retained on answer turns for future comparisons.
+
+Recaps work without an AI connection. When connected, the existing provider
+selects from verified wording alternatives using only aggregate recap facts
+and topic labels; raw private scores, complete source texts and navigation
+IDs are excluded. Invalid or invented content is replaced with local wording.
+Cancel saves no partial recap. All figures and Resume links are assembled
+locally, including when the provider fails.
+
 The Study Coach requires a configured live AI service. Open
 **Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
 key, then select deepseek-flash or deepseek-v4-pro. The URL should include the API prefix (for example `/v1`),

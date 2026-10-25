@@ -136,10 +136,20 @@ class PageViewer(ctk.CTkFrame):
 
         self.image_label.bind("<Configure>", _sync_scrollregion)
 
-        def _reset_x_scroll(_event=None):
+        self._last_image_size = None
+
+        def _reset_x_scroll(event=None):
             # Whenever the image itself changes size (new page, zoom swap),
             # start it flush with the left edge instead of keeping a stale
             # horizontal offset from the previous render.
+            # Moving the embedded label while scrolling also emits Configure.
+            # Only a size change should reset the offset; resetting on every
+            # position change makes horizontal wheel/drag scrolling snap back.
+            size = (event.width, event.height) if event else (
+                self.image_label.winfo_width(), self.image_label.winfo_height())
+            if size == self._last_image_size:
+                return
+            self._last_image_size = size
             try:
                 self.image_canvas.xview_moveto(0.0)
             except tk.TclError:
@@ -198,48 +208,33 @@ class PageViewer(ctk.CTkFrame):
             return "break"
 
         def _wheel(event):
-            """Plain wheel handler: pinch → zoom, ordinary scroll → scroll.
-
-            Ordinary (non-pinch) scrolling must only be handled when the
-            pointer is actually over the image stage: this binding is global
-            (bind_all), and swallowing every wheel event used to hijack the
-            text pane's own scrolling too.  When the cursor is elsewhere we
-            return None so Tk's normal widget bindings still run.
-            """
+            """Only the image stage receives this handler, never sibling panes."""
             if _is_pinch(event):
                 return _zoom_from_event(event)
-            try:
-                over_image = self.image_canvas.winfo_containing(
-                    event.x_root, event.y_root) in (
-                        self.image_canvas, self.image_label)
-            except (KeyError, tk.TclError):
-                over_image = False
-            if not over_image:
-                return None
-            _wheel_scroll(-3 if getattr(event, "delta", 0) > 0 else 3)
-            return None
+            up = getattr(event, 'num', None) == 4 or getattr(event, 'delta', 0) > 0
+            _wheel_scroll(-3 if up else 3)
+            return 'break'
 
         def _wheel_x(event):
             if _is_pinch(event):
                 return _zoom_from_event(event)
-            _wheel_scroll_x(-3 if getattr(event, "delta", 0) > 0 else 3)
-            return None
+            up = getattr(event, 'num', None) == 4 or getattr(event, 'delta', 0) > 0
+            _wheel_scroll_x(-3 if up else 3)
+            return 'break'
 
-        # Re-bind the original vertical/horizontal scroll bindings through
-        # the pinch-aware wrappers above (bind_all replaces the same-event
-        # binding rather than stacking a second handler).
-        self.image_canvas.bind_all("<MouseWheel>", _wheel)
-        self.image_canvas.bind_all("<Button-4>", _wheel)
-        self.image_canvas.bind_all("<Button-5>", _wheel)
-        self.image_canvas.bind_all("<Shift-MouseWheel>", _wheel_x)
-        self.image_canvas.bind_all("<Shift-Button-4>", _wheel_x)
-        self.image_canvas.bind_all("<Shift-Button-5>", _wheel_x)
-        # Ctrl/Meta + wheel always zooms (Windows ChromeOS-style pinch,
-        # macOS Cmd-scroll, Linux Ctrl-scroll, plain mouse-wheel users).
-        for seq in ("<Control-MouseWheel>", "<Meta-MouseWheel>",
-                    "<Control-Button-4>", "<Control-Button-5>",
-                    "<Meta-Button-4>", "<Meta-Button-5>"):
-            self.image_canvas.bind_all(seq, _zoom_from_event)
+        # Bind both the canvas and its overlaid image label. Global bindings
+        # here used to replace every scrollable frame's mouse-wheel handler.
+        for widget in (self.image_canvas, self.image_label):
+            for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+                widget.bind(seq, _wheel, add='+')
+            for seq in ('<Shift-MouseWheel>', '<Shift-Button-4>', '<Shift-Button-5>'):
+                widget.bind(seq, _wheel_x, add='+')
+            # Modifier-wheel zoom belongs to the PDF image, not notes,
+            # settings, dialog lists or the PDF's extracted-text pane.
+            for seq in ('<Control-MouseWheel>', '<Meta-MouseWheel>',
+                        '<Control-Button-4>', '<Control-Button-5>',
+                        '<Meta-Button-4>', '<Meta-Button-5>'):
+                widget.bind(seq, _zoom_from_event, add='+')
         self.apply_appearance(theme_is_dark(self))
 
         # Text stage: also created up-front but only packed in text mode.

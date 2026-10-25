@@ -16,6 +16,7 @@ class CoachReply:
     text: str
     quotes: list[Quote] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+    sections: dict = field(default_factory=dict)
 
 
 @dataclass

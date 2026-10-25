@@ -20,6 +20,20 @@ def parse_reply(raw, expected_kind=None):
         raise ValueError('The AI reply was not readable.')
     kind, text = value.get('kind'), value.get('text')
     quotes, meta = value.get('quotes', []), value.get('meta', {})
+    if kind == 'recap' and expected_kind in (None, 'recap'):
+        sections = value.get('sections')
+        if (not isinstance(sections, dict) or set(sections) != {'effort', 'learning', 'loose_ends', 'next_step'}
+                or not all(isinstance(sections[k], str) and sections[k].strip()
+                           for k in ('effort', 'learning', 'loose_ends'))
+                or not isinstance(sections['next_step'], list) or not 1 <= len(sections['next_step']) <= 2
+                or not all(isinstance(s, str) and s.strip() for s in sections['next_step'])
+                or not isinstance(meta, dict) or meta.get('pattern') not in ('new', 'low', 'steady', 'heavy', 'rest')):
+            raise ValueError('Recap requires four sections, one or two next steps and a valid pattern.')
+        from app.core.recap import render_sections
+        rendered = render_sections(sections)
+        if len(rendered) > 1500:
+            raise ValueError('Recap text must contain at most 1500 characters.')
+        return CoachReply('recap', rendered, meta=meta, sections=sections)
     if kind not in ('question', 'hint', 'feedback', 'followup') or (expected_kind and kind != expected_kind):
         raise ValueError(f'kind must equal {expected_kind!r}.' if expected_kind
                          else 'kind must be question, hint, feedback or followup.')

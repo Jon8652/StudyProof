@@ -339,6 +339,8 @@ class CoachTurn:
     confidence: str | None = None
     quotes: list[dict[str, Any]] = field(default_factory=list)  # +verified flag
     ungrounded_count: int = 0
+    recap: dict | None = None               # rendered recap links and follow-up state
+    assessment: dict | None = None          # private, immutable assessment evidence
 
     @classmethod
     def create(cls, role: str, kind: str, text: str,
@@ -357,7 +359,7 @@ class CoachTurn:
 
 
 TURN_KINDS = ("question", "answer", "confidence", "hint", "feedback",
-              "revision", "followup", "notice")
+              "revision", "followup", "notice", "recap")
 
 
 @dataclass
