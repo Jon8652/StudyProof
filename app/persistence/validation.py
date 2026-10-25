@@ -517,9 +517,39 @@ def _parse_turn(record: Any) -> CoachTurn | None:
             confidence=confidence,
             quotes=quotes,
             ungrounded_count=max(0, _parse_int(record.get("ungrounded_count"))),
+            recap=_parse_recap(record.get("recap")) if kind == 'recap' else None,
+            assessment=_parse_assessment(record.get("assessment")),
         )
     except Exception:
         return None
+
+
+def _parse_recap(value):
+    if not isinstance(value, dict) or value.get('days') not in (7, 30):
+        return None
+    links = []
+    for item in value.get('loose_ends', [])[:5] if isinstance(value.get('loose_ends'), list) else []:
+        if isinstance(item, dict) and all(isinstance(item.get(k), str) for k in
+                                         ('session_id', 'question_id', 'question', 'label', 'asked')):
+            links.append({k: item[k][:240] for k in
+                          ('session_id', 'question_id', 'question', 'label', 'asked')})
+    return {'days': value['days'], 'loose_ends': links,
+            'offer': value['days'] == 7 and value.get('offer') is True,
+            'revise': value.get('revise') is True,
+            'simplified': value.get('simplified') is True}
+
+
+def _parse_assessment(value):
+    if (not isinstance(value, dict) or type(value.get('score')) is not int
+            or not 0 <= value['score'] <= 100
+            or not all(isinstance(value.get(k), str) and value[k].strip()
+                       for k in ('source_id', 'topic', 'question'))):
+        return None
+    result = {k: value[k] for k in ('source_id', 'topic', 'question', 'score')}
+    previous_at = _parse_optional_dt(value.get('previous_at'))
+    if previous_at and type(value.get('previous_score')) is int and 0 <= value['previous_score'] <= 100:
+        result.update(previous_score=value['previous_score'], previous_at=previous_at.isoformat())
+    return result
 
 
 def _parse_coach_session(record: Any) -> CoachSession | None:

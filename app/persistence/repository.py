@@ -166,6 +166,8 @@ def dataset_to_payload(dataset: Dataset) -> dict[str, Any]:
                         "confidence": t.confidence,
                         "quotes": t.quotes,
                         "ungrounded_count": t.ungrounded_count,
+                        "recap": t.recap,
+                        "assessment": t.assessment,
                     }
                     for t in c.turns
                 ],

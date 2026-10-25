@@ -8,6 +8,7 @@ from app.core.agent.coach_service import CoachService
 from app.core.agent.grounding import PageIndex
 from app.core.agent.provider_openai import sanitize_base_url
 from app.core.agent.provider_base import ProviderError
+from app.core.models import CoachSession, CoachTurn
 from app.gui.screens.base_screen import BaseScreen
 from app.gui.theme import BORDER, CARD_FG, PANE_BG
 from app.gui.dialogs.source_select import SourceSelectDialog
@@ -45,6 +46,9 @@ class CoachScreen(BaseScreen):
         self._suggestion_question = None
         self._assessment_notices = {}
         self._weak_topics_dialog = None
+        self._recap_preview = None
+        self._recap_loading_bubble = None
+        self._resume_question_id = None
         self.events = UIEventQueue(self)
         self.events.start()
         # Pane 1 of three (change request: no grey surfaces).  Previously an
@@ -57,6 +61,9 @@ class CoachScreen(BaseScreen):
         ctk.CTkButton(top, text='New session', command=self.new_session).pack(side='left', padx=4, pady=4)
         ctk.CTkButton(top, text='Sessions…', command=self.sessions).pack(side='left', padx=4)
         ctk.CTkButton(top, text='Revise Weak Topics', command=self.revise_weak_topics).pack(side='left', padx=4)
+        self.recap_button = ctk.CTkButton(top, text='Coach Recap', command=self.request_recap)
+        self.recap_button.pack(side='left', padx=4, pady=4)
+        self.recap_button.gate_tip = Tooltip(self.recap_button, 'A gentle summary of your last 7 days.')
         self.header = ctk.CTkLabel(self.content, text='', wraplength=MIN_WRAPLENGTH, justify='left')
         self.header.pack(fill='x')
         # Pane 2: the chat thread.  Unstyled CTkScrollableFrame used to show
@@ -101,18 +108,6 @@ class CoachScreen(BaseScreen):
             # last bubble's bottom edge instead of CTk's default 30 px
             # Linux / Windows yscrollincrement.
             canvas.configure(yscrollincrement=1)
-            # Observe wheel motion over the thread so the pointer-local
-            # gesture releases the pin *before* CTk's bind_all handler moves
-            # the canvas (bind_all callbacks run after widget-bindings, so
-            # doing it here is what keeps our own yview wrapper from
-            # mis-reading the resulting scroll as an automatic write).
-            # The bind_all observer is Enter/Leave-scoped so sibling panes
-            # never lose their wheel events to this screen.
-            canvas.bind('<Enter>', lambda e: canvas.bind_all(
-                '<MouseWheel>', self._on_thread_wheel_event, add='+'), add='+')
-            canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'), add='+')
-            for button_seq in ('<Button-4>', '<Button-5>'):   # Linux/Xvfb wheels
-                canvas.bind(button_seq, self._on_thread_wheel_event, add='+')
             # Wrap the canvas's ``yview`` command.  CTk wires BOTH the
             # scrollbar (``_scrollbar.command = canvas.yview``) and its own
             # ``bind_all`` wheel handler (``self._parent_canvas.yview(...)``)
@@ -162,44 +157,15 @@ class CoachScreen(BaseScreen):
                 return tracked_yview('moveto', fraction)
             canvas.yview_scroll = tracked_yview_scroll
             canvas.yview_moveto = tracked_yview_moveto
-        # customtkinter binds its wheel handler (``_mouse_wheel_all``) via
-        # ``bind_all``, which registers on every widget of the class — the
-        # parent canvas included.  A wheel notch therefore runs the canvas's
-        # own binding *first*: our Enter/Leave-scoped ``bind_all`` observer
-        # only fires afterwards (and the instance-level patch below only
-        # covers the frame), so without a direct canvas binding an upward
-        # gesture would execute before the pin was released and a pending
-        # settle pass could yank the view back down.  Bind the release hook
-        # on the canvas itself for all wheel event flavours; harmless
-        # duplicates when several channels fire for one notch, since the
-        # release is idempotent.
-        if canvas is not None:
-            for wheel_seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
-                canvas.bind(wheel_seq, self._on_thread_wheel_event, add='+')
-        _orig_wheel_all = self.thread._mouse_wheel_all
-
-        def _tracked_mouse_wheel_all(event):
-            try:
-                over_us = event.widget is canvas or (
-                    self.thread.winfo_containing(event.x_root, event.y_root)
-                    in (canvas, self.thread))
-            except Exception:
-                over_us = False
-            if over_us:
-                # Stamp gesture evidence even when the pin is already
-                # released, so the scroll CTk's handler is about to perform
-                # is classified as a user gesture by tracked_yview.
-                self._last_gesture_ms = time.monotonic()
-            if over_us and self._auto_scroll_depth == 0 \
-                    and self.winfo_exists():
-                # Release unconditionally (not only while stuck): a notch may
-                # arrive after the pin was already released, and its scroll
-                # still needs the veto id bumped *before* it executes.  The
-                # release is idempotent; _on_thread_wheel_event keeps exactly
-                # one bump per notch via its was_stuck guard.
-                self._release_pin_for_manual_scroll()
-            return _orig_wheel_all(event)
-        self.thread._mouse_wheel_all = _tracked_mouse_wheel_all
+        # The owning window's bind tag runs before CTk's global wheel
+        # handlers, including for labels/buttons nested inside recap bubbles.
+        # Observe only our descendants and remove only our own callbacks on
+        # shutdown. unbind_all would erase scrolling for every pane/dialog.
+        self._wheel_bindings = []
+        top = self.winfo_toplevel()
+        for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            token = top.bind(sequence, self._observe_thread_wheel, add='+')
+            self._wheel_bindings.append((top, sequence, token))
         # Scrollbar interaction channel: CTk routes thumb drags and trackbar
         # clicks through the scrollbar's command callback, which it wired to
         # ``canvas.yview`` at construction time — capturing the bound method
@@ -371,6 +337,7 @@ class CoachScreen(BaseScreen):
             result = self.service.start_session(dialog.result)
             if result.ok:
                 self.session_id = result.value.id
+                self._resume_question_id = None
                 # Opening a brand-new session is a conversation event: land
                 # at its newest message.  Without this flag the first
                 # refresh() of the (short) new thread renders inertly while
@@ -418,6 +385,7 @@ class CoachScreen(BaseScreen):
         result = self.service.start_weak_topic_session(topic_id)
         if result.ok:
             self.session_id = result.value.id
+            self._resume_question_id = None
             self.notice.configure(text='Answer in your own words, or ask for help with this topic.')
             # Opening a new session is a conversation event: land at its
             # newest message (absolute pin — direction never matters).
@@ -430,6 +398,7 @@ class CoachScreen(BaseScreen):
         switched = sid != self.session_id
         self.cancel(cancel_assessments=False)
         self.session_id = sid
+        self._resume_question_id = None
         # Switching sessions is a conversation event: always open the view at
         # its newest message, whether reaching it means scrolling up or down.
         self._pending_follow_event = switched
@@ -441,7 +410,8 @@ class CoachScreen(BaseScreen):
         self._last_action = kind
         session = self.state.coach_session_by_id(self.session_id)
         prepared = self.service.prepare_turn(
-            self.session_id, kind, conversational=bool(session and session.turns))
+            self.session_id, kind, question_id=self._resume_question_id,
+            conversational=bool(session and session.turns))
         if not prepared.ok:
             self.notice.configure(text=prepared.message)
             return
@@ -471,6 +441,99 @@ class CoachScreen(BaseScreen):
             self.events.post(lambda: self.finished(job, run.result))
         threading.Thread(target=run, daemon=True).start()
 
+    def request_recap(self, days=7):
+        if self.busy:
+            return
+        prepared = self.service.prepare_recap(self.session_id, days)
+        if not prepared.ok:
+            self.notice.configure(text=prepared.message)
+            return
+        job = prepared.value
+        self.busy = True
+        self._hide_suggestions()
+        self.notice.configure(text='')
+        self.refresh()
+        loading = CoachTurn.create('coach', 'notice', 'Putting together your recap…')
+        self._recap_loading_bubble = ChatBubble(self.thread, loading, [], None, self.navigate)
+        self._recap_loading_bubble.pack(fill='x', pady=4)
+        self._stick_to_bottom = True
+        self._reset_manual_scroll_baseline()
+        self._schedule_thread_pin()
+        self._start_settle_poll()
+        def run():
+            try:
+                result = self.service.generate_recap(job)
+            except Exception:
+                from app.core.result import ActionResult
+                result = ActionResult(False, 'Could not assemble this recap. Please try again.')
+            if not job['cancel'].is_set():
+                self.events.post(lambda: self.recap_finished(job, result))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _clear_recap_loading(self):
+        if self._recap_loading_bubble is not None:
+            self._recap_loading_bubble.destroy()
+            self._recap_loading_bubble = None
+
+    def recap_finished(self, job, result):
+        if self.service.pending.get(job['session_id']) is not job:
+            return
+        self._clear_recap_loading()
+        self.busy = False
+        result = self.service.complete_recap(job, result)
+        if result.ok and self.session_id is None:
+            if self._recap_preview is None:
+                self._recap_preview = CoachSession(id='recap-preview')
+            self._recap_preview.turns.append(result.value)
+        self.notice.configure(text=result.message or (
+            'Open a saved conversation before requesting a recap to keep it in that conversation.'
+            if self.session_id is None else ''))
+        self._pending_follow_event = True
+        self.refresh()
+
+    def recap_offer(self, turn, accepted):
+        if self.busy or not turn.recap or not turn.recap.get('offer'):
+            return
+        turn.recap['offer'] = False
+        session = self.state.coach_session_by_id(self.session_id)
+        if session:
+            self.state.persist_coach_session(session)
+        self.refresh()
+        if accepted:
+            self.request_recap(30)
+
+    def resume_recap_question(self, link):
+        session = self.state.coach_session_by_id(link['session_id'])
+        if not session:
+            self.notice.configure(text='That session was deleted.')
+            return
+        question = session.question_by_id(link['question_id'])
+        if not question:
+            self.notice.configure(text='That question is no longer available.')
+            return
+        self.resume_session(session.id)
+        self._resume_question_id = question.id
+        self.refresh()
+        self._pending_follow_event = False
+        self._release_pin_for_manual_scroll()
+        def scroll():
+            if self.session_id != session.id or not self.winfo_exists():
+                return
+            self.update_idletasks()
+            self._sync_scrollregion()
+            turns = [t for t in session.turns if t.kind != 'confidence']
+            for turn, (_, bubble) in zip(turns, self._rendered_turns):
+                if turn.question_id == question.id and turn.kind in ('question', 'followup'):
+                    height = max(1, self._content_bottom())
+                    self._auto_scroll_depth += 1
+                    try:
+                        self.thread._parent_canvas.yview_moveto(bubble.winfo_y() / height)
+                    finally:
+                        self._auto_scroll_depth -= 1
+                    self.composer.focus_set()
+                    break
+        self.after_idle(scroll)
+
     def assessment_finished(self, job, result):
         result = self.service.complete_assessment(job, result)
         if self._weak_topics_dialog and self._weak_topics_dialog.winfo_exists():
@@ -486,6 +549,8 @@ class CoachScreen(BaseScreen):
             return
         self.busy = False
         result = self.service.complete_turn(job, result)
+        if result.ok and job['kind'] in ('question', 'followup'):
+            self._resume_question_id = result.value.id
         self.notice.configure(text=result.message or self._assessment_notices.pop(job['session_id'], ''))
         # A new coach reply just landed in the thread — a conversation event.
         self._pending_follow_event = True
@@ -493,6 +558,7 @@ class CoachScreen(BaseScreen):
 
     def cancel(self, cancel_assessments=True):
         self.service.cancel_turn(self.session_id, cancel_assessments=cancel_assessments)
+        self._clear_recap_loading()
         self.busy = False
         self.notice.configure(text='Turn cancelled.')
         # Cancellation changes the controls, not the conversation.  In
@@ -522,7 +588,8 @@ class CoachScreen(BaseScreen):
         if not self._require_connection():
             return 'break'
         session = self.state.coach_session_by_id(self.session_id)
-        q = session.questions[-1] if session and session.questions else None
+        q = (session.question_by_id(self._resume_question_id) if session and self._resume_question_id
+             else session.questions[-1] if session and session.questions else None)
         text = self.composer.get('1.0', 'end').strip()
         if not q or q.status == 'closed':
             self.notice.configure(text='Choose New session and select your notes or PDFs to get a question first.')
@@ -531,7 +598,7 @@ class CoachScreen(BaseScreen):
             if q.first_answer is not None and not q.feedback_given:
                 self.request('feedback')
             return 'break'
-        result = self.service.submit_message(self.session_id, text)
+        result = self.service.submit_message(self.session_id, text, self._resume_question_id)
         self._submitted(result)
         if result.ok:
             self.request('feedback')
@@ -549,14 +616,16 @@ class CoachScreen(BaseScreen):
 
     def _schedule_suggestions(self):
         session = self.state.coach_session_by_id(self.session_id)
-        q = session.questions[-1] if session and session.questions else None
+        q = (session.question_by_id(self._resume_question_id) if session and self._resume_question_id
+             else session.questions[-1] if session and session.questions else None)
         if q and q.first_answer is None and not self.busy and self._suggestion_job is None:
             self._suggestion_job = self.after(15_000, self._show_suggestions)
 
     def _show_suggestions(self):
         self._suggestion_job = None
         session = self.state.coach_session_by_id(self.session_id)
-        q = session.questions[-1] if session and session.questions else None
+        q = (session.question_by_id(self._resume_question_id) if session and self._resume_question_id
+             else session.questions[-1] if session and session.questions else None)
         if (q and q.first_answer is None and not self.busy and self.winfo_viewable()
                 and not self.composer.get('1.0', 'end').strip()):
             self.suggestions.pack(fill='x', before=self.composer.master, pady=4)
@@ -613,7 +682,10 @@ class CoachScreen(BaseScreen):
 
     def refresh(self):
         session = self.state.coach_session_by_id(self.session_id)
-        q = session.questions[-1] if session and session.questions else None
+        if session is None and self.session_id is None:
+            session = self._recap_preview
+        q = (session.question_by_id(self._resume_question_id) if session and self._resume_question_id
+             else session.questions[-1] if session and session.questions else None)
         # Events declare scrolling explicitly. Widget reconciliation below
         # is independent: detecting a changed turn never arms a follow.
         follow_event = self._pending_follow_event
@@ -640,7 +712,7 @@ class CoachScreen(BaseScreen):
                 labels.append(ref.label + (f' ({docs[ref.id].page_count} pages)' if ref.id in docs else '')
                               + ('' if exists else ' (removed)'))
             mode = 'live'
-            self.header.configure(text=f'{mode.title()} · ' + ' · '.join(labels))
+            self.header.configure(text=(f'{mode.title()} · ' + ' · '.join(labels)) if labels else 'Coach Recap')
             self._refresh_thread(session, index)
         else:
             self.header.configure(text='Pick sources to start a coached session.')
@@ -657,7 +729,7 @@ class CoachScreen(BaseScreen):
             self._suggestion_question = question_key
         self._schedule_suggestions()
         gates = {
-            'question': bool(session) and (not q or q.feedback_given),
+            'question': bool(self.session_id and session) and (not q or q.feedback_given),
             'hint': bool(q and q.first_answer is not None and not q.feedback_given and q.status != 'closed'),
             'followup': bool(q and q.feedback_given and q.status != 'closed'),
             'cancel': self.busy}
@@ -671,6 +743,10 @@ class CoachScreen(BaseScreen):
         can_send = not self.busy
         self.send_button.configure(state='normal' if can_send else 'disabled')
         self.composer.configure(state='disabled' if self.busy else 'normal')
+        self.recap_button.configure(state='disabled' if self.busy else 'normal')
+        for _, bubble in self._rendered_turns:
+            for button in bubble.recap_buttons:
+                button.configure(state='disabled' if self.busy else 'normal')
         # A controls refresh leaves this state alone; in particular it must
         # not cancel the follow opened by the immediately preceding send.
         if session is not None and follow_event:
@@ -726,7 +802,10 @@ class CoachScreen(BaseScreen):
                 bubble.destroy()
             self._rendered_turns[keep:] = []
             for turn, key in zip(turns[keep:], keys[keep:]):
-                bubble = ChatBubble(self.thread, turn, session.sources, index, self.navigate)
+                bubble = ChatBubble(self.thread, turn, session.sources, index, self.navigate,
+                                    recap_actions={'resume': self.resume_recap_question,
+                                                   'revise': self.revise_weak_topics,
+                                                   'offer': self.recap_offer})
                 bubble.pack(fill='x', pady=4)
                 self._rendered_turns.append((key, bubble))
             self._rendered_session = sid
@@ -1066,6 +1145,19 @@ class CoachScreen(BaseScreen):
                 and not self._is_superseded_by_manual_scroll():
             self._schedule_thread_pin()
 
+    def _observe_thread_wheel(self, event):
+        widget = event.widget
+        while widget is not None:
+            if widget is self.thread or widget is self._thread_canvas or widget is self.thread._scrollbar:
+                self._last_gesture_ms = time.monotonic()
+                self._on_thread_wheel_event(event)
+                return
+            # Text fields own their wheel; do not release the chat pin for
+            # scrolling a nested editor instead of the conversation.
+            if isinstance(widget, ctk.CTkTextbox):
+                return
+            widget = getattr(widget, 'master', None)
+
     def _on_thread_wheel_event(self, event=None):
         # Wheel motion over the thread hands control to the user at once,
         # *before* CTk's bind_all handler scrolls the canvas (widget bindings
@@ -1073,8 +1165,8 @@ class CoachScreen(BaseScreen):
         # the resulting scroll as an automatic write).  Whether stickiness
         # resumes is decided from the settled position by
         # _check_bottom_after_scroll (invoked from the yview wrapper for
-        # downward gestures).  The bind_all observer is Enter/Leave-scoped,
-        # so this only runs while the pointer is over the chat thread.
+        # downward gestures). The window observer filters by ancestry, so
+        # wheel events in other panes never change the conversation pin.
         if not self.winfo_exists():
             return
         # Release before CTk moves the canvas. The actual yview write may
@@ -1130,10 +1222,12 @@ class CoachScreen(BaseScreen):
             except Exception:
                 pass
             self._pin_job = None
-        try:
-            self.unbind_all('<MouseWheel>')
-        except Exception:
-            pass
+        for top, sequence, token in self._wheel_bindings:
+            try:
+                top.unbind(sequence, token)
+            except Exception:
+                pass
+        self._wheel_bindings.clear()
         self._hide_suggestions()
         for sid in {self.session_id, *(key[0] for key in self.service.assessments)}:
             self.service.cancel_turn(sid)

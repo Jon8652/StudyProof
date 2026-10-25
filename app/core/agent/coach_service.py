@@ -22,6 +22,53 @@ class CoachService:
         self._assessment_versions = {}
         self._assessment_sequence = 0
 
+    def prepare_recap(self, session_id, days=7, today=None):
+        if days not in (7, 30):
+            return ActionResult(False, 'Choose a 7-day or 30-day recap.')
+        session = self.state.coach_session_by_id(session_id)
+        if session_id and not session:
+            return ActionResult(False, 'That session was deleted. Choose another session first.')
+        self.cancel_turn(session_id, cancel_assessments=False)
+        job = {'kind': 'recap', 'session_id': session_id, '_session': session,
+               'revision': len(session.turns) if session else 0,
+               'days': days, 'today': today or datetime.now().date(), 'cancel': threading.Event(),
+               'settings': copy.deepcopy(self.state.settings.ai), '_dataset': self.state.dataset}
+        self.pending[session_id] = job
+        return ActionResult(True, value=job)
+
+    def generate_recap(self, job):
+        """Worker-only assembly and generation; offline is a successful result."""
+        from app.core.recap import build_recap_payload, recap_sections, reconcile_recap, render_sections
+        payload = build_recap_payload(job['_dataset'], job['days'], job['today'])
+        job['payload'] = payload
+        sections, simplified = recap_sections(payload), True
+        if not job['cancel'].is_set() and job['settings'].api_key:
+            try:
+                reply = self.live_factory(job['settings']).generate(job)
+                sections = reconcile_recap(reply, payload)
+                simplified = sections != reply.sections
+            except Exception:
+                pass
+        turn = CoachTurn.create('coach', 'recap', render_sections(sections))
+        turn.recap = {'days': job['days'], 'loose_ends': payload['loose_ends'],
+                      'offer': job['days'] == 7, 'revise': bool(payload['revision_topics']),
+                      'simplified': simplified}
+        return ActionResult(True, value=turn)
+
+    def complete_recap(self, job, result):
+        sid = job['session_id']
+        if self.pending.get(sid) is not job or job['cancel'].is_set():
+            return ActionResult(False, 'Recap cancelled.')
+        self.pending.pop(sid, None)
+        session = self.state.coach_session_by_id(sid)
+        if (self.state.dataset is not job['_dataset'] or session is not job['_session']
+                or (session and len(session.turns) != job['revision'])):
+            return ActionResult(False, 'This session changed. Please request your recap again.')
+        if result.ok and session:
+            session.turns.append(result.value)
+            self.state.persist_coach_session(session)
+        return result
+
     def start_weak_topic_session(self, topic_id):
         topic = next((w for w in self.state.dataset.weak_topics if w.id == topic_id), None)
         if not topic:
@@ -81,15 +128,15 @@ class CoachService:
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
         return self._store(s, q, 'revision', text.strip())
 
-    def submit_message(self, session_id, text):
+    def submit_message(self, session_id, text, question_id=None):
         """Save a conversational message, including topic changes and retries."""
-        s, q = self._find(session_id)
+        s, q = self._find(session_id, question_id)
         if session_id in self.pending or not q or q.status == 'closed':
             return ActionResult(False, 'Start a question first, or wait for the coach.')
         if not text.strip():
             return ActionResult(False, 'Write a message first.')
         if q.first_answer is None:
-            return self.submit_answer(session_id, text)
+            return self.submit_answer(session_id, text, question_id)
         q.revisions.append({'text': text.strip(), 'at': datetime.now().isoformat()})
         return self._store(s, q, 'revision', text.strip())
 
@@ -210,6 +257,13 @@ class CoachService:
         q.confidence = 'high' if rating.score >= 85 else 'medium' if rating.score >= 70 else 'low'
         q.confidence_at = datetime.now()
         latest.question_id = q.id
+        # Keep the original scoring evidence on its answer turn. Current weak
+        # topics are mutable and cannot alone establish historical improvement.
+        latest.assessment = {'source_id': source.id, 'topic': rating.topic.strip(),
+                             'question': rating.question.strip(), 'score': rating.score}
+        if match:
+            latest.assessment.update(previous_score=match.score,
+                                     previous_at=match.updated_at.isoformat())
         if rating.score >= 85:
             if match:
                 topics.remove(match)

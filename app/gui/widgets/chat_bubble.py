@@ -27,7 +27,7 @@ def target_wraplength(px_width: int, scaling: float) -> int:
 
 
 class ChatBubble(ctk.CTkFrame):
-    def __init__(self, master, turn, sources, index, navigate):
+    def __init__(self, master, turn, sources, index, navigate, recap_actions=None):
         # Both bubbles use DETAIL_CARD_FG, which is deliberately *lighter*
         # than the navy PANE_BG thread behind them in dark mode (and a soft
         # blue on the pale pane in light mode), so coach/user messages read
@@ -44,6 +44,35 @@ class ChatBubble(ctk.CTkFrame):
                               justify='left', anchor='w')
         message.pack(fill='x')
         self._wrapped_labels.append(message)
+        self.recap_buttons = []
+        if turn.recap and recap_actions:
+            def action_button(text, command):
+                button = ctk.CTkButton(content, text=text, command=command, anchor='w')
+                button.pack(anchor='w', pady=(6, 0))
+                button._canvas.configure(takefocus=1)
+                button.bind('<Return>', lambda event: button.invoke())
+                button.bind('<space>', lambda event: button.invoke())
+                self.recap_buttons.append(button)
+                return button
+            for item in turn.recap.get('loose_ends', []):
+                label = ctk.CTkLabel(content,
+                    text=f"{item['question']}\n{item['label']} · asked {item['asked']}",
+                    justify='left', anchor='w', wraplength=self._initial_wraplength())
+                label.pack(fill='x', pady=(8, 0))
+                self._wrapped_labels.append(label)
+                action_button('Resume: ' + item['question'][:50],
+                              lambda link=item: recap_actions['resume'](link))
+            if turn.recap.get('revise'):
+                action_button('Revise Weak Topics', recap_actions['revise'])
+            if turn.recap.get('simplified'):
+                ctk.CTkLabel(content, text='Summary assembled locally.', text_color=MUTED_TEXT).pack(anchor='w')
+            if turn.recap.get('offer'):
+                label = ctk.CTkLabel(content, text='Would you like a 30-day recap instead?',
+                                    wraplength=self._initial_wraplength(), justify='left', anchor='w')
+                label.pack(fill='x', pady=(8, 0))
+                self._wrapped_labels.append(label)
+                action_button('Yes — show 30 days', lambda: recap_actions['offer'](turn, True))
+                action_button('No — continue studying', lambda: recap_actions['offer'](turn, False))
         for quote in turn.quotes:
             source = next((s for s in sources if s.id == quote['source_id']), None)
             available = bool(validate_quotes([quote], index)[0])
