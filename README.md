@@ -36,6 +36,9 @@
   and feedback, immutable first answers, revisions, follow-ups and saved
   conversations. Statistics lists the same specific weak topics as Revise Weak
   Topics and opens their revision sessions without showing scores or confidence ratings.
+  **Coach Recap** summarises your last 7 days (with an optional 30-day recap) in four
+  sections — effort, learning, loose ends with per-question Resume buttons, and up to
+  two next steps — always toned against your own goal/routine and fully functional offline.
   Includes the accessibility touches from the v2 spec: role prefixes
   ("Coach:"/"You:") and textual verified ticks, tooltips explaining disabled
   gated buttons (ACC-3/ACC-4/ACC-5).
@@ -71,33 +74,63 @@ inside the application's JSON save, using the same atomic save and backup flow.
 Deleting a conversation keeps its unresolved topics. Removed sources remain
 listed but cannot be revised until restored.
 
-**Coach Recap** in the Coach screen's top row summarises the last seven
-calendar days: recorded study effort, coached topics, improvements supported
-by saved assessments, current revision topics and unanswered questions. Resume
-opens the exact question, including questions in conversations whose sources
-were removed. Loose ends have separate topic/question cards with one Resume
-button each; unrelated source titles are never combined into a question title.
+**Coach Recap** — the **Coach Recap** button in the Coach screen's top action
+row (beside *New session*, *Sessions…* and *Revise Weak Topics*, tooltip "A
+gentle summary of your last 7 days.") renders a four-section recap inline in
+the current conversation as an assistant-style message block — **Your effort**,
+**Your learning**, **Loose ends** and **Your next step** — while a
+"Putting together your recap…" state shows during generation. It summarises
+recorded study effort (total minutes, sessions and distinct days studied),
+coached topics practised (capped display with "+n more"), improvements backed
+by saved assessments, topics still needing revision, and unanswered questions.
+Repeated presses append new recaps rather than replacing older ones.
+
+Resume opens the exact question, including questions in conversations whose
+sources were removed (missing-source handling applies). Loose ends appear as
+separate topic/question cards with one Resume button each, showing truncated
+question text, the source/topic label and the ask date ("asked Tue"); up to
+five most-recent cards are shown plus a "+n older ones in your Sessions list"
+line, and unrelated source titles are never combined into a question title.
 Questions inside ordinary Coach replies are tracked too. Older untracked
 questions can be recovered from their literal conversation text, and changing
-topics or acknowledging a reply does not count as answering the previous question.
-Each weekly recap offers an optional 30-day recap, appended
-below it. Recaps autosave inside the current conversation; without a selected
-conversation, a temporary preview is shown without creating a new session.
+topics or acknowledging a reply does not count as answering the previous
+question. Each weekly recap offers an optional 30-day recap with Yes/No
+affordances, appended below it (no chained offers). Next steps are capped at
+two concrete, small suggestions wired to existing affordances — a weak-topic
+suggestion pairs with *Revise Weak Topics* and a loose-end suggestion sits
+next to its Resume button. Recaps autosave inside the current conversation;
+without a selected conversation, a temporary preview is shown without
+creating a new session. Cancelling an in-flight recap stores nothing partial
+and restores the composer within a second.
 
-Comparisons use your own preceding routine (up to 28 days, with at least
-14 days of history and three prior sessions). There is no new goal-setting UI.
-Below 70% of that routine gets a neutral invitation; above 150% suggests a
-lighter day only with three consecutive unusually heavy days or declining
-assessment results. Thin history gets facts without comparisons. Older saves
-may lack the evidence needed to establish topic improvement; new private
-assessment evidence is retained on answer turns for future comparisons.
+Tone is always set against your own context — an explicit personal goal if
+one exists, otherwise your baseline routine derived from up to 28 days of
+history before the window (at least 14 days and three prior sessions) —
+never against population norms or fixed thresholds. Below 70% of that basis
+gets a neutral observation and at most one small re-entry suggestion; above
+150% suggests a lighter day only when corroborated by three consecutive
+unusually heavy days or declining assessment results — otherwise a heavy
+period is simply celebrated. Thin history gets facts with no comparison
+language at all, and wording stays invitational ("try", "consider", "when
+you're ready") with guilt, urgency and judgment phrasing prohibited. There
+is no new goal-setting UI; the recap consumes whatever goal/routine data
+already exists. Older saves may lack the evidence needed to establish topic
+improvement; new private assessment evidence is retained on answer turns for
+future comparisons.
 
-Recaps work without an AI connection. When connected, the existing provider
-selects from verified wording alternatives using only aggregate recap facts
-and topic labels; raw private scores, complete source texts and navigation
-IDs are excluded. Invalid or invented content is replaced with local wording.
-Cancel saves no partial recap. All figures and Resume links are assembled
-locally, including when the provider fails.
+Recaps work fully offline: with no provider configured or after a provider
+error, a locally assembled recap uses the same sections, tone rules and
+working Resume buttons, with a small note indicating simplified wording —
+no error dialog blocks it. When connected, the existing provider phrases but
+never computes: it selects from verified wording alternatives using only
+aggregate recap facts and topic labels (raw private scores, complete source
+texts and navigation IDs are excluded). The structured `recap` response is
+schema-validated with one repair retry, capped at 1,500 characters with at
+most two next-step items, and reconciled against the deterministic local
+payload — any mismatched figure or invented topic is replaced with the local
+value (or the sentence dropped), and Resume links are wired only to local
+session/question IDs. Cancel saves no partial recap. All figures and Resume
+links are assembled locally, including when the provider fails.
 
 The Study Coach requires a configured live AI service. Open
 **Settings → Study Coach (AI)** and enter an OpenAI-compatible Base URL,
