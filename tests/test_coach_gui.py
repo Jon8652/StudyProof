@@ -927,8 +927,16 @@ def test_pickers_keep_mapped_bubbles_and_pixel_position(monkeypatch, picker, bus
         app.destroy()
 
 
-def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch):
+@pytest.mark.parametrize('display_scale', [1.0, 1.25, 1.5, 2.0],
+                         ids=['100%', '125%', '150%', '200%'])
+def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch, display_scale):
     """Sending and its immediate busy refresh must share a complete follow."""
+    import customtkinter as ctk
+    from app.gui.screens.coach_screen import BOTTOM_EPSILON_PX
+
+    # Exercise actual DPI-scaled layout regardless of the test host's display.
+    monkeypatch.setattr(ctk.ScalingTracker, 'get_window_dpi_scaling',
+                        classmethod(lambda cls, window: display_scale))
     state = AppState()
     monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
     note = state.create_note('Biology', 'Chlorophyll absorbs sunlight.').value
@@ -984,8 +992,12 @@ def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch):
         assert screen._thread_at_bottom()
         sent = screen.thread.winfo_children()[-1]
         assert sent.winfo_height() > canvas.winfo_height()
-        assert abs(sent.winfo_y() + sent.winfo_height()
-                   - canvas.canvasy(0) - canvas.winfo_height()) <= 6
+        # CTk scales the bubble's external padding: pady=4 becomes 8 physical
+        # pixels at 200% DPI. Compare the padded edge, not a fixed pixel gap.
+        bottom_padding = sent.winfo_pixels(sent.pack_info()['pady'])
+        padded_bottom = sent.winfo_y() + sent.winfo_height() + bottom_padding
+        viewport_bottom = canvas.canvasy(0) + canvas.winfo_height()
+        assert abs(padded_bottom - viewport_bottom) <= BOTTOM_EPSILON_PX
         release.set()
         pump(app, lambda: not screen.busy)
         assert _settle(app, screen)
