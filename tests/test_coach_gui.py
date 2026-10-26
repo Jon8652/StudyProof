@@ -929,6 +929,57 @@ def test_pickers_keep_mapped_bubbles_and_pixel_position(monkeypatch, picker, bus
 
 @pytest.mark.parametrize('display_scale', [1.0, 1.25, 1.5, 2.0],
                          ids=['100%', '125%', '150%', '200%'])
+def test_pin_does_not_scroll_past_mapped_messages(monkeypatch, display_scale):
+    """The canvas window can grow before its children receive geometry."""
+    import customtkinter as ctk
+
+    monkeypatch.setattr(ctk.ScalingTracker, 'get_window_dpi_scaling',
+                        classmethod(lambda cls, window: display_scale))
+    state = AppState()
+    monkeypatch.setattr(state, '_mark_dirty_and_save', lambda: None)
+    note = state.create_note('Biology', 'Chlorophyll absorbs sunlight.').value
+    session = _seed_long_session(state, note, turns=10)
+    try:
+        app = MainWindow(app_state=state)
+    except tkinter.TclError as exc:
+        pytest.skip(f'Tk display unavailable: {exc}')
+    try:
+        app.geometry('900x650+3000+3000')
+        app.show_screen('coach')
+        screen = app.screens['coach']
+        screen.resume_session(session.id)
+        assert _settle(app, screen)
+        canvas = screen._thread_canvas
+        history = screen.thread.winfo_children()
+        # Reproduce the intermediate layout synchronously: the window item
+        # has its new extent, but the appended bubble is not mapped yet.
+        from app.core.models import CoachTurn
+        from app.gui.widgets.chat_bubble import ChatBubble
+        pending = ChatBubble(screen.thread, CoachTurn.create(
+            'user', 'answer', 'A long answer. ' * 500), [], None, screen.navigate)
+        pending.pack(fill='x', pady=4)
+        assert not pending.winfo_ismapped()
+        window = screen.thread._create_window_id
+        canvas.itemconfigure(window, height=screen.thread.winfo_height()
+                             + 3 * canvas.winfo_height())
+        # No update()/update_idletasks(): the pin must be safe even before
+        # Tk maps the pending child, regardless of platform event ordering.
+        screen._scroll_thread_to_bottom()
+        top = canvas.canvasy(0)
+        assert any(b.winfo_y() < top + canvas.winfo_height()
+                   and b.winfo_y() + b.winfo_height() > top for b in history), \
+            'pin scrolled beyond every mapped message'
+        canvas.itemconfigure(window, height=0)
+        pending.destroy()
+    finally:
+        for s in app.screens.values():
+            if s and hasattr(s, 'shutdown'):
+                s.shutdown()
+        app.destroy()
+
+
+@pytest.mark.parametrize('display_scale', [1.0, 1.25, 1.5, 2.0],
+                         ids=['100%', '125%', '150%', '200%'])
 def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch, display_scale):
     """Sending and its immediate busy refresh must share a complete follow."""
     import customtkinter as ctk
@@ -964,13 +1015,17 @@ def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch, disp
         app.update()
         history = screen.thread.winfo_children()
         visible = []
+        empty_views = []
 
-        def observe(*_):
+        def observe(event=None):
             top, height = canvas.canvasy(0), canvas.winfo_height()
-            visible.append(any(
-                b.winfo_ismapped() and b.winfo_y() < top + height
-                and b.winfo_y() + b.winfo_height() > top
-                for b in screen.thread.winfo_children()))
+            bounds = [(b.winfo_ismapped(), b.winfo_y(), b.winfo_height())
+                      for b in screen.thread.winfo_children()]
+            visible.append(any(mapped and y < top + height and y + h > top
+                               for mapped, y, h in bounds))
+            if not visible[-1]:
+                empty_views.append((str(event.widget) if event else 'pin',
+                                    top, height, canvas.bbox('all'), bounds))
 
         original_pin = screen._pin_viewport
 
@@ -989,7 +1044,12 @@ def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch, disp
         pump(app, started.is_set)
         assert _settle(app, screen)
         assert screen.busy, 'the question must be visible before the coach replies'
-        assert screen._thread_at_bottom()
+        assert screen._thread_at_bottom(), (
+            screen._viewport_top(), screen._content_bottom(), canvas.winfo_height(),
+            screen._stick_to_bottom, screen._manual_scroll_seq,
+            screen._manual_scroll_baseline,
+            [(b.winfo_ismapped(), b.winfo_y(), b.winfo_height())
+             for b in screen.thread.winfo_children()], empty_views)
         sent = screen.thread.winfo_children()[-1]
         assert sent.winfo_height() > canvas.winfo_height()
         # CTk scales the bubble's external padding: pady=4 becomes 8 physical
@@ -1003,7 +1063,7 @@ def test_long_send_stays_visible_while_waiting_and_after_reply(monkeypatch, disp
         assert _settle(app, screen)
         assert screen._thread_at_bottom()
         assert sent.winfo_exists(), 'reply replaced the sent question'
-        assert visible and all(visible), 'a transition displayed an empty viewport'
+        assert visible and all(visible), f'a transition displayed an empty viewport: {empty_views}'
     finally:
         release.set()
         for s in app.screens.values():
