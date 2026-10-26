@@ -41,6 +41,7 @@ workspace/
 │                               # "AI Requirements Document — StudyProof v2.md",
 │                               # AI_implementation_plan.md,
 │                               # study_coach_optimisation_plan.md,
+│                               # coach_recap_requirements.md,
 │                               # AUTO_SCROLL_PLAN.md
 ├── assets/                     # Medal artwork, icons
 ├── scripts/                    # Helper/build scripts
@@ -92,6 +93,50 @@ The most distinctive part of the app. Design principles (from the v2 requirement
 6. **Accessibility:** role prefixes ("Coach:" / "You:"), textual verified ticks, tooltips explaining gated/disabled buttons (ACC-3/4/5).
 7. **Persistence:** conversations are saved in the local JSON store; no study content leaves the machine except to the user-configured endpoint.
 
+### 6.1 Coach Recap (new feature)
+
+A **"Coach Recap"** button in the Coach screen's top action row (beside *New session*,
+*Sessions…* and *Revise Weak Topics*, tooltip *"A gentle summary of your last 7 days."*)
+generates a short, supportive recap of the student's recent study life — rendered inline
+in the current conversation as an assistant-style block while a "Putting together your
+recap…" state shows during generation (requirements: `coach_recap_requirements.md`,
+RECAP-1…26).
+
+- **Four fixed sections:** **Your effort** (total minutes, session count, distinct days
+  studied in the window), **Your learning** (topics practised with a "+n more" cap, weak
+  topics improved, topics still needing revision), **Loose ends** (unanswered Coach
+  questions, up to 5 cards with ask-date labels plus a "+n older ones" line), and **Your
+  next step** (hard maximum of two small, concrete suggestions wired to existing
+  affordances — *Revise Weak Topics* and per-question **Resume** buttons that open the
+  exact session and scroll to the open question).
+- **Tone against personal context only (RECAP-15):** every pattern decision compares the
+  window to the student's explicit goal (if set) or their **baseline routine** derived
+  from up to 28 days of history before the window (reliable only with ≥ 14 days and ≥ 3
+  prior sessions). Never population norms or fixed thresholds. Below ~70% of the basis →
+  neutral observation + at most one gentle re-entry suggestion; above ~150% → a rest
+  suggestion *only* if corroborated by fatigue signals (e.g. three consecutive heavy days
+  or declining assessment results), otherwise the week is simply celebrated. Thin history
+  gets facts with no comparison language at all. Guilt, urgency, and judgment phrasing are
+  prohibited.
+- **The model phrases, it does not compute (RECAP-22):** all figures, topic names, and
+  Resume links come from a deterministic locally-built payload (`app/core/recap.py`,
+  beside `compute_review_metrics`); the provider's structured `kind: "recap"` response is
+  schema-validated with one repair retry, capped at 1,500 characters / 2 next steps, and
+  reconciled — mismatched figures or invented topics are replaced with local values or
+  the sentence dropped. Only aggregate facts and topic labels are sent (no private scores
+  or full source texts).
+- **Fully offline-capable (RECAP-26):** with no provider configured or after a provider
+  error, a locally assembled recap renders using the same sections, tone rules, and
+  working Resume buttons, with a small note about simplified wording — no blocking error
+  dialog.
+- **30-day follow-up (RECAP-24):** after a 7-day recap the thread offers an optional
+  30-day recap (Yes/No), appended below it; no chained re-offers.
+- **Session behaviour:** recaps autosave as turns in the current coach session (deleting
+  the session deletes the recap); repeat presses append rather than replace; without a
+  selected session a temporary preview shows without creating one; cancelling stores
+  nothing partial and restores the composer within a second (COACH-15). No new persisted
+  entities or scheduled/notification recaps in v1.
+
 ---
 
 ## 7. Notable Updates vs. the Original 3-Page Draft
@@ -101,6 +146,7 @@ The most distinctive part of the app. Design principles (from the v2 requirement
 - **Study Stopwatch** with auto-logging rules (≥ 10 min → rounded-down session) is a new sidebar feature absent from the draft.
 - **Calendar UX refinements:** today's tile now shares the header "Today" button's blue accent so the two always match; light/dark grey tiles specified.
 - **Coach maturity:** Statistics now lists the *same specific weak topics* as Revise Weak Topics and opens revision sessions directly — without exposing scores or confidence ratings to the user. Immutable-first-answer, hint gating, and accessibility items (role prefixes, textual ticks, tooltips) are implemented per the v2 spec.
+- **Coach Recap (new):** a one-press weekly recap of the last 7 days — effort, learning, loose ends with Resume buttons, and up to two next steps — toned against the student's own goal/routine only, phrased by the provider but computed entirely from local data, with full offline fallback and an optional 30-day follow-up (see §6.1 and `coach_recap_requirements.md`). Covered by dedicated tests (`tests/test_recap.py`, `tests/test_recap_gui.py`).
 - **PDF Library hardening:** background text extraction, zoom + text view, and friendly guidance for protected / oversized / textless files; imported files are copied into the local library.
 - **Resilience documented:** corrupt-file backup + quarantine, schema-version protection, and close-flush are now explicit guarantees, matching the shipped persistence code.
 - **Build pipeline:** PyInstaller spec + PowerShell build script produce the standalone Windows executable referenced throughout.
