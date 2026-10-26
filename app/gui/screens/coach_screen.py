@@ -950,7 +950,7 @@ class CoachScreen(BaseScreen):
         return bottom - (self._viewport_top(canvas) + height)
 
     def _pin_viewport(self, canvas):
-        """Sync the real region BEFORE scrolling so Tk clamps to visible content."""
+        """Follow allocated, mapped messages while child geometry catches up."""
         unmapped = canvas.winfo_height() <= 1
         self._sync_scrollregion()
         if unmapped:
@@ -960,9 +960,24 @@ class CoachScreen(BaseScreen):
             # instead of silently dropping the pin on the floor.
             self._thread_needs_pin = True
             return
-        gap = self._bottom_gap(canvas)
-        if gap is None:
-            return                      # empty thread — trivially pinned
+        # The canvas window may already have grown while its new child is
+        # still unmapped. Its bbox alone is not proof of visible content.
+        # Follow only as far as mapped bubbles; Configure/settle callbacks
+        # finish the follow once the new bubble has actual geometry.
+        mapped_bottom = None
+        for bubble in reversed(self.thread.winfo_children()):
+            if not bubble.winfo_ismapped():
+                continue
+            padding = bubble.pack_info().get('pady', 0)
+            if isinstance(padding, (tuple, list)):
+                padding = padding[-1]
+            mapped_bottom = (bubble.winfo_y() + bubble.winfo_height()
+                             + bubble.winfo_pixels(padding))
+            break
+        if mapped_bottom is None:
+            return                      # no mapped messages to follow yet
+        bottom = min(self._content_bottom(), mapped_bottom)
+        gap = bottom - (self._viewport_top(canvas) + canvas.winfo_height())
         if gap > 0:
             # Close the *measured* gap with unit scrolls (yscrollincrement
             # was set to 1 px).  yview_moveto(1.0) must never be used here:
