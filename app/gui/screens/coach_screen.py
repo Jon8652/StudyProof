@@ -949,29 +949,6 @@ class CoachScreen(BaseScreen):
             return None                 # empty thread — trivially pinned
         return bottom - (self._viewport_top(canvas) + height)
 
-    def _newest_mapped_extent(self):
-        """Bottom edge (canvas coords) of the newest *mapped* bubble.
-
-        Returns None when nothing can be judged yet.  A freshly packed
-        ChatBubble reports height 1 at position (0, 0) until Tk's geometry
-        pass maps it; its scrollregion/bbox contribution is only an
-        estimate.  Pinning against that estimate scrolls the viewport past
-        every mapped bubble and flashes a blank pane — exactly what the
-        long-send test observes under DPI scaling, where the mapping lands
-        a cycle late.
-        """
-        canvas = self._thread_canvas
-        children = self.thread.winfo_children()
-        if not children:
-            return None
-        newest = children[-1]
-        try:
-            if not newest.winfo_ismapped():
-                return None
-            return newest.winfo_y() + newest.winfo_height()
-        except Exception:
-            return None                 # torn down mid-read
-
     def _pin_viewport(self, canvas):
         """Sync the real region BEFORE scrolling so Tk clamps to visible content."""
         unmapped = canvas.winfo_height() <= 1
@@ -982,26 +959,6 @@ class CoachScreen(BaseScreen):
             # the <Configure> hook re-pins as soon as real geometry lands,
             # instead of silently dropping the pin on the floor.
             self._thread_needs_pin = True
-            return
-        extent = self._content_bottom()
-        mapped = self._newest_mapped_extent()
-        if mapped is not None and extent - mapped > BOTTOM_EPSILON_PX:
-            # The region extends below the newest mapped bubble: the extra
-            # comes from an un-mapped widget whose requested size is only an
-            # estimate (CTkLabel wrapping settles after mapping, and under
-            # Windows DPI scaling the mapping itself lands a cycle late).
-            # Blindly closing that gap parks the viewport over blank space.
-            # Instead follow the *verified* extent; the <Configure> burst
-            # and settle poll re-pin against the true bottom as soon as the
-            # real geometry arrives.
-            height = canvas.winfo_height()
-            gap = mapped + BOTTOM_EPSILON_PX - (self._viewport_top(canvas) + height)
-            if gap > 0:
-                try:
-                    canvas.yview_scroll(int(round(gap)), 'units')
-                except Exception:
-                    self._manual_scroll_to_bottom(canvas)
-                self._note_auto_move()
             return
         gap = self._bottom_gap(canvas)
         if gap is None:
