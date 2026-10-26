@@ -977,8 +977,12 @@ class CoachScreen(BaseScreen):
         if mapped_bottom is None:
             return                      # no mapped messages to follow yet
         bottom = min(self._content_bottom(), mapped_bottom)
-        gap = bottom - (self._viewport_top(canvas) + canvas.winfo_height())
-        if gap > 0:
+        target_top = max(0, bottom - canvas.winfo_height())
+        gap = target_top - self._viewport_top(canvas)
+        if gap != 0:
+            # Correct in BOTH directions. A previous layout may have put
+            # the viewport beyond the currently mapped bubbles; merely
+            # refusing to scroll farther down leaves that blank view intact.
             # Close the *measured* gap with unit scrolls (yscrollincrement
             # was set to 1 px).  yview_moveto(1.0) must never be used here:
             # Tk quantises the fraction against the scrollregion ratio, and

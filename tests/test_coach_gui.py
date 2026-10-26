@@ -929,7 +929,10 @@ def test_pickers_keep_mapped_bubbles_and_pixel_position(monkeypatch, picker, bus
 
 @pytest.mark.parametrize('display_scale', [1.0, 1.25, 1.5, 2.0],
                          ids=['100%', '125%', '150%', '200%'])
-def test_pin_does_not_scroll_past_mapped_messages(monkeypatch, display_scale):
+@pytest.mark.parametrize('already_past_messages', [False, True],
+                         ids=['before-growth', 'after-growth'])
+def test_pin_does_not_scroll_past_mapped_messages(monkeypatch, display_scale,
+                                                already_past_messages):
     """The canvas window can grow before its children receive geometry."""
     import customtkinter as ctk
 
@@ -962,6 +965,17 @@ def test_pin_does_not_scroll_past_mapped_messages(monkeypatch, display_scale):
         window = screen.thread._create_window_id
         canvas.itemconfigure(window, height=screen.thread.winfo_height()
                              + 3 * canvas.winfo_height())
+        if already_past_messages:
+            # A previous follow can have reached the enlarged window before
+            # the bubble's geometry changed again. Repairing that position
+            # requires an upward correction, not just limiting a new scroll.
+            canvas.configure(scrollregion=canvas.bbox('all'))
+            screen._auto_scroll_depth += 1
+            try:
+                canvas.yview_moveto(1.0)
+            finally:
+                screen._auto_scroll_depth -= 1
+            assert canvas.canvasy(0) > history[-1].winfo_y() + history[-1].winfo_height()
         # No update()/update_idletasks(): the pin must be safe even before
         # Tk maps the pending child, regardless of platform event ordering.
         screen._scroll_thread_to_bottom()
