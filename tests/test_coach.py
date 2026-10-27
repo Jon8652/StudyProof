@@ -418,16 +418,25 @@ def test_large_note_fits_without_truncation():
 
 
 def test_model_choice_sanitization():
-    """Change request #4: only exact model names survive sanitization."""
+    """Change request #5: custom model names are kept; only blanks fall back.
+
+    (Supersedes change request #4, which restricted the model to a fixed
+    dropdown of exact names.)
+    """
     from app.constants import AI_MODEL_CHOICES, DEFAULT_AI_MODEL
-    assert AI_MODEL_CHOICES == ('deepseek-flash', 'deepseek-v4-pro')
     assert DEFAULT_AI_MODEL in AI_MODEL_CHOICES
     for name in AI_MODEL_CHOICES:
         assert AISettings.sanitized({'model': name}).model == name
         assert AISettings.sanitized({'model': f'  {name} '}).model == name
-    # Legacy free-text values (e.g. "deepseek-chat") are no longer valid.
-    assert AISettings.sanitized({'model': 'deepseek-chat'}).model == DEFAULT_AI_MODEL
+    # Free-text custom model names are preserved (trimmed).
+    assert AISettings.sanitized(
+        {'model': 'deepseek-chat'}).model == 'deepseek-chat'
+    assert AISettings.sanitized(
+        {'model': '  meta-llama/Llama-3.1-8B  '}).model == \
+        'meta-llama/Llama-3.1-8B'
+    # Empty/whitespace-only values still fall back to the default choice.
     assert AISettings.sanitized({'model': ''}).model == DEFAULT_AI_MODEL
+    assert AISettings.sanitized({'model': '   '}).model == DEFAULT_AI_MODEL
     assert AISettings.sanitized({}).model == DEFAULT_AI_MODEL
 
 

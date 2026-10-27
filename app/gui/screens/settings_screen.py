@@ -101,15 +101,23 @@ class SettingsScreen(BaseScreen):
             entry.bind('<FocusOut>', lambda _: self._save_ai())
             entry.bind('<Return>', lambda _: self._save_ai())
             self.ai_entries[key] = entry
-        # Change request #4: the model is no longer free text.  The user
-        # must pick one of the exact supported names from this dropdown.
+        # Change request #5: the model field accepts a custom name again.
+        # The known models are offered as suggestions in a dropdown, but the
+        # user can type any model name that matches their API key/provider.
         model_row = ctk.CTkFrame(ai_card, fg_color='transparent')
         model_row.pack(fill='x', padx=CARD_PAD_X, pady=3)
         ctk.CTkLabel(model_row, text='Model', width=80, anchor='w').pack(side='left')
+        self.ai_model_entry = ctk.CTkEntry(
+            model_row, placeholder_text='Custom model name or pick a suggestion')
+        self.ai_model_entry.pack(side='left', fill='x', expand=True)
+        self.ai_model_entry.bind('<FocusOut>', lambda _: self._save_ai())
+        self.ai_model_entry.bind('<Return>', lambda _: self._save_ai())
+        self.ai_entries['model'] = self.ai_model_entry
         self.ai_model_menu = ctk.CTkOptionMenu(
-            model_row, values=list(AI_MODEL_CHOICES), command=self._save_ai)
-        self.ai_model_menu.pack(side='left', fill='x', expand=True)
-        self.ai_entries['model'] = self.ai_model_menu
+            model_row, values=list(AI_MODEL_CHOICES), width=120,
+            button_color=NEUTRAL, button_hover_color=NEUTRAL_HOVER,
+            text_color=NEUTRAL_TEXT, command=self._pick_model_suggestion)
+        self.ai_model_menu.pack(side='left', padx=(6, 0))
         controls = ctk.CTkFrame(ai_card, fg_color='transparent')
         controls.pack(fill='x', padx=CARD_PAD_X, pady=4)
         ctk.CTkCheckBox(controls, text='Show key', command=self._toggle_key).pack(side='left')
@@ -169,6 +177,12 @@ class SettingsScreen(BaseScreen):
         raw = {key: entry.get() for key, entry in self.ai_entries.items()}
         raw['mode'] = 'live'
         self.state.set_ai_settings(raw)
+
+    def _pick_model_suggestion(self, name: str):
+        """Copy a suggested model name into the free-text field and save."""
+        self.ai_model_entry.delete(0, 'end')
+        self.ai_model_entry.insert(0, name)
+        self._save_ai()
 
     def _toggle_key(self):
         entry = self.ai_entries['api_key']
@@ -265,11 +279,6 @@ class SettingsScreen(BaseScreen):
         if raw != self._ai_snapshot:
             self._ai_snapshot = raw
             for key, entry in self.ai_entries.items():
-                if key == 'model':
-                    # CTkOptionMenu has no delete/insert; set the exact
-                    # model name (change request #4).
-                    entry.set(raw[key])
-                    continue
                 entry.delete(0, 'end')
                 entry.insert(0, raw[key])
         theme = self.state.settings.theme

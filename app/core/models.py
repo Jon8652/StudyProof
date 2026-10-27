@@ -11,13 +11,13 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from app.constants import (
-    AI_MODEL_CHOICES,
     CONFIDENCE_LEVELS,
     DEFAULT_AI_MODEL,
     DEFAULT_THEME,
     DEFAULT_XP_PER_10_MINUTES,
     MAX_INPUT_HOURS,
     MAX_INPUT_MINUTES,
+    MAX_AI_MODEL_CHARS,
     MAX_SESSION_MINUTES,
     MIN_INPUT_HOURS,
     MIN_INPUT_MINUTES,
@@ -178,11 +178,12 @@ class AISettings:
         model = raw.get("model", DEFAULT_AI_MODEL)
         if not isinstance(model, str):
             model = str(model or "")
-        model = model.strip()
-        # Change request #4: the model must be one of the exact names in
-        # AI_MODEL_CHOICES.  Anything else (free text from older save
-        # files, typos, empty strings) is coerced to the default choice.
-        if model not in AI_MODEL_CHOICES:
+        model = model.strip()[:MAX_AI_MODEL_CHARS]
+        # Change request #5: users may enter a custom model name for their
+        # API key/provider, so free text is kept as-is.  AI_MODEL_CHOICES is
+        # only a list of suggestions shown in the settings UI.  Empty or
+        # whitespace-only values still fall back to the default model.
+        if not model:
             model = DEFAULT_AI_MODEL
         api_key = raw.get("api_key", "")
         if not isinstance(api_key, str):
