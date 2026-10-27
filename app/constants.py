@@ -36,11 +36,13 @@ MAX_SOURCES = 5                    # A-37 / SEL-1: sources per session
 MAX_PACK_CHARS = 1_000_000
 MAX_MEMORY_TURNS = 10              # A-26: last N turns feed generation
 AI_TIMEOUT_S = 30                  # A-34 / PROV-2: live call timeout
-# A-22: the model must be one of the exact names below; the settings UI
-# offers them as a dropdown and the save file coerces anything else
-# (change request #4).
+# A-22: suggested model names shown in the settings UI.  Change request #5
+# re-opened the model field so users can also type a custom model name for
+# their API key/provider; the list below is only autocomplete suggestions,
+# not an enforced whitelist.
 AI_MODEL_CHOICES = ("deepseek-flash", "deepseek-v4-pro")
 DEFAULT_AI_MODEL = AI_MODEL_CHOICES[0]
+MAX_AI_MODEL_CHARS = 120           # sanity clamp for custom model names
 VALID_AI_MODES = ("live",)  # AIS-5 mode keys
 CONFIDENCE_LEVELS = ("low", "medium", "high")   # A-36
 CONFIDENCE_LABELS = {"low": "Guessed", "medium": "Unsure",

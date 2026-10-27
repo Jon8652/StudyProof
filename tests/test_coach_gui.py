@@ -215,14 +215,17 @@ def test_full_live_loop_and_cancel(monkeypatch, scripted_provider):
         app.screens['stats'].refresh()
         app.show_screen('settings')
         settings = app.screens['settings']
-        # Change request #4: the model is a dropdown of exact names now.
+        # Change request #5: the model is a free-text field again, with a
+        # dropdown of suggested names beside it.
         assert set(settings.ai_model_menu.cget('values')) == {
             'deepseek-flash', 'deepseek-v4-pro'}
-        settings.ai_model_menu.set('deepseek-v4-pro')
-        # CTkOptionMenu invokes its command with the chosen value; saving
-        # must tolerate being called both as a callback and bare.
-        settings._save_ai('deepseek-v4-pro')
+        settings._pick_model_suggestion('deepseek-v4-pro')
         assert state.settings.ai.model == 'deepseek-v4-pro'
+        # A custom model name typed by the user is kept as entered.
+        settings.ai_model_entry.delete(0, 'end')
+        settings.ai_model_entry.insert(0, 'my-custom-model')
+        settings._save_ai()
+        assert state.settings.ai.model == 'my-custom-model'
         app.show_screen('coach')
         screen.composer.insert('1.0', 'Energy')
         screen.answer()
